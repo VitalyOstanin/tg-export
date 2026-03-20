@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+.venv/
+venv/
+
+# Telegram sessions and credentials (NEVER commit these)
+*.session
+*.session-journal
+api_credentials.yaml
+
+# Export state database
+.tg-export-state.db
+.tg-export-state.db-journal
+.tg-export-state.db-wal
+
+# Export output (may contain personal data)
+export_output/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
