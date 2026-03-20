@@ -1,4 +1,14 @@
+import asyncio
+
 import click
+
+from tg_export.auth import AccountManager
+
+
+def _mgr() -> AccountManager:
+    mgr = AccountManager()
+    mgr.ensure_dirs()
+    return mgr
 
 
 @click.group()
@@ -14,23 +24,36 @@ def auth():
 
 
 @auth.command("add")
-@click.option("--name", help="Account alias")
+@click.option("--name", prompt="Account alias", help="Account alias")
 def auth_add(name):
     """Add a new Telegram account (interactive login)."""
-    click.echo("Not implemented yet")
+    mgr = _mgr()
+    asyncio.run(mgr.add_account(name))
+    click.echo(f"Account '{name}' added successfully.")
 
 
 @auth.command("list")
 def auth_list():
     """List configured accounts."""
-    click.echo("Not implemented yet")
+    mgr = _mgr()
+    accounts = mgr.list_accounts()
+    if not accounts:
+        click.echo("No accounts configured.")
+        return
+    for acc in accounts:
+        click.echo(f"  {acc}")
 
 
 @auth.command("remove")
 @click.argument("name")
 def auth_remove(name):
     """Remove a Telegram account."""
-    click.echo("Not implemented yet")
+    mgr = _mgr()
+    if name not in mgr.list_accounts():
+        click.echo(f"Account '{name}' not found.")
+        return
+    mgr.remove_account(name)
+    click.echo(f"Account '{name}' removed.")
 
 
 @main.command("list")
