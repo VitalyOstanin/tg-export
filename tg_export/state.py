@@ -2,10 +2,146 @@
 
 from __future__ import annotations
 
+import json
+from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import aiosqlite
+
+from tg_export.models import (
+    Message, TextPart, TextType, Media, MediaType, Reaction, ReactionType,
+    ForwardInfo, InlineButton, InlineButtonType, ServiceAction,
+    _media_to_dict, _media_from_dict, _action_to_dict, _action_from_dict,
+    _encode_default, _decode_hook,
+)
+
+
+def _plain_text(text_parts: list[TextPart]) -> str:
+    """Extract plain text from TextPart list for searchable column."""
+    return "".join(tp.text for tp in text_parts)
+
+
+def _json_dumps(obj: Any) -> str | None:
+    if obj is None:
+        return None
+    return json.dumps(obj, default=_encode_default, ensure_ascii=False)
+
+
+def _text_parts_to_json(parts: list[TextPart]) -> str:
+    return json.dumps([asdict(tp) for tp in parts], default=_encode_default, ensure_ascii=False)
+
+
+def _text_parts_from_json(s: str | None) -> list[TextPart]:
+    if not s:
+        return []
+    raw = json.loads(s)
+    result = []
+    for tp in raw:
+        tp_type = TextType(tp.pop("type"))
+        result.append(TextPart(type=tp_type, **tp))
+    return result
+
+
+def _media_to_json(media: Media | None) -> str | None:
+    if media is None:
+        return None
+    return json.dumps(_media_to_dict(media), default=_encode_default, ensure_ascii=False)
+
+
+def _media_from_json(s: str | None) -> Media | None:
+    if not s:
+        return None
+    d = json.loads(s, object_hook=_decode_hook)
+    return _media_from_dict(d)
+
+
+def _action_to_json(action: ServiceAction | None) -> str | None:
+    if action is None:
+        return None
+    return json.dumps(_action_to_dict(action), default=_encode_default, ensure_ascii=False)
+
+
+def _action_from_json(s: str | None) -> ServiceAction | None:
+    if not s:
+        return None
+    d = json.loads(s, object_hook=_decode_hook)
+    return _action_from_dict(d)
+
+
+def _forward_to_json(fwd: ForwardInfo | None) -> str | None:
+    if fwd is None:
+        return None
+    return json.dumps(asdict(fwd), default=_encode_default, ensure_ascii=False)
+
+
+def _forward_from_json(s: str | None) -> ForwardInfo | None:
+    if not s:
+        return None
+    d = json.loads(s, object_hook=_decode_hook)
+    return ForwardInfo(**d)
+
+
+def _reactions_to_json(reactions: list[Reaction]) -> str | None:
+    if not reactions:
+        return None
+    return json.dumps([asdict(r) for r in reactions], default=_encode_default, ensure_ascii=False)
+
+
+def _reactions_from_json(s: str | None) -> list[Reaction]:
+    if not s:
+        return []
+    raw = json.loads(s)
+    result = []
+    for r in raw:
+        r["type"] = ReactionType(r["type"])
+        result.append(Reaction(**r))
+    return result
+
+
+def _buttons_to_json(buttons: list[list[InlineButton]] | None) -> str | None:
+    if buttons is None:
+        return None
+    return json.dumps([[asdict(btn) for btn in row] for row in buttons],
+                      default=_encode_default, ensure_ascii=False)
+
+
+def _buttons_from_json(s: str | None) -> list[list[InlineButton]] | None:
+    if not s:
+        return None
+    raw = json.loads(s)
+    return [
+        [InlineButton(type=InlineButtonType(btn["type"]), **{k: v for k, v in btn.items() if k != "type"})
+         for btn in row]
+        for row in raw
+    ]
+
+
+def _row_to_message(row: dict) -> Message:
+    """Reconstruct Message from database row."""
+    return Message(
+        id=row["msg_id"],
+        chat_id=row["chat_id"],
+        date=datetime.fromisoformat(row["date"]) if row["date"] else datetime(1970, 1, 1),
+        edited=datetime.fromisoformat(row["edited"]) if row["edited"] else None,
+        from_id=row["from_id"],
+        from_name=row["from_name"] or "",
+        text=_text_parts_from_json(row["text_parts"]),
+        media=_media_from_json(row["media"]),
+        action=_action_from_json(row["action"]),
+        reply_to_msg_id=row["reply_to_msg_id"],
+        reply_to_peer_id=row["reply_to_peer_id"],
+        forwarded_from=_forward_from_json(row["forwarded_from"]),
+        reactions=_reactions_from_json(row["reactions"]),
+        is_outgoing=bool(row["is_outgoing"]),
+        signature=row["signature"],
+        via_bot_id=row["via_bot_id"],
+        saved_from_chat_id=row["saved_from_chat_id"],
+        inline_buttons=_buttons_from_json(row["inline_buttons"]),
+        topic_id=row["topic_id"],
+        grouped_id=row["grouped_id"],
+    )
 
 
 class ExportState:
@@ -33,11 +169,35 @@ class ExportState:
             );
 
             CREATE TABLE IF NOT EXISTS messages (
-                chat_id        INTEGER NOT NULL,
-                msg_id         INTEGER NOT NULL,
-                data           TEXT NOT NULL,
+                chat_id          INTEGER NOT NULL,
+                msg_id           INTEGER NOT NULL,
+                date             TIMESTAMP,
+                edited           TIMESTAMP,
+                from_id          INTEGER,
+                from_name        TEXT,
+                text             TEXT,
+                text_parts       TEXT,
+                media_type       TEXT,
+                media            TEXT,
+                action_type      TEXT,
+                action           TEXT,
+                reply_to_msg_id  INTEGER,
+                reply_to_peer_id INTEGER,
+                forwarded_from   TEXT,
+                reactions        TEXT,
+                is_outgoing      INTEGER,
+                signature        TEXT,
+                via_bot_id       INTEGER,
+                saved_from_chat_id INTEGER,
+                inline_buttons   TEXT,
+                topic_id         INTEGER,
+                grouped_id       INTEGER,
                 PRIMARY KEY (chat_id, msg_id)
             );
+
+            CREATE INDEX IF NOT EXISTS idx_messages_date ON messages(chat_id, date);
+            CREATE INDEX IF NOT EXISTS idx_messages_from ON messages(chat_id, from_id);
+            CREATE INDEX IF NOT EXISTS idx_messages_media ON messages(chat_id, media_type);
 
             CREATE TABLE IF NOT EXISTS files (
                 file_id        INTEGER NOT NULL,
@@ -137,21 +297,105 @@ class ExportState:
 
     # -- messages --
 
-    async def store_message(self, chat_id: int, msg_id: int, data: str):
+    async def store_message(self, msg: Message):
+        """Store message with searchable columns + JSON for complex fields."""
         await self._db.execute(
-            """INSERT INTO messages (chat_id, msg_id, data)
-               VALUES (?, ?, ?)
-               ON CONFLICT(chat_id, msg_id) DO UPDATE SET data=?""",
-            (chat_id, msg_id, data, data),
+            """INSERT INTO messages (
+                chat_id, msg_id, date, edited, from_id, from_name,
+                text, text_parts, media_type, media, action_type, action,
+                reply_to_msg_id, reply_to_peer_id, forwarded_from,
+                reactions, is_outgoing, signature, via_bot_id,
+                saved_from_chat_id, inline_buttons, topic_id, grouped_id
+               ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(chat_id, msg_id) DO UPDATE SET
+                date=?, edited=?, from_id=?, from_name=?,
+                text=?, text_parts=?, media_type=?, media=?,
+                action_type=?, action=?,
+                reply_to_msg_id=?, reply_to_peer_id=?, forwarded_from=?,
+                reactions=?, is_outgoing=?, signature=?, via_bot_id=?,
+                saved_from_chat_id=?, inline_buttons=?, topic_id=?, grouped_id=?""",
+            (
+                # INSERT values
+                msg.chat_id, msg.id,
+                msg.date.isoformat() if msg.date else None,
+                msg.edited.isoformat() if msg.edited else None,
+                msg.from_id, msg.from_name,
+                _plain_text(msg.text),
+                _text_parts_to_json(msg.text),
+                msg.media.type.value if msg.media else None,
+                _media_to_json(msg.media),
+                msg.action.type if msg.action else None,
+                _action_to_json(msg.action),
+                msg.reply_to_msg_id, msg.reply_to_peer_id,
+                _forward_to_json(msg.forwarded_from),
+                _reactions_to_json(msg.reactions),
+                int(msg.is_outgoing), msg.signature, msg.via_bot_id,
+                msg.saved_from_chat_id,
+                _buttons_to_json(msg.inline_buttons),
+                msg.topic_id, msg.grouped_id,
+                # UPDATE values
+                msg.date.isoformat() if msg.date else None,
+                msg.edited.isoformat() if msg.edited else None,
+                msg.from_id, msg.from_name,
+                _plain_text(msg.text),
+                _text_parts_to_json(msg.text),
+                msg.media.type.value if msg.media else None,
+                _media_to_json(msg.media),
+                msg.action.type if msg.action else None,
+                _action_to_json(msg.action),
+                msg.reply_to_msg_id, msg.reply_to_peer_id,
+                _forward_to_json(msg.forwarded_from),
+                _reactions_to_json(msg.reactions),
+                int(msg.is_outgoing), msg.signature, msg.via_bot_id,
+                msg.saved_from_chat_id,
+                _buttons_to_json(msg.inline_buttons),
+                msg.topic_id, msg.grouped_id,
+            ),
         )
         await self._db.commit()
 
-    async def load_messages(self, chat_id: int) -> list[str]:
+    async def load_messages(self, chat_id: int) -> list[Message]:
+        """Load all messages for a chat, sorted by msg_id."""
         async with self._db.execute(
-            "SELECT data FROM messages WHERE chat_id=? ORDER BY msg_id", (chat_id,)
+            "SELECT * FROM messages WHERE chat_id=? ORDER BY msg_id", (chat_id,)
         ) as cur:
             rows = await cur.fetchall()
-            return [row["data"] for row in rows]
+            return [_row_to_message(dict(r)) for r in rows]
+
+    async def search_messages(
+        self, chat_id: int,
+        text_query: str | None = None,
+        media_type: str | None = None,
+        from_id: int | None = None,
+        date_from: datetime | None = None,
+        date_to: datetime | None = None,
+    ) -> list[Message]:
+        """Search messages using SQL columns (no JSON parsing needed)."""
+        clauses = ["chat_id = ?"]
+        params: list[Any] = [chat_id]
+
+        if text_query:
+            clauses.append("text LIKE ?")
+            params.append(f"%{text_query}%")
+        if media_type:
+            clauses.append("media_type = ?")
+            params.append(media_type)
+        if from_id is not None:
+            clauses.append("from_id = ?")
+            params.append(from_id)
+        if date_from:
+            clauses.append("date >= ?")
+            params.append(date_from.isoformat())
+        if date_to:
+            clauses.append("date <= ?")
+            params.append(date_to.isoformat())
+
+        where = " AND ".join(clauses)
+        async with self._db.execute(
+            f"SELECT * FROM messages WHERE {where} ORDER BY msg_id", params
+        ) as cur:
+            rows = await cur.fetchall()
+            return [_row_to_message(dict(r)) for r in rows]
 
     # -- takeout --
 

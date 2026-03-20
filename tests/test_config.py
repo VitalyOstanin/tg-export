@@ -7,7 +7,6 @@ FIXTURES = Path(__file__).parent / "fixtures"
 
 def test_load_valid_config():
     cfg = load_config(FIXTURES / "valid_config.yaml")
-    assert cfg.account == "my_phone"
     assert cfg.output.format == "html"
     assert cfg.output.messages_per_file == 1000
     assert cfg.output.min_free_space_bytes == 20 * 1024**3
@@ -18,7 +17,6 @@ def test_load_valid_config():
 
 def test_load_minimal_config():
     cfg = load_config(FIXTURES / "minimal_config.yaml")
-    assert cfg.account is not None
     assert cfg.defaults is not None
 
 
@@ -37,8 +35,3 @@ def test_parse_size_units():
     cfg = load_config(FIXTURES / "valid_config.yaml")
     assert cfg.output.min_free_space_bytes == 20 * 1024**3  # 20GB
     assert cfg.defaults.media.max_file_size_bytes == 50 * 1024**2  # 50MB
-
-
-def test_invalid_config_missing_account():
-    with pytest.raises(ConfigError):
-        load_config(FIXTURES / "invalid_no_account.yaml")

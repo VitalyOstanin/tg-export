@@ -1,5 +1,3 @@
-account: my_phone
-
 defaults:
   media:
     types: [photo]

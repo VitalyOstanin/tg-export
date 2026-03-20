@@ -3,6 +3,9 @@ import pytest_asyncio
 from pathlib import Path
 from datetime import datetime
 from tg_export.state import ExportState
+from tg_export.models import (
+    Message, TextPart, TextType, PhotoMedia, MediaType, FileInfo,
+)
 
 
 @pytest_asyncio.fixture
@@ -11,6 +14,21 @@ async def state(tmp_path):
     await s.open()
     yield s
     await s.close()
+
+
+def _make_msg(msg_id=1, chat_id=123, text="Hello", from_id=100, from_name="Test",
+              media=None, date=None):
+    return Message(
+        id=msg_id, chat_id=chat_id,
+        date=date or datetime(2024, 1, 1),
+        edited=None, from_id=from_id, from_name=from_name,
+        text=[TextPart(type=TextType.text, text=text)] if text else [],
+        media=media, action=None, reply_to_msg_id=None,
+        reply_to_peer_id=None, forwarded_from=None,
+        reactions=[], is_outgoing=False, signature=None,
+        via_bot_id=None, saved_from_chat_id=None,
+        inline_buttons=None, topic_id=None, grouped_id=None,
+    )
 
 
 @pytest.mark.asyncio
@@ -40,11 +58,69 @@ async def test_file_registration(state):
 
 @pytest.mark.asyncio
 async def test_message_store_and_load(state):
-    await state.store_message(chat_id=123, msg_id=1, data='{"id": 1}')
-    await state.store_message(chat_id=123, msg_id=2, data='{"id": 2}')
+    msg = _make_msg(msg_id=1, chat_id=123, text="Привет мир", from_name="Иван")
+    await state.store_message(msg)
+    messages = await state.load_messages(chat_id=123)
+    assert len(messages) == 1
+    assert messages[0].from_name == "Иван"
+    assert messages[0].text[0].text == "Привет мир"
+
+
+@pytest.mark.asyncio
+async def test_message_store_multiple_and_order(state):
+    await state.store_message(_make_msg(msg_id=2, text="Second"))
+    await state.store_message(_make_msg(msg_id=1, text="First"))
     messages = await state.load_messages(chat_id=123)
     assert len(messages) == 2
-    assert messages[0] == '{"id": 1}'
+    assert messages[0].text[0].text == "First"
+    assert messages[1].text[0].text == "Second"
+
+
+@pytest.mark.asyncio
+async def test_message_with_media_roundtrip(state):
+    media = PhotoMedia(
+        type=MediaType.photo,
+        file=FileInfo(id=1, size=1000, name="p.jpg", mime_type="image/jpeg", local_path=None),
+        width=800, height=600,
+    )
+    msg = _make_msg(msg_id=1, media=media, text="")
+    await state.store_message(msg)
+    loaded = (await state.load_messages(chat_id=123))[0]
+    assert isinstance(loaded.media, PhotoMedia)
+    assert loaded.media.width == 800
+    assert loaded.media.file.name == "p.jpg"
+
+
+@pytest.mark.asyncio
+async def test_search_by_text(state):
+    await state.store_message(_make_msg(msg_id=1, text="Привет"))
+    await state.store_message(_make_msg(msg_id=2, text="Мир"))
+    await state.store_message(_make_msg(msg_id=3, text="Привет мир"))
+    results = await state.search_messages(chat_id=123, text_query="Привет")
+    assert len(results) == 2
+
+
+@pytest.mark.asyncio
+async def test_search_by_media_type(state):
+    media = PhotoMedia(
+        type=MediaType.photo,
+        file=FileInfo(id=1, size=1000, name="p.jpg", mime_type="image/jpeg", local_path=None),
+        width=800, height=600,
+    )
+    await state.store_message(_make_msg(msg_id=1, media=media, text=""))
+    await state.store_message(_make_msg(msg_id=2, text="no media"))
+    results = await state.search_messages(chat_id=123, media_type="photo")
+    assert len(results) == 1
+    assert results[0].id == 1
+
+
+@pytest.mark.asyncio
+async def test_search_by_from_id(state):
+    await state.store_message(_make_msg(msg_id=1, from_id=100, text="A"))
+    await state.store_message(_make_msg(msg_id=2, from_id=200, text="B"))
+    results = await state.search_messages(chat_id=123, from_id=200)
+    assert len(results) == 1
+    assert results[0].text[0].text == "B"
 
 
 @pytest.mark.asyncio

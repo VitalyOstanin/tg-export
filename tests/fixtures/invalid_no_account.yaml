@@ -1,5 +1,0 @@
-defaults:
-  media:
-    types: [photo]
-    max_file_size: 50MB
-    concurrent_downloads: 3

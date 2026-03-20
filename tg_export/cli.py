@@ -57,7 +57,7 @@ def auth_remove(name):
 
 
 @main.command("list")
-@click.option("--account", help="Account name")
+@click.option("--account", required=True, help="Account alias")
 @click.option("--output", type=click.Path(), help="Output file path")
 @click.option("--format", "fmt", type=click.Choice(["yaml", "json"]), default="yaml")
 @click.option("--include-left", is_flag=True, help="Include left channels")
@@ -67,27 +67,35 @@ def list_chats(account, output, fmt, include_left):
 
 
 @main.command("init")
+@click.option("--account", required=True, help="Account alias")
 @click.option("--from", "from_catalog", type=click.Path(exists=True), help="Catalog file")
-@click.option("--output", type=click.Path(), default="config.yaml")
-def init_config(from_catalog, output):
-    """Generate config template from catalog."""
+@click.option("--output", type=click.Path(), default=None, help="Override output config path")
+def init_config(account, from_catalog, output):
+    """Generate config template from catalog. Saves to ~/.config/tg-export/<account>.yaml."""
     click.echo("Not implemented yet")
 
 
 @main.command("run")
-@click.option("--config", type=click.Path(exists=True), default="config.yaml")
-@click.option("--account", help="Account name")
-@click.option("--output", type=click.Path(), help="Output directory")
+@click.option("--account", required=True, help="Account alias (loads ~/.config/tg-export/<account>.yaml)")
+@click.option("--config", type=click.Path(exists=True), default=None, help="Override config path")
+@click.option("--output", type=click.Path(), help="Override output directory")
 @click.option("--verify", is_flag=True, help="Verify file integrity after export")
 @click.option("--dry-run", is_flag=True, help="Show what would be exported")
-def run_export(config, account, output, verify, dry_run):
-    """Run export according to config."""
+def run_export(account, config, output, verify, dry_run):
+    """Run export according to config. Config resolved by account name convention."""
+    mgr = _mgr()
+    config_path = mgr.resolve_config(account, config)
+    if not config_path.exists():
+        click.echo(f"Config not found: {config_path}")
+        click.echo(f"Create it with: tg-export init --account {account}")
+        raise SystemExit(1)
     click.echo("Not implemented yet")
 
 
 @main.command("verify")
-@click.option("--config", type=click.Path(exists=True), default="config.yaml")
+@click.option("--account", required=True, help="Account alias")
+@click.option("--config", type=click.Path(exists=True), default=None, help="Override config path")
 @click.option("--output", type=click.Path(), help="Export output directory")
-def verify_files(config, output):
+def verify_files(account, config, output):
     """Verify integrity of previously downloaded files."""
     click.echo("Not implemented yet")

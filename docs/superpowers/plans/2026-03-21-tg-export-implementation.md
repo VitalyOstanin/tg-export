@@ -6,6 +6,14 @@
 
 **Architecture:** Монолитный пакет `tg_export` с модулями: CLI (click) -> Config (YAML) -> API (Telethon + Takeout) -> Exporter (Controller) -> State (SQLite) -> HTML Renderer (Jinja2). Чаты экспортируются последовательно, медиа внутри чата -- параллельно через asyncio-семафор.
 
+**Multi-account:** Поддержка нескольких Telegram-аккаунтов. Каждый аккаунт имеет свой алиас (произвольное имя), файл сессии, файл конфига и выходной каталог:
+- Сессии: `~/.config/tg-export/sessions/<alias>.session`
+- Конфиги: `~/.config/tg-export/<alias>.yaml`
+- Выход по умолчанию: `./export_output/<alias>/` (каждый аккаунт в отдельном подкаталоге)
+- CLI: `tg-export run --account <alias>` автоматически ищет конфиг по конвенции; `--config /path` переопределяет; `--output /path` переопределяет выходной каталог.
+- Поле `account` удалено из YAML-конфига -- аккаунт определяется по имени файла/флагу `--account`.
+- `output.path` в конфиге задает базовый каталог; итоговый путь: `{output.path}/{alias}/`.
+
 **Tech Stack:** Python 3.11+, Telethon, PyYAML, aiosqlite, Jinja2, click, rich
 
 **Spec:** `docs/superpowers/specs/2026-03-21-tg-export-design.md`
@@ -320,20 +328,21 @@ def init_config(from_catalog, output):
 
 
 @main.command("run")
-@click.option("--config", type=click.Path(exists=True), default="config.yaml")
-@click.option("--account", help="Account name")
+@click.option("--account", required=True, help="Account alias (loads ~/.config/tg-export/<account>.yaml)")
+@click.option("--config", type=click.Path(exists=True), default=None, help="Override config path")
 @click.option("--output", type=click.Path(), help="Output directory")
 @click.option("--verify", is_flag=True, help="Verify file integrity after export")
 @click.option("--dry-run", is_flag=True, help="Show what would be exported")
-def run_export(config, account, output, verify, dry_run):
-    """Run export according to config."""
+def run_export(account, config, output, verify, dry_run):
+    """Run export according to config. Config resolved by account name convention."""
     click.echo("Not implemented yet")
 
 
 @main.command("verify")
-@click.option("--config", type=click.Path(exists=True), default="config.yaml")
+@click.option("--account", required=True, help="Account alias")
+@click.option("--config", type=click.Path(exists=True), default=None, help="Override config path")
 @click.option("--output", type=click.Path(), help="Export output directory")
-def verify_files(config, output):
+def verify_files(account, config, output):
     """Verify integrity of previously downloaded files."""
     click.echo("Not implemented yet")
 ```
@@ -369,9 +378,8 @@ git commit -m "feat: add CLI skeleton with all subcommands"
 
 - [ ] **Step 1: Создать тестовые фикстуры**
 
-`tests/fixtures/valid_config.yaml` -- полный конфиг из спецификации 5.1.
-`tests/fixtures/minimal_config.yaml` -- минимальный: только `account` и `defaults`.
-`tests/fixtures/invalid_no_account.yaml` -- конфиг без поля `account` (для теста ошибки валидации).
+`tests/fixtures/valid_config.yaml` -- полный конфиг из спецификации 5.1 (без поля `account` -- аккаунт определяется через CLI `--account`).
+`tests/fixtures/minimal_config.yaml` -- минимальный: только `defaults`.
 
 Также создать `tests/conftest.py` с общими фикстурами:
 ```python
@@ -402,7 +410,6 @@ FIXTURES = Path(__file__).parent / "fixtures"
 
 def test_load_valid_config():
     cfg = load_config(FIXTURES / "valid_config.yaml")
-    assert cfg.account == "my_phone"
     assert cfg.output.format == "html"
     assert cfg.output.messages_per_file == 1000
     assert cfg.output.min_free_space_bytes == 20 * 1024**3
@@ -413,7 +420,6 @@ def test_load_valid_config():
 
 def test_load_minimal_config():
     cfg = load_config(FIXTURES / "minimal_config.yaml")
-    assert cfg.account is not None
     assert cfg.defaults is not None
 
 
@@ -434,9 +440,6 @@ def test_parse_size_units():
     assert cfg.defaults.media.max_file_size_bytes == 50 * 1024**2  # 50MB
 
 
-def test_invalid_config_missing_account():
-    with pytest.raises(ConfigError):
-        load_config(FIXTURES / "invalid_no_account.yaml")
 ```
 
 - [ ] **Step 3: Запустить тесты, убедиться что падают**
@@ -447,8 +450,8 @@ Expected: FAIL
 - [ ] **Step 4: Реализовать config.py**
 
 Ключевые классы:
-- `Config` -- корневой dataclass с полями: account, output (OutputConfig), defaults (DefaultsConfig), personal_info, contacts, sessions, userpics, stories, profile_music, other_data, left_channels, import_existing, folders, chats, unmatched
-- `OutputConfig` -- path, format, messages_per_file, min_free_space_bytes
+- `Config` -- корневой dataclass с полями: output (OutputConfig), defaults (DefaultsConfig), personal_info, contacts, sessions, userpics, stories, profile_music, other_data, left_channels, import_existing, folders, chats, unmatched. Поле `account` удалено -- аккаунт определяется через CLI `--account`.
+- `OutputConfig` -- path (базовый каталог, итоговый: `{path}/{account_alias}/`), format, messages_per_file, min_free_space_bytes
 - `MediaConfig` -- types, max_file_size_bytes, concurrent_downloads
 - `ChatExportConfig` -- media (MediaConfig), date_from, date_to, export_service_messages
 - `load_config(path: Path) -> Config` -- загрузка YAML, парсинг размеров (50MB -> bytes), валидация
@@ -520,11 +523,65 @@ async def test_file_registration(state):
 
 @pytest.mark.asyncio
 async def test_message_store_and_load(state):
-    await state.store_message(chat_id=123, msg_id=1, data='{"id": 1}')
-    await state.store_message(chat_id=123, msg_id=2, data='{"id": 2}')
+    from tg_export.models import Message, TextPart, TextType
+    msg = Message(
+        id=1, chat_id=123, date=datetime(2024, 1, 1),
+        edited=None, from_id=100, from_name="Иван",
+        text=[TextPart(type=TextType.text, text="Привет мир")],
+        media=None, action=None, reply_to_msg_id=None,
+        reply_to_peer_id=None, forwarded_from=None,
+        reactions=[], is_outgoing=False, signature=None,
+        via_bot_id=None, saved_from_chat_id=None,
+        inline_buttons=None, topic_id=None, grouped_id=None,
+    )
+    await state.store_message(msg)
     messages = await state.load_messages(chat_id=123)
-    assert len(messages) == 2
-    assert messages[0] == '{"id": 1}'
+    assert len(messages) == 1
+    assert messages[0].from_name == "Иван"
+    assert messages[0].text[0].text == "Привет мир"
+
+
+@pytest.mark.asyncio
+async def test_message_search_by_text(state):
+    """SQL-поиск по plain text без парсинга JSON"""
+    from tg_export.models import Message, TextPart, TextType
+    for i, txt in enumerate(["Привет", "Мир", "Привет мир"]):
+        msg = Message(
+            id=i+1, chat_id=123, date=datetime(2024, 1, 1),
+            edited=None, from_id=100, from_name="Test",
+            text=[TextPart(type=TextType.text, text=txt)],
+            media=None, action=None, reply_to_msg_id=None,
+            reply_to_peer_id=None, forwarded_from=None,
+            reactions=[], is_outgoing=False, signature=None,
+            via_bot_id=None, saved_from_chat_id=None,
+            inline_buttons=None, topic_id=None, grouped_id=None,
+        )
+        await state.store_message(msg)
+    results = await state.search_messages(chat_id=123, text_query="Привет")
+    assert len(results) == 2  # "Привет" и "Привет мир"
+
+
+@pytest.mark.asyncio
+async def test_message_filter_by_media_type(state):
+    """SQL-фильтрация по типу медиа"""
+    from tg_export.models import Message, TextPart, TextType, PhotoMedia, MediaType, FileInfo
+    msg = Message(
+        id=1, chat_id=123, date=datetime(2024, 1, 1),
+        edited=None, from_id=100, from_name="Test",
+        text=[], media=PhotoMedia(
+            type=MediaType.photo,
+            file=FileInfo(id=1, size=1000, name="p.jpg", mime_type="image/jpeg", local_path=None),
+            width=800, height=600,
+        ),
+        action=None, reply_to_msg_id=None,
+        reply_to_peer_id=None, forwarded_from=None,
+        reactions=[], is_outgoing=False, signature=None,
+        via_bot_id=None, saved_from_chat_id=None,
+        inline_buttons=None, topic_id=None, grouped_id=None,
+    )
+    await state.store_message(msg)
+    results = await state.search_messages(chat_id=123, media_type="photo")
+    assert len(results) == 1
 
 
 @pytest.mark.asyncio
@@ -555,8 +612,43 @@ Expected: FAIL
 - `async register_file(file_id, chat_id, msg_id, expected_size, actual_size, local_path, status)`
 - `async get_file(file_id, chat_id) -> dict | None`
 - `async get_files_to_verify() -> list[dict]` -- файлы с status != 'done' или actual_size != expected_size
-- `async store_message(chat_id, msg_id, data: str)` -- upsert JSON в messages
-- `async load_messages(chat_id) -> list[str]` -- все JSON-сообщения чата, отсортированные по msg_id
+- `async store_message(msg: Message)` -- upsert сообщения; основные поля в колонках, полиморфные (media, action, reactions, inline_buttons, text_parts) как JSON
+- `async load_messages(chat_id) -> list[Message]` -- все сообщения чата, восстановленные в models.Message, отсортированные по msg_id
+- `async search_messages(chat_id, text_query=None, media_type=None, from_id=None, date_from=None, date_to=None) -> list[Message]` -- SQL-выборка по колонкам без парсинга JSON
+
+SQLite-схема messages (расширенная):
+```sql
+CREATE TABLE messages (
+    chat_id      INTEGER NOT NULL,
+    msg_id       INTEGER NOT NULL,
+    date         TIMESTAMP,
+    edited       TIMESTAMP,
+    from_id      INTEGER,
+    from_name    TEXT,
+    text         TEXT,           -- plain text (конкатенация TextPart.text, для поиска)
+    text_parts   TEXT,           -- JSON: list[TextPart] (с форматированием, для рендеринга)
+    media_type   TEXT,           -- 'photo', 'video', ... (для фильтрации)
+    media        TEXT,           -- JSON: полный Media объект
+    action_type  TEXT,           -- тип ServiceAction (для фильтрации)
+    action       TEXT,           -- JSON: полный ServiceAction
+    reply_to_msg_id  INTEGER,
+    reply_to_peer_id INTEGER,
+    forwarded_from   TEXT,       -- JSON: ForwardInfo
+    reactions        TEXT,       -- JSON: list[Reaction]
+    is_outgoing      INTEGER,
+    signature        TEXT,
+    via_bot_id       INTEGER,
+    saved_from_chat_id INTEGER,
+    inline_buttons   TEXT,       -- JSON: list[list[InlineButton]]
+    topic_id         INTEGER,
+    grouped_id       INTEGER,
+    PRIMARY KEY (chat_id, msg_id)
+);
+CREATE INDEX idx_messages_text ON messages(chat_id, text);
+CREATE INDEX idx_messages_date ON messages(chat_id, date);
+CREATE INDEX idx_messages_from ON messages(chat_id, from_id);
+CREATE INDEX idx_messages_media ON messages(chat_id, media_type);
+```
 - `async save_takeout(account, takeout_id)`
 - `async get_takeout(account) -> int | None`
 - `async cache_user(user_id, display_name, username)`
@@ -651,12 +743,14 @@ Expected: FAIL
 Класс `AccountManager`:
 - `__init__(self, config_dir: Path = None)` -- по умолчанию `~/.config/tg-export`
 - `ensure_dirs()` -- создает `config_dir/sessions/`
-- `session_path(name: str) -> Path`
+- `session_path(name: str) -> Path` -- `config_dir/sessions/<name>.session`
+- `config_path(name: str) -> Path` -- `config_dir/<name>.yaml` (per-account конфиг по конвенции)
 - `list_accounts() -> list[str]` -- список .session файлов
 - `remove_account(name: str)` -- удаление .session файла
 - `save_credentials(api_id, api_hash)` -- сохранение в YAML с правами 600
 - `load_credentials() -> tuple[int, str]` -- загрузка api_id, api_hash
 - `async add_account(name: str)` -- интерактивная авторизация через Telethon (телефон, код, 2FA)
+- `resolve_config(account: str, config_override: str | None) -> Path` -- если `--config` задан, вернуть его; иначе `config_dir/<account>.yaml`
 
 - [ ] **Step 4: Запустить тесты**
 
@@ -813,7 +907,7 @@ def test_format_catalog_yaml():
              is_left=False, is_forum=False, migrated_to_id=None,
              migrated_from_id=None, is_monoforum=False),
     ]
-    yaml_str = format_catalog_yaml(chats, account="my_phone")
+    yaml_str = format_catalog_yaml(chats)
     assert "Рабочий чат" in yaml_str
     assert "private_supergroup" in yaml_str
     assert "is_forum: true" in yaml_str

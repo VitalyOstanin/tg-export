@@ -101,7 +101,6 @@ class DefaultsConfig:
 
 @dataclass
 class Config:
-    account: str
     output: OutputConfig = field(default_factory=OutputConfig)
     defaults: DefaultsConfig = field(default_factory=DefaultsConfig)
     personal_info: bool = True
@@ -236,10 +235,6 @@ def load_config(path: Path) -> Config:
     if not isinstance(raw, dict):
         raise ConfigError(f"Config must be a YAML mapping, got {type(raw).__name__}")
 
-    account = raw.get("account")
-    if not account:
-        raise ConfigError("Config must have 'account' field")
-
     # Output
     out_raw = raw.get("output", {})
     output = OutputConfig(
@@ -284,7 +279,6 @@ def load_config(path: Path) -> Config:
     unmatched_action = um_raw.get("action", "skip") if isinstance(um_raw, dict) else "skip"
 
     return Config(
-        account=account,
         output=output,
         defaults=defaults,
         personal_info=raw.get("personal_info", True),

@@ -22,6 +22,15 @@ class AccountManager:
     def session_path(self, name: str) -> Path:
         return self.sessions_dir / f"{name}.session"
 
+    def config_path(self, name: str) -> Path:
+        return self.config_dir / f"{name}.yaml"
+
+    def resolve_config(self, account: str, config_override: str | None = None) -> Path:
+        """Return config path: explicit override or convention-based."""
+        if config_override:
+            return Path(config_override)
+        return self.config_path(account)
+
     def list_accounts(self) -> list[str]:
         if not self.sessions_dir.exists():
             return []

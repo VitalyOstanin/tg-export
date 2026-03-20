@@ -1,5 +1,3 @@
-account: my_phone
-
 output:
   path: ./export_output
   format: html
