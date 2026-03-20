@@ -1,0 +1,43 @@
+{% extends "base.html.j2" %}
+{% block content %}
+<div class="page-header">
+  <h1>Telegram Export</h1>
+  <div class="meta">{{ generated }}</div>
+</div>
+
+{% for section in sections %}
+<div class="section">
+  <h2>{{ section.title }}</h2>
+  <ul class="chat-list">
+  {% for item in section.items %}
+    <li><a href="{{ item.href }}" class="chat-name">{{ item.name }}</a>
+    <div class="chat-meta">{{ item.meta }}</div></li>
+  {% endfor %}
+  </ul>
+</div>
+{% endfor %}
+
+{% for folder_name, chats in folders.items() %}
+<div class="folder-section">
+  <h2>{{ folder_name }}</h2>
+  <ul class="chat-list">
+  {% for chat in chats %}
+    <li><a href="{{ chat.href }}" class="chat-name">{{ chat.name }}</a>
+    <div class="chat-meta">{{ chat.type }} | {{ chat.messages }} messages</div></li>
+  {% endfor %}
+  </ul>
+</div>
+{% endfor %}
+
+{% if unfiled %}
+<div class="folder-section">
+  <h2>Unfiled</h2>
+  <ul class="chat-list">
+  {% for chat in unfiled %}
+    <li><a href="{{ chat.href }}" class="chat-name">{{ chat.name }}</a>
+    <div class="chat-meta">{{ chat.type }} | {{ chat.messages }} messages</div></li>
+  {% endfor %}
+  </ul>
+</div>
+{% endif %}
+{% endblock %}

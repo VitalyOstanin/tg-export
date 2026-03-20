@@ -1,0 +1,66 @@
+{% extends "base.html.j2" %}
+{% block content %}
+<div class="page-header">
+  <h1>{{ chat_name }}</h1>
+  <div class="meta">{{ chat_type }}{% if chat_members %} | {{ chat_members }} members{% endif %}</div>
+</div>
+
+<div class="nav">
+  <a href="{{ index_href }}">Index</a>
+  {% if prev_href %}<a href="{{ prev_href }}">Previous</a>{% endif %}
+  <span class="current">Page {{ page_num }}</span>
+  {% if next_href %}<a href="{{ next_href }}">Next</a>{% endif %}
+</div>
+
+{% for item in items %}
+{% if item.type == "date_separator" %}
+<div class="date-separator"><span>{{ item.date }}</span></div>
+{% elif item.type == "service" %}
+<div class="message service" id="message{{ item.msg.id }}">
+  <span class="service-text">{{ item.html }}</span>
+</div>
+{% elif item.type == "album" %}
+<div class="message" id="message{{ item.msgs[0].id }}">
+  <div class="message-wrap">
+    <div class="author-avatar">{{ item.author_initial }}</div>
+    <div class="message-body">
+      <div class="author">{{ item.author }}<span class="timestamp">{{ item.time }}</span></div>
+      <div class="album">
+        {% for m in item.media_html %}{{ m }}{% endfor %}
+      </div>
+      {% if item.text_html %}<div class="text">{{ item.text_html }}</div>{% endif %}
+      {% if item.reactions_html %}{{ item.reactions_html }}{% endif %}
+    </div>
+  </div>
+</div>
+{% else %}
+<div class="message{% if item.joined %} joined{% endif %}" id="message{{ item.msg.id }}">
+  <div class="message-wrap">
+    <div class="author-avatar">{{ item.author_initial }}</div>
+    <div class="message-body">
+      {% if not item.joined %}<div class="author">{{ item.author }}<span class="timestamp">{{ item.time }}</span></div>{% endif %}
+      {% if item.joined %}<span class="timestamp">{{ item.time }}</span>{% endif %}
+      {% if item.reply_html %}{{ item.reply_html }}{% endif %}
+      {% if item.forward_html %}{{ item.forward_html }}{% endif %}
+      {% if item.media_html %}{{ item.media_html }}{% endif %}
+      {% if item.text_html %}<div class="text">{{ item.text_html }}</div>{% endif %}
+      {% if item.buttons_html %}{{ item.buttons_html }}{% endif %}
+      {% if item.reactions_html %}{{ item.reactions_html }}{% endif %}
+    </div>
+  </div>
+</div>
+{% endif %}
+{% endfor %}
+
+{% if total_pages > 1 %}
+<div class="pagination">
+  {% for p in range(1, total_pages + 1) %}
+    {% if p == page_num %}
+      <span class="current">{{ p }}</span>
+    {% else %}
+      <a href="{{ page_href(p) }}">{{ p }}</a>
+    {% endif %}
+  {% endfor %}
+</div>
+{% endif %}
+{% endblock %}
