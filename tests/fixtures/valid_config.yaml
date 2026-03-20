@@ -1,0 +1,58 @@
+account: my_phone
+
+output:
+  path: ./export_output
+  format: html
+  messages_per_file: 1000
+  min_free_space: 20GB
+
+defaults:
+  media:
+    types: [photo, video, voice, video_note, sticker, gif, document]
+    max_file_size: 50MB
+    concurrent_downloads: 3
+  date_from: null
+  date_to: null
+  export_service_messages: true
+
+personal_info: true
+contacts: true
+sessions: true
+userpics: true
+stories: true
+profile_music: true
+other_data: true
+
+left_channels:
+  action: export_with_defaults
+
+import_existing:
+  - path: ~/TelegramExport_2024
+    type: tdesktop
+
+folders:
+  "Работа":
+    media:
+      types: [photo, document]
+      max_file_size: 100MB
+    chats:
+      - name: "Рабочий чат"
+        media:
+          types: [document]
+          max_file_size: 500MB
+      - id: 1234567890
+        media:
+          types: all
+
+  "Новости":
+    skip: true
+
+chats:
+  - id: 9876543210
+    name: "Секретный чат"
+    media:
+      types: [photo]
+    date_from: 2024-06-01
+
+unmatched:
+  action: skip
