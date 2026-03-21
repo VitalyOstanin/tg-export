@@ -7,6 +7,7 @@ import logging
 import os
 import shutil
 import sqlite3
+from dataclasses import dataclass
 from pathlib import Path
 
 from tg_export.models import Media, MediaType
@@ -33,7 +34,7 @@ def media_subdir(media_type: MediaType) -> str:
 def check_skip_reason(media: Media, config: MediaConfig) -> str | None:
     """Return skip reason or None if file should be downloaded."""
     if media.file is None:
-        return None  # no file to download
+        return "no_file"
     if media.type.value not in config.types and "all" not in config.types:
         return "type_skip"
     if media.file.size > config.max_file_size_bytes:
@@ -63,6 +64,21 @@ class DiskSpaceError(Exception):
     pass
 
 
+class _FileTooLargeError(Exception):
+    """Raised inside progress callback when real file size exceeds limit."""
+    def __init__(self, size: int):
+        self.size = size
+        super().__init__(f"File too large: {size} bytes")
+
+
+@dataclass
+class DownloadProgress:
+    """Tracks progress of a single file download."""
+    filename: str
+    received: int = 0
+    total: int = 0
+
+
 class MediaDownloader:
     def __init__(self, api, state, config: MediaConfig, min_free_bytes: int,
                  tdesktop_indexes: list | None = None,
@@ -74,10 +90,14 @@ class MediaDownloader:
         self.semaphore = asyncio.Semaphore(config.concurrent_downloads)
         self.tdesktop_indexes = tdesktop_indexes or []
         self.sibling_db_paths = sibling_db_paths or []
+        self.active_downloads: dict[int, DownloadProgress] = {}  # msg_id -> progress
+        self._next_dl_id = 0
 
-    async def download(self, tl_message, media: Media, chat_dir: Path) -> tuple[Path | None, str]:
+    async def download(self, tl_message, media: Media, chat_dir: Path,
+                       chat_id: int = 0) -> tuple[Path | None, str]:
         """Download media file if needed. Returns (local_path, status).
 
+        chat_id: canonical chat ID (positive, as used in messages table).
         status: "downloaded", "cached", "imported", "type_skip", "too_large", "no_file"
         """
         skip = check_skip_reason(media, self.config)
@@ -86,20 +106,20 @@ class MediaDownloader:
 
         # Already downloaded?
         if media.file:
-            existing = await self.state.get_file(media.file.id, tl_message.chat_id if hasattr(tl_message, 'chat_id') else 0)
+            existing = await self.state.get_file(media.file.id, chat_id)
             if existing and existing["status"] == "done":
                 return Path(existing["local_path"]), "cached"
 
         # Try to copy from tdesktop export instead of downloading
         imported = self._try_import_tdesktop(tl_message, media, chat_dir)
         if imported:
-            await self._register(tl_message, media, imported)
+            await self._register(tl_message, media, imported, chat_id)
             return imported, "imported"
 
         # Try to hardlink from sibling account export
         linked = self._try_link_sibling(media, chat_dir)
         if linked:
-            await self._register(tl_message, media, linked)
+            await self._register(tl_message, media, linked, chat_id)
             return linked, "imported"
 
         # Disk space check
@@ -114,22 +134,40 @@ class MediaDownloader:
         target_dir = chat_dir / subdir
         target_dir.mkdir(parents=True, exist_ok=True)
 
-        async with self.semaphore:
-            path = await self._download_with_retry(tl_message, target_dir)
+        existing_files = set(target_dir.iterdir())
+        try:
+            async with self.semaphore:
+                path = await self._download_with_retry(tl_message, target_dir, media)
+        except _FileTooLargeError as e:
+            logger.debug("file too large (real size %d > limit %d), msg %d",
+                         e.size, self.config.max_file_size_bytes, tl_message.id)
+            self._cleanup_new_files(target_dir, existing_files)
+            return None, "too_large"
+        except (asyncio.CancelledError, Exception):
+            self._cleanup_new_files(target_dir, existing_files)
+            raise
 
         if path is None:
             return None, "no_file"
 
         local_path = Path(path)
-        await self._register(tl_message, media, local_path)
+        await self._register(tl_message, media, local_path, chat_id)
         return local_path, "downloaded"
 
-    async def _register(self, tl_message, media: Media, local_path: Path):
+    @staticmethod
+    def _cleanup_new_files(target_dir: Path, existing_files: set):
+        """Remove files created since existing_files snapshot."""
+        for f in target_dir.iterdir():
+            if f not in existing_files:
+                f.unlink(missing_ok=True)
+                logger.debug("removed partial file: %s", f)
+
+    async def _register(self, tl_message, media: Media, local_path: Path,
+                        chat_id: int = 0):
         """Register downloaded/imported file in state DB."""
         actual_size = local_path.stat().st_size if local_path.exists() else 0
         expected_size = media.file.size if media.file else 0
         status = "done" if actual_size == expected_size or expected_size == 0 else "partial"
-        chat_id = tl_message.chat_id if hasattr(tl_message, 'chat_id') else 0
         await self.state.register_file(
             file_id=media.file.id if media.file else 0,
             chat_id=chat_id,
@@ -215,12 +253,51 @@ class MediaDownloader:
 
         return None
 
-    async def _download_with_retry(self, tl_message, target_dir: Path) -> str | None:
-        for attempt in range(3):
-            try:
-                return await self.api.download_media(tl_message, target_dir)
-            except (ConnectionError, TimeoutError, OSError):
-                if attempt == 2:
+    async def _download_with_retry(self, tl_message, target_dir: Path,
+                                    media: Media | None = None) -> str | None:
+        msg_id = tl_message.id
+        max_size = self.config.max_file_size_bytes
+
+        # Determine filename for progress display
+        filename = ""
+        if hasattr(tl_message, 'file') and tl_message.file:
+            filename = getattr(tl_message.file, 'name', '') or ''
+        if not filename and media and media.file:
+            # Use file name from our model, or type + extension
+            filename = media.file.name or ''
+        if not filename:
+            # Fallback: media type + msg_id
+            ext = ""
+            if hasattr(tl_message, 'file') and tl_message.file:
+                ext = getattr(tl_message.file, 'ext', '') or ''
+            type_str = media.type.value if media else "file"
+            filename = f"{type_str}_{msg_id}{ext}"
+        # Truncate long filenames for progress display
+        if len(filename) > 40:
+            filename = filename[:37] + "..."
+
+        dl_progress = DownloadProgress(filename=filename)
+        self.active_downloads[msg_id] = dl_progress
+
+        def _progress_cb(received: int, total: int):
+            dl_progress.received = received
+            dl_progress.total = total
+            # Cancel download if real size exceeds limit (file.size was 0)
+            if total > max_size:
+                raise _FileTooLargeError(total)
+
+        try:
+            for attempt in range(3):
+                try:
+                    return await self.api.download_media(
+                        tl_message, target_dir, progress_cb=_progress_cb
+                    )
+                except _FileTooLargeError:
                     raise
-                await asyncio.sleep(2 ** attempt)
-        return None
+                except (ConnectionError, TimeoutError, OSError):
+                    if attempt == 2:
+                        raise
+                    await asyncio.sleep(2 ** attempt)
+            return None
+        finally:
+            self.active_downloads.pop(msg_id, None)

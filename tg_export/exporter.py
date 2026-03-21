@@ -16,7 +16,10 @@ logger = logging.getLogger(__name__)
 from rich.console import Console
 from rich.live import Live
 from rich.table import Table
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
+from rich.progress import (
+    Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn,
+    DownloadColumn, TransferSpeedColumn, TaskID,
+)
 
 from tg_export.api import TgApi
 from tg_export.config import Config, ChatExportConfig
@@ -80,7 +83,8 @@ class ExportStats:
     chats_skipped: int = 0
     chats_exported: int = 0
     messages_exported: int = 0
-    messages_total: int = 0  # total messages in current chat (0 = unknown)
+    messages_total: int = 0     # total messages in current chat (0 = unknown)
+    messages_in_db: int = 0     # messages already in DB before this run
     files_downloaded: int = 0
     files_cached: int = 0     # already downloaded before
     files_imported: int = 0   # from tdesktop or sibling
@@ -88,6 +92,50 @@ class ExportStats:
     files_type_skip: int = 0  # media type not in config
     data_size: int = 0  # bytes downloaded
     errors: list[str] = field(default_factory=list)
+    # Snapshot of global counters at start of current chat (for per-chat display)
+    _chat_snapshot: dict = field(default_factory=dict)
+
+    def begin_chat(self, messages_in_db: int, messages_total: int):
+        """Reset per-chat tracking at start of each chat."""
+        self.messages_in_db = messages_in_db
+        self.messages_total = messages_total
+        self._chat_snapshot = {
+            "messages_exported": self.messages_exported,
+            "files_downloaded": self.files_downloaded,
+            "files_cached": self.files_cached,
+            "files_imported": self.files_imported,
+            "files_too_large": self.files_too_large,
+            "files_type_skip": self.files_type_skip,
+            "data_size": self.data_size,
+        }
+
+    @property
+    def chat_messages_new(self) -> int:
+        return self.messages_exported - self._chat_snapshot.get("messages_exported", 0)
+
+    @property
+    def chat_files_downloaded(self) -> int:
+        return self.files_downloaded - self._chat_snapshot.get("files_downloaded", 0)
+
+    @property
+    def chat_files_cached(self) -> int:
+        return self.files_cached - self._chat_snapshot.get("files_cached", 0)
+
+    @property
+    def chat_files_imported(self) -> int:
+        return self.files_imported - self._chat_snapshot.get("files_imported", 0)
+
+    @property
+    def chat_files_too_large(self) -> int:
+        return self.files_too_large - self._chat_snapshot.get("files_too_large", 0)
+
+    @property
+    def chat_files_type_skip(self) -> int:
+        return self.files_type_skip - self._chat_snapshot.get("files_type_skip", 0)
+
+    @property
+    def chat_data_size(self) -> int:
+        return self.data_size - self._chat_snapshot.get("data_size", 0)
 
 
 def sanitize_name(name: str) -> str:
@@ -225,15 +273,32 @@ class Exporter:
         )
         main_task = progress.add_task("", total=None)
 
+        # Separate progress for file downloads
+        file_progress = Progress(
+            TextColumn("    [dim]{task.description}[/]"),
+            BarColumn(bar_width=20),
+            DownloadColumn(),
+            TransferSpeedColumn(),
+            console=console,
+        )
+        # Track which msg_ids have progress tasks
+        file_tasks: dict[int, TaskID] = {}  # msg_id -> task_id
+
         def _status_line() -> str:
             elapsed = time.monotonic() - start_time
             elapsed_str = _format_elapsed(elapsed)
-            speed_str = _format_speed(stats.data_size, elapsed) if stats.data_size > 0 else ""
-            msgs_speed = f"{stats.messages_exported / elapsed:.0f}/s" if elapsed > 0 and stats.messages_exported > 0 else ""
+            chat_data = stats.chat_data_size
+            speed_str = _format_speed(chat_data, elapsed) if chat_data > 0 else ""
 
-            msgs_str = str(stats.messages_exported)
+            # Per-chat message counts
+            chat_msgs = stats.chat_messages_new
+            msgs_done = stats.messages_in_db + chat_msgs
+            msgs_speed = f"{chat_msgs / elapsed:.0f}/s" if elapsed > 0 and chat_msgs > 0 else ""
+            msgs_str = str(msgs_done)
             if stats.messages_total > 0:
                 msgs_str += f"/{stats.messages_total}"
+            if chat_msgs > 0:
+                msgs_str += f" (+{chat_msgs})"
 
             line = (
                 f"  chats: {stats.chats_exported}/{stats.chats_included}  "
@@ -241,35 +306,62 @@ class Exporter:
             )
             if msgs_speed:
                 line += f" ({msgs_speed})"
-            line += f"  files: {stats.files_downloaded}"
+            # Per-chat file counts
+            line += f"  files: {stats.chat_files_downloaded}"
             skip_parts = []
-            if stats.files_cached:
-                skip_parts.append(f"cached {stats.files_cached}")
-            if stats.files_imported:
-                skip_parts.append(f"imported {stats.files_imported}")
-            if stats.files_too_large:
-                skip_parts.append(f"too_large {stats.files_too_large}")
-            if stats.files_type_skip:
-                skip_parts.append(f"type_skip {stats.files_type_skip}")
+            if stats.chat_files_cached:
+                skip_parts.append(f"cached {stats.chat_files_cached}")
+            if stats.chat_files_imported:
+                skip_parts.append(f"imported {stats.chat_files_imported}")
+            if stats.chat_files_too_large:
+                skip_parts.append(f"too_large {stats.chat_files_too_large}")
+            if stats.chat_files_type_skip:
+                skip_parts.append(f"type_skip {stats.chat_files_type_skip}")
             if skip_parts:
                 line += f" ({', '.join(skip_parts)})"
-            line += f"  data: {_format_size(stats.data_size)}"
+            line += f"  data: {_format_size(chat_data)}"
             if speed_str:
                 line += f" ({speed_str})"
             line += f"  elapsed: {elapsed_str}"
             return line
 
         def _make_status_table() -> Table:
-            # Sync progress bar with current messages progress
+            # Sync progress bar: per-chat progress
+            completed = stats.messages_in_db + stats.chat_messages_new
             if stats.messages_total > 0:
-                progress.update(main_task, completed=stats.messages_exported,
+                progress.update(main_task, completed=completed,
                                 total=stats.messages_total)
             else:
-                progress.update(main_task, completed=stats.messages_exported,
+                progress.update(main_task, completed=completed,
                                 total=None)
-            table = Table.grid(padding=(0, 2))
+
+            # Sync file download sub-bars
+            active = self.downloader.active_downloads
+            # Remove finished tasks
+            for msg_id in list(file_tasks):
+                if msg_id not in active:
+                    file_progress.remove_task(file_tasks.pop(msg_id))
+            # Add/update active tasks
+            for msg_id, dl in active.items():
+                if msg_id not in file_tasks:
+                    tid = file_progress.add_task(
+                        dl.filename, total=dl.total or None,
+                        completed=dl.received,
+                    )
+                    file_tasks[msg_id] = tid
+                else:
+                    file_progress.update(
+                        file_tasks[msg_id],
+                        description=dl.filename,
+                        completed=dl.received,
+                        total=dl.total or None,
+                    )
+
+            table = Table.grid()
             table.add_row(progress)
             table.add_row(_status_line())
+            if file_tasks:
+                table.add_row(file_progress)
             return table
 
         use_live = console.is_terminal
@@ -345,15 +437,21 @@ class Exporter:
                     _log(f"Disk space error: {e}")
                     stats.errors.append(str(e))
                     break
+                except asyncio.CancelledError:
+                    console.print("[yellow]Force shutdown during export...[/]")
+                    break
                 except Exception as e:
                     _log(f"Error exporting {chat.name}: {e}")
                     stats.errors.append(f"{chat.name}: {e}")
+
+        except asyncio.CancelledError:
+            self._force_shutdown = True
 
         finally:
             if live_ctx:
                 live_ctx.__exit__(None, None, None)
 
-        if verify:
+        if verify and not self._force_shutdown:
             await self._verify_files(stats)
 
         return stats
@@ -395,28 +493,31 @@ class Exporter:
                 chat_total = getattr(result, 'total', 0) or 0
         except Exception:
             chat_total = chat.messages_count or 0
-        if not has_date_filter:
-            stats.messages_total = chat_total
-
-        def _chat_progress() -> str:
-            chat_msgs = stats.messages_exported - msgs_before
-            elapsed = time.monotonic() - chat_start
-            parts = [f"  {chat.name}: {chat_msgs}"]
-            if chat_total > 0:
-                parts[0] += f"/{chat_total}"
-            parts.append("msgs")
-            parts.append(f"{stats.files_downloaded} files")
-            parts.append(_format_size(stats.data_size))
-            if elapsed > 0 and stats.data_size > 0:
-                parts.append(f"({_format_speed(stats.data_size, elapsed)})")
-            if elapsed > 0 and chat_msgs > 0:
-                parts.append(f"({chat_msgs / elapsed:.0f} msg/s)")
-            return "  ".join(parts)
 
         chat_state = await self.state.get_chat_state(chat.id)
         last_msg_id = chat_state["last_msg_id"] if chat_state else 0
         oldest_msg_id = chat_state["oldest_msg_id"] if chat_state else 0
         full_history = bool(chat_state["full_history"]) if chat_state else False
+
+        # Count messages already in DB and init per-chat snapshot
+        messages_in_db = await self.state.count_messages(chat.id)
+        stats.begin_chat(
+            messages_in_db=messages_in_db,
+            messages_total=chat_total if not has_date_filter else 0,
+        )
+
+        def _chat_progress() -> str:
+            chat_msgs = stats.chat_messages_new
+            elapsed = time.monotonic() - chat_start
+            parts = [f"  {chat.name}: {chat_msgs}"]
+            if chat_total > 0:
+                parts[0] += f"/{chat_total}"
+            parts.append("msgs")
+            parts.append(f"{stats.chat_files_downloaded} files")
+            parts.append(_format_size(stats.chat_data_size))
+            if elapsed > 0 and chat_msgs > 0:
+                parts.append(f"({chat_msgs / elapsed:.0f} msg/s)")
+            return "  ".join(parts)
 
         # Build iter_messages kwargs for date filtering
         from datetime import timedelta
@@ -447,7 +548,7 @@ class Exporter:
                 if _before_date_from(tl_msg.date):
                     break
                 msg = convert_message(tl_msg, chat_id=chat.id)
-                await self._process_media(msg, tl_msg, chat_dir, stats)
+                await self._process_media(msg, tl_msg, chat_dir, stats, chat_id=chat.id)
                 batch.append(msg)
                 if msg.id > new_max_id:
                     new_max_id = msg.id
@@ -489,7 +590,7 @@ class Exporter:
                     break
                 fetched_any = True
                 msg = convert_message(tl_msg, chat_id=chat.id)
-                await self._process_media(msg, tl_msg, chat_dir, stats)
+                await self._process_media(msg, tl_msg, chat_dir, stats, chat_id=chat.id)
                 batch.append(msg)
                 if current_oldest == 0 or msg.id < current_oldest:
                     current_oldest = msg.id
@@ -534,12 +635,13 @@ class Exporter:
 
         return stats
 
-    async def _process_media(self, msg: Message, tl_msg, chat_dir: Path, stats: ExportStats):
+    async def _process_media(self, msg: Message, tl_msg, chat_dir: Path, stats: ExportStats,
+                             chat_id: int = 0):
         """Download media for a message, updating stats."""
         if not msg.media or not self.downloader:
             return
         try:
-            local_path, status = await self.downloader.download(tl_msg, msg.media, chat_dir)
+            local_path, status = await self.downloader.download(tl_msg, msg.media, chat_dir, chat_id=chat_id)
             if local_path and msg.media.file:
                 msg.media.file.local_path = str(local_path)
             if status == "downloaded":
@@ -593,11 +695,12 @@ class Exporter:
     def _handle_shutdown(self):
         now = time.monotonic()
         if self._shutdown and (now - self._first_signal_time) < 3:
-            # Second signal within 3s -> force exit
+            # Second signal within 3s -> force exit via cancelling current task
             self._force_shutdown = True
             console.print("\n[bold red]Force shutdown![/]")
-            import sys
-            sys.exit(1)
+            for task in asyncio.all_tasks():
+                task.cancel()
+            return
         self._shutdown = True
         self._first_signal_time = now
         console.print("\n[yellow]Graceful shutdown requested (Ctrl+C again within 3s to force quit)...[/]")
