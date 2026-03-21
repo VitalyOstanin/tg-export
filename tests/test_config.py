@@ -90,8 +90,8 @@ def test_type_rules_exact_beats_category():
     assert result is None
 
 
-def test_type_rules_folder_beats_type():
-    """Папка (приоритет 3) побеждает type_rules (приоритет 4)."""
+def test_type_rules_applies_inside_folder():
+    """type_rules применяется внутри папки (бот в папке -> skip по type_rules)."""
     from tg_export.config import Config, TypeRule, FolderRule, MediaConfig
     folder_media = MediaConfig(types=["photo", "video"], max_file_size_bytes=50 * 1024**2)
     cfg = Config(
@@ -99,7 +99,24 @@ def test_type_rules_folder_beats_type():
         type_rules={"bots": TypeRule(skip=True)},
         unmatched_action="export_with_defaults",
     )
-    # bot in folder "work" -> folder rule wins, not skipped
+    # bot in folder "work" -> type_rules.bots.skip applies
     result = cfg.resolve_chat_config(1, "WorkBot", "work", chat_type="bot")
+    assert result is None
+    # non-bot in folder "work" -> folder media applies
+    result = cfg.resolve_chat_config(2, "WorkChat", "work", chat_type="private_group")
     assert result is not None
     assert result.media.types == ["photo", "video"]
+
+
+def test_folder_chats_beats_type_rules():
+    """Явное правило в folders.chats побеждает type_rules."""
+    from tg_export.config import Config, TypeRule, FolderRule, ChatRule, MediaConfig
+    bot_media = MediaConfig(types=["document"], max_file_size_bytes=10 * 1024**2)
+    cfg = Config(
+        folders={"work": FolderRule(chats=[ChatRule(id=1, media=bot_media)])},
+        type_rules={"bots": TypeRule(skip=True)},
+    )
+    # bot explicitly listed in folder chats -> folder chat rule wins
+    result = cfg.resolve_chat_config(1, "ImportantBot", "work", chat_type="bot")
+    assert result is not None
+    assert result.media.types == ["document"]

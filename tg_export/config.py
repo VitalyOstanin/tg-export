@@ -128,6 +128,7 @@ class Config:
     profile_music: bool = True
     other_data: bool = True
     left_channels_action: str = "skip"
+    archived_action: str = "skip"  # skip | export_with_defaults
     import_existing: list[ImportExistingEntry] = field(default_factory=list)
     folders: dict[str, FolderRule] = field(default_factory=dict)
     type_rules: dict[str, TypeRule] = field(default_factory=dict)
@@ -167,13 +168,20 @@ class Config:
                     return self._rule_to_export_config(chat_rule)
 
             # Priority 3: folder-level rule
-            if folder_rule.media is not None:
-                return ChatExportConfig(
-                    media=folder_rule.media,
-                    date_from=self.defaults.date_from,
-                    date_to=self.defaults.date_to,
-                    export_service_messages=self.defaults.export_service_messages,
-                )
+            # If folder is defined (not skipped), check type_rules for this chat,
+            # then fall back to folder media or defaults
+            if chat_type and self.type_rules:
+                type_rule = self._match_type_rule(chat_type)
+                if type_rule is not None:
+                    return self._type_rule_to_export_config(type_rule)
+
+            media = folder_rule.media if folder_rule.media is not None else self.defaults.media
+            return ChatExportConfig(
+                media=media,
+                date_from=self.defaults.date_from,
+                date_to=self.defaults.date_to,
+                export_service_messages=self.defaults.export_service_messages,
+            )
 
         # Priority 4: type_rules
         if chat_type and self.type_rules:
@@ -338,6 +346,10 @@ def load_config(path: Path) -> Config:
     lc_raw = raw.get("left_channels", {})
     left_channels_action = lc_raw.get("action", "skip") if isinstance(lc_raw, dict) else "skip"
 
+    # Archived
+    ar_raw = raw.get("archived", {})
+    archived_action = ar_raw.get("action", "skip") if isinstance(ar_raw, dict) else "skip"
+
     # Unmatched
     um_raw = raw.get("unmatched", {})
     unmatched_action = um_raw.get("action", "skip") if isinstance(um_raw, dict) else "skip"
@@ -353,6 +365,7 @@ def load_config(path: Path) -> Config:
         profile_music=raw.get("profile_music", True),
         other_data=raw.get("other_data", True),
         left_channels_action=left_channels_action,
+        archived_action=archived_action,
         import_existing=import_existing,
         folders=folders,
         type_rules=type_rules,

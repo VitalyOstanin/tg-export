@@ -159,8 +159,11 @@ def show_config(verbose):
                        f" rdns={p.get('rdns', True)}{auth_str}")
         else:
             click.echo("  proxy: none")
+        import shutil
         mfs = data.get("min_free_space", "20GB")
-        click.echo(f"  min_free_space: {mfs}")
+        usage = shutil.disk_usage(Path.cwd())
+        free_gb = usage.free / 1024**3
+        click.echo(f"  min_free_space: {mfs}  # available: {free_gb:.1f} GB")
     else:
         click.echo("  (not found)")
 
@@ -252,6 +255,67 @@ def _show_account_config(config_path):
 
     click.echo(f"    unmatched: {cfg.unmatched_action}")
     click.echo(f"    left_channels: {cfg.left_channels_action}")
+
+
+# ---------------------------------------------------------------------------
+# tg: direct Telegram API commands
+# ---------------------------------------------------------------------------
+
+@main.group()
+def tg():
+    """Direct Telegram API commands."""
+    pass
+
+
+@tg.command("messages")
+@click.argument("chat_id", type=int)
+@click.option("--account", default=None, help="Account alias (default: from 'auth default')")
+@click.option("--limit", "-n", default=10, help="Number of messages to show")
+def tg_messages(chat_id, account, limit):
+    """Show recent messages from a chat."""
+    asyncio.run(_tg_messages(chat_id, account, limit))
+
+
+async def _tg_messages(chat_id, account, limit):
+    from tg_export.api import TgApi
+
+    mgr = _mgr()
+    account = mgr.resolve_account(account)
+    api_id, api_hash = mgr.load_credentials()
+    proxy = mgr.load_proxy()
+    api = TgApi(mgr.session_path(account), api_id, api_hash, proxy=proxy)
+    await api.connect()
+
+    try:
+        entity = await api.client.get_entity(chat_id)
+        title = getattr(entity, "title", None) or _entity_name(entity)
+        click.echo(f"# {title} (id={chat_id})\n")
+
+        async for msg in api.client.iter_messages(entity, limit=limit):
+            date_str = msg.date.strftime("%Y-%m-%d %H:%M") if msg.date else "?"
+            sender = ""
+            if msg.sender:
+                sender = getattr(msg.sender, "first_name", "") or ""
+                last = getattr(msg.sender, "last_name", "") or ""
+                if last:
+                    sender = f"{sender} {last}"
+            text = msg.message or ""
+            if msg.media:
+                media_type = msg.media.__class__.__name__.replace("MessageMedia", "")
+                text = f"[{media_type}] {text}" if text else f"[{media_type}]"
+            if msg.action:
+                action_type = msg.action.__class__.__name__.replace("MessageAction", "")
+                text = f"({action_type})"
+
+            click.echo(f"  {date_str}  {sender}: {text[:200]}")
+    finally:
+        await api.disconnect()
+
+
+def _entity_name(entity) -> str:
+    first = getattr(entity, "first_name", "") or ""
+    last = getattr(entity, "last_name", "") or ""
+    return f"{first} {last}".strip() or "Unknown"
 
 
 @main.command("list")

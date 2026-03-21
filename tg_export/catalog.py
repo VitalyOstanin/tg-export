@@ -24,6 +24,8 @@ def _chat_to_dict(chat: Chat) -> dict:
         d["members"] = chat.members_count
     if chat.username:
         d["username"] = chat.username
+    if chat.folder:
+        d["folder"] = chat.folder
     if chat.is_left:
         d["is_left"] = True
     if chat.is_archived:
@@ -177,12 +179,14 @@ async def fetch_catalog(api, include_left: bool = False) -> list[Chat]:
     for peer_ids in folders.values():
         non_archived_ids.update(peer_ids)
 
-    # Archived dialogs (folder=1)
+    # Archived dialogs (folder=1), skip duplicates
     log.debug("Fetching archived dialogs (folder=1)...")
     archived_count = 0
     async for dialog in api.iter_dialogs(archived=True):
         entity = dialog.entity
         entity_id = getattr(entity, "id", 0)
+        if entity_id in non_archived_ids:
+            continue  # already in main list
         folder = peer_to_folder.get(entity_id)
         chat = convert_chat(dialog, folder=folder)
         # Archive-only = not in main list and not in any named folder
