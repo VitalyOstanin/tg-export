@@ -8,7 +8,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import sqlite3
+
 import aiosqlite
+
+# Python 3.12+ removed default datetime adapters from sqlite3
+sqlite3.register_adapter(datetime, lambda dt: dt.isoformat())
+sqlite3.register_converter("timestamp", lambda b: datetime.fromisoformat(b.decode()))
 
 from tg_export.models import (
     Message, TextPart, TextType, Media, MediaType, Reaction, ReactionType,
