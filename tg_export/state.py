@@ -290,6 +290,13 @@ class ExportState:
         )
         await self._db.commit()
 
+    async def update_messages_count(self, chat_id: int, count: int):
+        await self._db.execute(
+            "UPDATE export_state SET messages_count=?, updated_at=? WHERE chat_id=?",
+            (count, datetime.now(), chat_id),
+        )
+        await self._db.commit()
+
     async def get_last_msg_id(self, chat_id: int) -> int | None:
         async with self._db.execute(
             "SELECT last_msg_id FROM export_state WHERE chat_id=?", (chat_id,)

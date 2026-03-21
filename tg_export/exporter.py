@@ -80,8 +80,12 @@ class ExportStats:
     chats_skipped: int = 0
     chats_exported: int = 0
     messages_exported: int = 0
+    messages_total: int = 0  # total messages in current chat (0 = unknown)
     files_downloaded: int = 0
-    files_skipped: int = 0
+    files_cached: int = 0     # already downloaded before
+    files_imported: int = 0   # from tdesktop or sibling
+    files_too_large: int = 0  # exceeded max_file_size
+    files_type_skip: int = 0  # media type not in config
     data_size: int = 0  # bytes downloaded
     errors: list[str] = field(default_factory=list)
 
@@ -219,9 +223,7 @@ class Exporter:
             TaskProgressColumn(),
             console=console,
         )
-        main_task = progress.add_task(
-            "Chats", total=stats.chats_included,
-        )
+        main_task = progress.add_task("", total=None)
 
         def _status_line() -> str:
             elapsed = time.monotonic() - start_time
@@ -229,13 +231,28 @@ class Exporter:
             speed_str = _format_speed(stats.data_size, elapsed) if stats.data_size > 0 else ""
             msgs_speed = f"{stats.messages_exported / elapsed:.0f}/s" if elapsed > 0 and stats.messages_exported > 0 else ""
 
+            msgs_str = str(stats.messages_exported)
+            if stats.messages_total > 0:
+                msgs_str += f"/{stats.messages_total}"
+
             line = (
                 f"  chats: {stats.chats_exported}/{stats.chats_included}  "
-                f"msgs: {stats.messages_exported}"
+                f"msgs: {msgs_str}"
             )
             if msgs_speed:
                 line += f" ({msgs_speed})"
             line += f"  files: {stats.files_downloaded}"
+            skip_parts = []
+            if stats.files_cached:
+                skip_parts.append(f"cached {stats.files_cached}")
+            if stats.files_imported:
+                skip_parts.append(f"imported {stats.files_imported}")
+            if stats.files_too_large:
+                skip_parts.append(f"too_large {stats.files_too_large}")
+            if stats.files_type_skip:
+                skip_parts.append(f"type_skip {stats.files_type_skip}")
+            if skip_parts:
+                line += f" ({', '.join(skip_parts)})"
             line += f"  data: {_format_size(stats.data_size)}"
             if speed_str:
                 line += f" ({speed_str})"
@@ -243,14 +260,22 @@ class Exporter:
             return line
 
         def _make_status_table() -> Table:
+            # Sync progress bar with current messages progress
+            if stats.messages_total > 0:
+                progress.update(main_task, completed=stats.messages_exported,
+                                total=stats.messages_total)
+            else:
+                progress.update(main_task, completed=stats.messages_exported,
+                                total=None)
             table = Table.grid(padding=(0, 2))
             table.add_row(progress)
             table.add_row(_status_line())
             return table
 
         use_live = console.is_terminal
+        self._use_live = use_live
 
-        live_ctx = Live(_make_status_table(), console=console, refresh_per_second=4) if use_live else None
+        live_ctx = Live(console=console, refresh_per_second=2, get_renderable=_make_status_table) if use_live else None
         if live_ctx:
             live_ctx.__enter__()
 
@@ -266,9 +291,6 @@ class Exporter:
                 if dry_run:
                     console.print(f"  [green]export[/]: {chat.name} ({chat.type.value}){folder_str}")
                     stats.chats_exported += 1
-                    progress.advance(main_task)
-                    if live_ctx:
-                        live_ctx.update(_make_status_table())
                     continue
 
                 chat_dir = resolve_chat_dir(
@@ -280,12 +302,27 @@ class Exporter:
                     is_archived=chat.is_archived,
                 )
 
+                # Save chat metadata to DB for future renderers
+                await self.state.cache_catalog(
+                    chat_id=chat.id, name=chat.name,
+                    chat_type=chat.type.value, folder=chat.folder,
+                    members_count=chat.members_count,
+                    messages_count=chat.messages_count or 0,
+                    last_message_date=chat.last_message_date,
+                    is_left=chat.is_left, is_archived=chat.is_archived,
+                    is_forum=chat.is_forum,
+                    is_monoforum=getattr(chat, 'is_monoforum', False),
+                )
+
                 try:
                     progress.update(main_task, description=f"[dim]{chat.name}[/]")
-                    if live_ctx:
-                        live_ctx.update(_make_status_table())
                     logger.debug("start chat %s (id=%d, type=%s, msgs~%d)",
                                  chat.name, chat.id, chat.type.value, chat.messages_count or 0)
+
+                    # Load tdesktop index for this chat
+                    for idx in self.downloader.tdesktop_indexes:
+                        idx.load_chat_index(chat.name)
+
                     chat_t0 = time.monotonic()
                     msgs_before = stats.messages_exported
                     await self.export_chat(chat, chat_config, chat_dir, stats)
@@ -293,6 +330,10 @@ class Exporter:
                     logger.debug("done chat %s in %.1fs: %d msgs",
                                  chat.name, time.monotonic() - chat_t0, chat_msgs)
                     stats.chats_exported += 1
+
+                    # Unload tdesktop index to free memory
+                    for idx in self.downloader.tdesktop_indexes:
+                        idx.unload_chat_index()
 
                     # Log progress periodically for non-TTY
                     now = time.monotonic()
@@ -308,9 +349,6 @@ class Exporter:
                     _log(f"Error exporting {chat.name}: {e}")
                     stats.errors.append(f"{chat.name}: {e}")
 
-                progress.advance(main_task)
-                if live_ctx:
-                    live_ctx.update(_make_status_table())
         finally:
             if live_ctx:
                 live_ctx.__exit__(None, None, None)
@@ -357,6 +395,8 @@ class Exporter:
                 chat_total = getattr(result, 'total', 0) or 0
         except Exception:
             chat_total = chat.messages_count or 0
+        if not has_date_filter:
+            stats.messages_total = chat_total
 
         def _chat_progress() -> str:
             chat_msgs = stats.messages_exported - msgs_before
@@ -417,7 +457,7 @@ class Exporter:
                     logger.debug("  %s: %d new msgs stored", chat.name, stats.messages_exported)
                     batch.clear()
                 now = time.monotonic()
-                if now - last_progress_time >= LOG_INTERVAL:
+                if not self._use_live and now - last_progress_time >= LOG_INTERVAL:
                     _log(_chat_progress())
                     last_progress_time = now
             if batch:
@@ -462,7 +502,7 @@ class Exporter:
                                  chat.name, stats.messages_exported, current_oldest)
                     batch.clear()
                 now = time.monotonic()
-                if now - last_progress_time >= LOG_INTERVAL:
+                if not self._use_live and now - last_progress_time >= LOG_INTERVAL:
                     _log(_chat_progress())
                     last_progress_time = now
 
@@ -480,6 +520,11 @@ class Exporter:
                     await self.state.set_full_history(chat.id)
                     logger.debug("  %s: full history complete", chat.name)
 
+        # Update messages_count in export_state
+        msg_count = await self.state.count_messages(chat.id)
+        if msg_count > 0:
+            await self.state.update_messages_count(chat.id, msg_count)
+
         # Render HTML from ALL messages in SQLite
         all_messages = await self.state.load_messages(chat.id)
         if all_messages:
@@ -494,17 +539,23 @@ class Exporter:
         if not msg.media or not self.downloader:
             return
         try:
-            local_path, is_new = await self.downloader.download(tl_msg, msg.media, chat_dir)
+            local_path, status = await self.downloader.download(tl_msg, msg.media, chat_dir)
             if local_path and msg.media.file:
                 msg.media.file.local_path = str(local_path)
-                if is_new:
-                    stats.files_downloaded += 1
-                    if local_path.exists():
-                        stats.data_size += local_path.stat().st_size
-                else:
-                    stats.files_skipped += 1
-            elif msg.media.file:
-                stats.files_skipped += 1
+            if status == "downloaded":
+                stats.files_downloaded += 1
+                if local_path and local_path.exists():
+                    stats.data_size += local_path.stat().st_size
+            elif status == "cached":
+                stats.files_cached += 1
+            elif status == "imported":
+                stats.files_imported += 1
+                if local_path and local_path.exists():
+                    stats.data_size += local_path.stat().st_size
+            elif status == "too_large":
+                stats.files_too_large += 1
+            elif status == "type_skip":
+                stats.files_type_skip += 1
         except Exception as e:
             stats.errors.append(f"Media error msg {msg.id}: {e}")
 
