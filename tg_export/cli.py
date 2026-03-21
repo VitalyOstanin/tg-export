@@ -371,6 +371,108 @@ def _entity_name(entity) -> str:
     return f"{first} {last}".strip() or "Unknown"
 
 
+@tg.command("info")
+@click.argument("chat_ids", type=int, nargs=-1)
+@click.option("--account", default=None, help="Account alias")
+@click.option("--from-catalog", "catalog_file", type=click.Path(exists=True), help="JSON catalog file (from tg-export list --format json)")
+@click.option("--type", "chat_type", default=None, help="Filter by chat type (with --from-catalog)")
+@click.option("--last", "last_n", type=int, default=0, help="Show last N messages per chat")
+@click.option("--output", "output_file", type=click.Path(), default=None, help="Save results to JSON file")
+def tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_file):
+    """Show chat info: message count, type, title.
+
+    Accepts one or more CHAT_IDS, or use --from-catalog with --type to batch query.
+    """
+    asyncio.run(_tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_file))
+
+
+async def _tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_file):
+    import json
+    from tg_export.api import TgApi
+    from telethon.tl.functions.messages import GetHistoryRequest
+
+    # Collect IDs
+    ids = list(chat_ids)
+    if catalog_file:
+        with open(catalog_file) as f:
+            catalog = json.load(f)
+        for entry in catalog:
+            if chat_type and entry.get("type") != chat_type:
+                continue
+            ids.append(entry["id"])
+
+    if not ids:
+        click.echo("No chat IDs specified. Use arguments or --from-catalog --type.")
+        return
+
+    mgr = _mgr()
+    account = mgr.resolve_account(account)
+    api_id, api_hash = mgr.load_credentials()
+    proxy = mgr.load_proxy()
+    api = TgApi(mgr.session_path(account), api_id, api_hash, proxy=proxy)
+    await api.connect()
+
+    results = []
+    try:
+        total = len(ids)
+        for idx, cid in enumerate(ids, 1):
+            try:
+                entity = await api.client.get_entity(cid)
+                title = getattr(entity, "title", None) or _entity_name(entity)
+                limit = max(last_n, 1)
+                result = await api.client(GetHistoryRequest(
+                    peer=entity, offset_id=0, offset_date=None, add_offset=0,
+                    limit=limit, max_id=0, min_id=0, hash=0,
+                ))
+                count = getattr(result, "count", len(result.messages))
+                last_date = None
+                messages = []
+                for msg in result.messages:
+                    date_str = msg.date.strftime("%Y-%m-%d %H:%M") if msg.date else "?"
+                    if last_date is None:
+                        last_date = date_str
+                    if last_n > 0:
+                        sender = ""
+                        if msg.sender:
+                            sender = getattr(msg.sender, "first_name", "") or ""
+                            last = getattr(msg.sender, "last_name", "") or ""
+                            if last:
+                                sender = f"{sender} {last}"
+                        text = msg.message or ""
+                        if msg.media:
+                            media_type = msg.media.__class__.__name__.replace("MessageMedia", "")
+                            text = f"[{media_type}] {text}" if text else f"[{media_type}]"
+                        messages.append({"date": date_str, "sender": sender, "text": text[:200]})
+
+                entry = {
+                    "id": cid,
+                    "name": title,
+                    "messages": count,
+                    "last_date": last_date,
+                }
+                if messages:
+                    entry["last_messages"] = messages
+                results.append(entry)
+
+                if not output_file:
+                    click.echo(f"[{idx}/{total}] {title} (id={cid}): {count} msgs, last: {last_date}")
+                elif idx % 50 == 0:
+                    click.echo(f"  [{idx}/{total}]...")
+
+            except Exception as e:
+                entry = {"id": cid, "error": str(e), "messages": 0}
+                results.append(entry)
+                if not output_file:
+                    click.echo(f"[{idx}/{total}] id={cid}: ERROR {e}")
+
+        if output_file:
+            with open(output_file, "w") as f:
+                json.dump(results, f, ensure_ascii=False, indent=2)
+            click.echo(f"Saved {len(results)} entries to {output_file}")
+    finally:
+        await api.disconnect()
+
+
 @main.command("list")
 @click.option("--account", default=None, help="Account alias (default: from 'auth default')")
 @click.option("--output", type=click.Path(), help="Output file path")
@@ -568,36 +670,59 @@ async def _run_export(account, config_override, output_override, verify, dry_run
         )
         stats = await exporter.run(dry_run=dry_run, verify=verify, chat_list=chats)
 
-        # Render index
-        if not dry_run:
-            await _render_index(renderer, chats, cfg, state)
+        if exporter._force_shutdown:
+            click.echo("\nForce shutdown — state saved.")
+        else:
+            # Render index
+            if not dry_run:
+                await _render_index(renderer, chats, cfg, state)
 
-        # Summary
-        from tg_export.exporter import _format_size
-        click.echo(f"\nExport complete:")
-        click.echo(f"  Chats: {stats.chats_exported}/{stats.chats_included} (skipped {stats.chats_skipped})")
-        click.echo(f"  Messages: {stats.messages_exported}")
-        click.echo(f"  Files downloaded: {stats.files_downloaded}")
-        if stats.files_imported:
-            click.echo(f"  Files imported: {stats.files_imported}")
-        if stats.files_cached:
-            click.echo(f"  Files cached: {stats.files_cached}")
-        if stats.files_too_large:
-            click.echo(f"  Files too large: {stats.files_too_large}")
-        if stats.files_type_skip:
-            click.echo(f"  Files type skip: {stats.files_type_skip}")
-        click.echo(f"  Data size: {_format_size(stats.data_size)}")
-        if stats.errors:
-            click.echo(f"  Errors: {len(stats.errors)}")
+            # Summary
+            from tg_export.exporter import _format_size
+            click.echo(f"\nExport complete:")
+            click.echo(f"  Chats: {stats.chats_exported}/{stats.chats_included} (skipped {stats.chats_skipped})")
+            click.echo(f"  Messages: {stats.messages_exported}")
+            click.echo(f"  Files downloaded: {stats.files_downloaded}")
+            if stats.files_imported:
+                click.echo(f"  Files imported: {stats.files_imported}")
+            if stats.files_cached:
+                click.echo(f"  Files cached: {stats.files_cached}")
+            if stats.files_too_large:
+                click.echo(f"  Files too large: {stats.files_too_large}")
+            if stats.files_type_skip:
+                click.echo(f"  Files type skip: {stats.files_type_skip}")
+            if stats.data_size:
+                click.echo(f"  Downloaded: {_format_size(stats.data_size)}")
+            # File counts from DB
+            file_counts = await state.count_files()
+            click.echo(f"  Files: {file_counts['files_downloaded']}/{file_counts['expected_files']} (media messages: {file_counts['media_messages']})")
+            # DB size
+            db_size = state.db_path.stat().st_size if state.db_path.exists() else 0
+            click.echo(f"  DB size: {_format_size(db_size)}")
+            # Total export size on disk (excluding DB)
+            total_disk = sum(
+                f.stat().st_size for f in output_base.rglob("*") if f.is_file()
+            )
+            click.echo(f"  Export size on disk: {_format_size(total_disk)}")
+            if stats.errors:
+                click.echo(f"  Errors: {len(stats.errors)}")
 
+    except asyncio.CancelledError:
+        click.echo("\nForce shutdown — saving state...")
     finally:
         if api.takeout:
             try:
                 await api.stop_takeout(success=True)
-            except Exception:
+            except (Exception, asyncio.CancelledError):
                 pass
-        await api.disconnect()
-        await state.close()
+        try:
+            await api.disconnect()
+        except (Exception, asyncio.CancelledError):
+            pass
+        try:
+            await state.close()
+        except (Exception, asyncio.CancelledError):
+            pass
 
 
 async def _render_index(renderer, chats, cfg, state):

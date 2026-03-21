@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 from typing import AsyncIterator
 
 from telethon import TelegramClient
@@ -34,9 +37,17 @@ class TgApi:
 
     async def start_takeout(self, **kwargs):
         """Start Takeout session. Raises TakeoutInitDelayError if cooldown active."""
-        takeout_ctx = self.client.takeout(**kwargs)
-        self.takeout = await takeout_ctx.__aenter__()
-        self._takeout_ctx = takeout_ctx
+        try:
+            takeout_ctx = self.client.takeout(**kwargs)
+            self.takeout = await takeout_ctx.__aenter__()
+            self._takeout_ctx = takeout_ctx
+        except ValueError:
+            # Stale takeout session exists — finish it and retry
+            logger.info("Finishing stale takeout session before creating a new one")
+            await self.client.end_takeout(success=False)
+            takeout_ctx = self.client.takeout(**kwargs)
+            self.takeout = await takeout_ctx.__aenter__()
+            self._takeout_ctx = takeout_ctx
 
     async def stop_takeout(self, success: bool = True):
         if hasattr(self, "_takeout_ctx") and self._takeout_ctx:
@@ -62,24 +73,42 @@ class TgApi:
         result = await self.client(GetLeftChannelsRequest(offset=0))
         return result
 
-    async def get_folders(self) -> dict[str, list[int]]:
-        """Get Telegram folders as {name: [chat_ids]}."""
+    async def get_folders(self) -> list[dict]:
+        """Get Telegram folders as list of dicts with name, peer_ids, and type flags."""
         result = await self.client(GetDialogFiltersRequest())
         filters = getattr(result, "filters", result) or []
-        folders = {}
+        folders = []
         for f in filters:
-            if hasattr(f, "title") and hasattr(f, "include_peers"):
-                raw_title = f.title
-                title = raw_title.text if hasattr(raw_title, "text") else str(raw_title)
-                peer_ids = []
-                for peer in f.include_peers:
-                    if hasattr(peer, "channel_id"):
-                        peer_ids.append(peer.channel_id)
-                    elif hasattr(peer, "chat_id"):
-                        peer_ids.append(peer.chat_id)
-                    elif hasattr(peer, "user_id"):
-                        peer_ids.append(peer.user_id)
-                folders[title] = peer_ids
+            if not hasattr(f, "title"):
+                continue
+            raw_title = f.title
+            title = raw_title.text if hasattr(raw_title, "text") else str(raw_title)
+            peer_ids = []
+            for peer in getattr(f, "include_peers", []):
+                if hasattr(peer, "channel_id"):
+                    peer_ids.append(peer.channel_id)
+                elif hasattr(peer, "chat_id"):
+                    peer_ids.append(peer.chat_id)
+                elif hasattr(peer, "user_id"):
+                    peer_ids.append(peer.user_id)
+            exclude_ids = []
+            for peer in getattr(f, "exclude_peers", []):
+                if hasattr(peer, "channel_id"):
+                    exclude_ids.append(peer.channel_id)
+                elif hasattr(peer, "chat_id"):
+                    exclude_ids.append(peer.chat_id)
+                elif hasattr(peer, "user_id"):
+                    exclude_ids.append(peer.user_id)
+            folders.append({
+                "name": title,
+                "peer_ids": peer_ids,
+                "exclude_ids": exclude_ids,
+                "contacts": bool(getattr(f, "contacts", False)),
+                "non_contacts": bool(getattr(f, "non_contacts", False)),
+                "groups": bool(getattr(f, "groups", False)),
+                "broadcasts": bool(getattr(f, "broadcasts", False)),
+                "bots": bool(getattr(f, "bots", False)),
+            })
         return folders
 
     async def iter_messages(self, chat_id: int, **kwargs):

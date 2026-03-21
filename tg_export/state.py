@@ -406,6 +406,49 @@ class ExportState:
             row = await cur.fetchone()
             return row[0] if row else 0
 
+    async def count_files(self, chat_id: int | None = None) -> dict[str, int]:
+        """Count files with media in messages and downloaded files.
+
+        Returns dict with keys: media_messages, expected_files, files_downloaded.
+        - media_messages: messages with any media (including unsupported)
+        - expected_files: messages with downloadable file (has file.id, not unsupported)
+        - files_downloaded: files with status='done' in files table
+        If chat_id is None, counts across all chats.
+        """
+        if chat_id is not None:
+            msg_where = "WHERE chat_id=? AND"
+            file_where = "WHERE chat_id=? AND"
+            msg_args: tuple = (chat_id,)
+            file_args: tuple = (chat_id,)
+        else:
+            msg_where = "WHERE"
+            file_where = "WHERE"
+            msg_args = ()
+            file_args = ()
+
+        q_media = f"SELECT COUNT(*) FROM messages {msg_where} media_type IS NOT NULL AND media_type != ''"
+        q_expected = (
+            f"SELECT COUNT(*) FROM messages {msg_where}"
+            " media_type IS NOT NULL AND media_type != ''"
+            " AND json_extract(media, '$.file.id') IS NOT NULL"
+        )
+        q_files = f"SELECT COUNT(*) FROM files {file_where} status='done'"
+
+        async with self._db.execute(q_media, msg_args) as cur:
+            row = await cur.fetchone()
+            media_messages = row[0] if row else 0
+        async with self._db.execute(q_expected, msg_args) as cur:
+            row = await cur.fetchone()
+            expected_files = row[0] if row else 0
+        async with self._db.execute(q_files, file_args) as cur:
+            row = await cur.fetchone()
+            files_downloaded = row[0] if row else 0
+        return {
+            "media_messages": media_messages,
+            "expected_files": expected_files,
+            "files_downloaded": files_downloaded,
+        }
+
     async def search_messages(
         self, chat_id: int,
         text_query: str | None = None,

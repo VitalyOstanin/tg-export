@@ -90,8 +90,10 @@ async def test_get_folders_with_dialog_filters_object():
     api.client.return_value = mock_result
 
     folders = await api.get_folders()
-    assert "Work" in folders
-    assert 123 in folders["Work"]
+    names = [f["name"] for f in folders]
+    assert "Work" in names
+    work = [f for f in folders if f["name"] == "Work"][0]
+    assert 123 in work["peer_ids"]
 
 
 @pytest.mark.asyncio
@@ -112,7 +114,8 @@ async def test_get_folders_with_text_with_entities_title():
     api.client.return_value = mock_result
 
     folders = await api.get_folders()
-    assert "Test Folder" in folders
+    names = [f["name"] for f in folders]
+    assert "Test Folder" in names
 
 
 @pytest.mark.asyncio
@@ -130,4 +133,5 @@ async def test_get_folders_with_plain_string_title():
     api.client.return_value = mock_result
 
     folders = await api.get_folders()
-    assert "News" in folders
+    names = [f["name"] for f in folders]
+    assert "News" in names

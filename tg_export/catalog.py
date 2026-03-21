@@ -7,7 +7,39 @@ from datetime import datetime
 
 import yaml
 
-from tg_export.models import Chat
+from tg_export.models import Chat, ChatType
+
+# Map Telegram folder flags to ChatType values
+_FLAG_TO_TYPES: dict[str, set[ChatType]] = {
+    "contacts": {ChatType.personal},
+    "non_contacts": {ChatType.personal},
+    "groups": {ChatType.private_group, ChatType.private_supergroup, ChatType.public_supergroup},
+    "broadcasts": {ChatType.private_channel, ChatType.public_channel},
+    "bots": {ChatType.bot},
+}
+
+
+def _apply_folder_flags(chats: list[Chat], folders: list[dict]) -> None:
+    """Assign folder to chats matched by flag-based filters (contacts, groups, etc.)."""
+    for folder in folders:
+        # Collect chat types matched by this folder's flags
+        matched_types: set[ChatType] = set()
+        for flag, types in _FLAG_TO_TYPES.items():
+            if folder.get(flag):
+                matched_types.update(types)
+        if not matched_types:
+            continue
+
+        exclude_ids = set(folder.get("exclude_ids", []))
+        folder_name = folder["name"]
+
+        for chat in chats:
+            if chat.folder is not None:
+                continue  # already assigned by explicit peer_id
+            if chat.id in exclude_ids:
+                continue
+            if chat.type in matched_types:
+                chat.folder = folder_name
 
 
 def _chat_to_dict(chat: Chat) -> dict:
@@ -156,12 +188,12 @@ async def fetch_catalog(api, include_left: bool = False) -> list[Chat]:
 
     log.debug("Fetching folders...")
     folders = await api.get_folders()
-    log.debug("Got %d folders: %s", len(folders), list(folders.keys()))
-    # Build reverse map: peer_id -> folder_name
+    log.debug("Got %d folders: %s", len(folders), [f["name"] for f in folders])
+    # Build reverse map: peer_id -> folder_name (from explicit include_peers)
     peer_to_folder: dict[int, str] = {}
-    for folder_name, peer_ids in folders.items():
-        for pid in peer_ids:
-            peer_to_folder[pid] = folder_name
+    for folder in folders:
+        for pid in folder["peer_ids"]:
+            peer_to_folder[pid] = folder["name"]
 
     # Non-archived dialogs (folder=0 = main list, includes chats in named folders)
     log.debug("Fetching non-archived dialogs (folder=0)...")
@@ -176,8 +208,11 @@ async def fetch_catalog(api, include_left: bool = False) -> list[Chat]:
         chats.append(chat)
     log.debug("Got %d non-archived dialogs", len(chats))
     # Named folder peers are also non-archived
-    for peer_ids in folders.values():
-        non_archived_ids.update(peer_ids)
+    for folder in folders:
+        non_archived_ids.update(folder["peer_ids"])
+
+    # Apply flag-based folder matching for chats without explicit folder
+    _apply_folder_flags(chats, folders)
 
     # Archived dialogs (folder=1), skip duplicates
     log.debug("Fetching archived dialogs (folder=1)...")
