@@ -10,7 +10,6 @@ async def test_exporter_dry_run_no_downloads():
     state = AsyncMock()
     config = MagicMock()
     config.output.path = "/tmp/test"
-    config.output.min_free_space_bytes = 1
     renderer = MagicMock()
     downloader = AsyncMock()
 

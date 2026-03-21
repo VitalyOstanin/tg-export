@@ -63,7 +63,6 @@ class OutputConfig:
     path: str = "./export_output"
     format: str = "html"
     messages_per_file: int = 1000
-    min_free_space_bytes: int = 20 * 1024**3
 
 
 @dataclass
@@ -302,7 +301,6 @@ def load_config(path: Path) -> Config:
         path=out_raw.get("path", "./export_output"),
         format=out_raw.get("format", "html"),
         messages_per_file=out_raw.get("messages_per_file", 1000),
-        min_free_space_bytes=parse_size(out_raw.get("min_free_space", "20GB")),
     )
 
     # Defaults

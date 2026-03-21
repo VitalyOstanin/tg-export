@@ -135,6 +135,125 @@ def auth_remove(name):
     click.echo(f"Account '{name}' removed.")
 
 
+@main.command("config")
+@click.option("--verbose", "-v", is_flag=True, help="Verbose: show per-account filters")
+def show_config(verbose):
+    """Show current configuration (global + per-account)."""
+    import yaml as _yaml
+    mgr = _mgr()
+
+    # Global config
+    global_path = mgr.config_dir / "config.yaml"
+    cred_path = mgr.config_dir / "api_credentials.yaml"
+
+    click.echo(f"# Global: {global_path}")
+    if global_path.exists():
+        data = mgr.load_global_config()
+        proxy = data.get("proxy")
+        if proxy:
+            p = proxy
+            auth_str = ""
+            if p.get("username"):
+                auth_str = f" auth={p['username']}:***"
+            click.echo(f"  proxy: {p.get('type', 'socks5')}://{p.get('host')}:{p.get('port')}"
+                       f" rdns={p.get('rdns', True)}{auth_str}")
+        else:
+            click.echo("  proxy: none")
+        mfs = data.get("min_free_space", "20GB")
+        click.echo(f"  min_free_space: {mfs}")
+    else:
+        click.echo("  (not found)")
+
+    click.echo(f"\n# Credentials: {cred_path}")
+    if cred_path.exists():
+        creds = _yaml.safe_load(cred_path.read_text())
+        click.echo(f"  api_id: {creds.get('api_id')}")
+        click.echo(f"  api_hash: {creds.get('api_hash', '')[:8]}...")
+    else:
+        click.echo("  (not found)")
+
+    # Default account
+    default = mgr.get_default_account()
+    click.echo(f"\n# Default account: {default or '(not set)'}")
+
+    # Per-account configs
+    accounts = mgr.list_accounts()
+    if not accounts:
+        click.echo("\n# No accounts configured.")
+        return
+
+    click.echo(f"\n# Accounts: {len(accounts)}")
+    for acc in accounts:
+        marker = " (default)" if acc == default else ""
+        config_path = mgr.config_path(acc)
+        session_path = mgr.session_path(acc)
+        session_ok = session_path.exists()
+        config_ok = config_path.exists()
+
+        click.echo(f"\n  [{acc}]{marker}")
+        click.echo(f"    session: {'OK' if session_ok else 'MISSING'} ({session_path})")
+        click.echo(f"    config:  {'OK' if config_ok else 'MISSING'} ({config_path})")
+
+        if config_ok and verbose:
+            _show_account_config(config_path)
+
+
+def _show_account_config(config_path):
+    """Show per-account config details (verbose mode)."""
+    from tg_export.config import load_config
+    cfg = load_config(config_path)
+
+    click.echo(f"    output.path: {cfg.output.path}")
+    click.echo(f"    output.format: {cfg.output.format}")
+    click.echo(f"    output.messages_per_file: {cfg.output.messages_per_file}")
+
+    d = cfg.defaults
+    click.echo(f"    defaults.media.types: {d.media.types}")
+    click.echo(f"    defaults.media.max_file_size: {d.media.max_file_size_bytes // 1024**2}MB")
+    if d.date_from or d.date_to:
+        click.echo(f"    defaults.date_range: {d.date_from or '...'} — {d.date_to or '...'}")
+
+    if cfg.type_rules:
+        click.echo(f"    type_rules:")
+        for key, rule in cfg.type_rules.items():
+            if rule.skip:
+                click.echo(f"      {key}: skip")
+            else:
+                parts = []
+                if rule.media:
+                    parts.append(f"media={rule.media.types}")
+                if rule.date_from or rule.date_to:
+                    parts.append(f"dates={rule.date_from or '...'}—{rule.date_to or '...'}")
+                click.echo(f"      {key}: {', '.join(parts) or 'defaults'}")
+
+    if cfg.folders:
+        click.echo(f"    folders:")
+        for name, fr in cfg.folders.items():
+            if fr.skip:
+                click.echo(f"      {name}: skip")
+            else:
+                n_chats = len(fr.chats)
+                media_str = f"media={fr.media.types}" if fr.media else "defaults"
+                click.echo(f"      {name}: {media_str}, {n_chats} chat rules")
+
+    if cfg.chats:
+        click.echo(f"    chats: {len(cfg.chats)} rules")
+        for rule in cfg.chats:
+            ident = f"id={rule.id}" if rule.id else f"name={rule.name}"
+            if rule.skip:
+                click.echo(f"      {ident}: skip")
+            else:
+                parts = []
+                if rule.media:
+                    parts.append(f"media={rule.media.types}")
+                if rule.date_from or rule.date_to:
+                    parts.append(f"dates={rule.date_from or '...'}—{rule.date_to or '...'}")
+                click.echo(f"      {ident}: {', '.join(parts) or 'defaults'}")
+
+    click.echo(f"    unmatched: {cfg.unmatched_action}")
+    click.echo(f"    left_channels: {cfg.left_channels_action}")
+
+
 @main.command("list")
 @click.option("--account", default=None, help="Account alias (default: from 'auth default')")
 @click.option("--output", type=click.Path(), help="Output file path")
@@ -277,10 +396,11 @@ async def _run_export(account, config_override, output_override, verify, dry_run
         renderer.setup()
 
         # Setup downloader
+        min_free = mgr.load_min_free_space() or 20 * 1024**3  # default 20GB
         downloader = MediaDownloader(
             api=api, state=state,
             config=cfg.defaults.media,
-            min_free_bytes=cfg.output.min_free_space_bytes,
+            min_free_bytes=min_free,
         )
 
         # Fetch chat list

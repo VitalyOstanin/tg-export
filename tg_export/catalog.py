@@ -91,7 +91,6 @@ def generate_config_template(chats: list[Chat], account: str | None = None) -> s
         f"  path: {output_path}",
         "  format: html",
         "  messages_per_file: 1000",
-        "  min_free_space: 20GB",
         "",
         "defaults:",
         "  media:",

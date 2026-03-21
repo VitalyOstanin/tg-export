@@ -84,12 +84,16 @@ class AccountManager:
         data = yaml.safe_load(cred_path.read_text())
         return data["api_id"], data["api_hash"]
 
+    def load_global_config(self) -> dict:
+        """Load global config from config.yaml. Returns raw dict."""
+        config_path = self.config_dir / "config.yaml"
+        if not config_path.exists():
+            return {}
+        return yaml.safe_load(config_path.read_text()) or {}
+
     def load_proxy(self) -> tuple | None:
-        """Load global proxy settings from api_credentials.yaml."""
-        cred_path = self.config_dir / "api_credentials.yaml"
-        if not cred_path.exists():
-            return None
-        data = yaml.safe_load(cred_path.read_text())
+        """Load global proxy settings from config.yaml."""
+        data = self.load_global_config()
         proxy_raw = data.get("proxy")
         if not proxy_raw or not isinstance(proxy_raw, dict):
             return None
@@ -105,6 +109,15 @@ class AccountManager:
             proxy_raw.get("username"),
             proxy_raw.get("password"),
         )
+
+    def load_min_free_space(self) -> int | None:
+        """Load min_free_space from global config. Returns bytes or None."""
+        from tg_export.config import parse_size
+        data = self.load_global_config()
+        val = data.get("min_free_space")
+        if val is None:
+            return None
+        return parse_size(val)
 
     async def add_account(self, name: str):
         """Interactive Telethon login. Requires terminal interaction."""

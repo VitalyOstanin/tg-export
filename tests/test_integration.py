@@ -27,7 +27,6 @@ async def test_full_export_cycle(tmp_path, state):
         output=OutputConfig(
             path=str(tmp_path / "output"),
             messages_per_file=1000,
-            min_free_space_bytes=1,
         ),
         unmatched_action="export_with_defaults",
     )
