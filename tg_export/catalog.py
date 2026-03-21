@@ -133,48 +133,51 @@ def generate_config_template(chats: list[Chat]) -> str:
 
 async def fetch_catalog(api, include_left: bool = False) -> list[Chat]:
     """Fetch all chats from Telegram API and map to models.Chat."""
+    import logging
+    log = logging.getLogger(__name__)
+
     from tg_export.converter import convert_chat
 
+    log.debug("Fetching folders...")
     folders = await api.get_folders()
+    log.debug("Got %d folders: %s", len(folders), list(folders.keys()))
     # Build reverse map: peer_id -> folder_name
     peer_to_folder: dict[int, str] = {}
     for folder_name, peer_ids in folders.items():
         for pid in peer_ids:
             peer_to_folder[pid] = folder_name
 
-    # All dialogs (folders + unfiled + archived)
+    # Non-archived dialogs (folder=0 = main list, includes chats in named folders)
+    log.debug("Fetching non-archived dialogs (folder=0)...")
     chats = []
-    all_ids: set[int] = set()
-    async for dialog in api.iter_dialogs():  # archived=None -> all
+    non_archived_ids: set[int] = set()
+    async for dialog in api.iter_dialogs(archived=False):
         entity = dialog.entity
         entity_id = getattr(entity, "id", 0)
-        all_ids.add(entity_id)
+        non_archived_ids.add(entity_id)
         folder = peer_to_folder.get(entity_id)
         chat = convert_chat(dialog, folder=folder)
         chats.append(chat)
-
-    # Determine which are archive-only:
-    # archived=True gives folder=1 (archive), we check which of those
-    # are NOT also in folder=0 (non-archive non-folder dialogs) or in a named folder
-    archived_ids: set[int] = set()
-    async for dialog in api.iter_dialogs(archived=True):
-        entity = dialog.entity
-        archived_ids.add(getattr(entity, "id", 0))
-
-    # Non-archived = those in folder=0 or in named folders
-    non_archived_ids: set[int] = set()
-    async for dialog in api.iter_dialogs(archived=False):  # folder=0
-        entity = dialog.entity
-        non_archived_ids.add(getattr(entity, "id", 0))
-    # Add those in named folders
+    log.debug("Got %d non-archived dialogs", len(chats))
+    # Named folder peers are also non-archived
     for peer_ids in folders.values():
         non_archived_ids.update(peer_ids)
 
-    # Mark archive-only chats
-    archive_only_ids = archived_ids - non_archived_ids
-    for chat in chats:
-        if chat.id in archive_only_ids:
+    # Archived dialogs (folder=1)
+    log.debug("Fetching archived dialogs (folder=1)...")
+    archived_count = 0
+    async for dialog in api.iter_dialogs(archived=True):
+        entity = dialog.entity
+        entity_id = getattr(entity, "id", 0)
+        folder = peer_to_folder.get(entity_id)
+        chat = convert_chat(dialog, folder=folder)
+        # Archive-only = not in main list and not in any named folder
+        if entity_id not in non_archived_ids:
             chat.is_archived = True
+            archived_count += 1
+        chats.append(chat)
+    log.debug("Got archived dialogs, %d are archive-only", archived_count)
+    log.debug("Total chats: %d", len(chats))
 
     if include_left:
         try:

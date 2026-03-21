@@ -524,10 +524,18 @@ def convert_chat(tl_dialog: Any, folder: str | None = None) -> Chat:
         is_left=getattr(entity, "left", False),
         is_archived=False,
         is_forum=getattr(entity, "forum", False),
-        migrated_to_id=getattr(entity, "migrated_to", None),
+        migrated_to_id=_extract_migrated_to(entity),
         migrated_from_id=None,
         is_monoforum=getattr(entity, "monoforum", False),
     )
+
+
+def _extract_migrated_to(entity: Any) -> int | None:
+    """Extract channel_id from migrated_to InputChannel, if present."""
+    migrated_to = getattr(entity, "migrated_to", None)
+    if migrated_to is None:
+        return None
+    return getattr(migrated_to, "channel_id", None)
 
 
 def _classify_chat(entity: Any, dialog: Any) -> ChatType:

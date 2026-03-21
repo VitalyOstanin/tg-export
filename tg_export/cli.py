@@ -13,9 +13,15 @@ def _mgr() -> AccountManager:
 
 
 @click.group()
-def main():
+@click.option("--debug", is_flag=True, default=False, help="Enable debug logging")
+@click.pass_context
+def main(ctx, debug):
     """tg-export: Flexible Telegram data export tool."""
-    pass
+    import logging
+    level = logging.DEBUG if debug else logging.WARNING
+    logging.basicConfig(level=level, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+    ctx.ensure_object(dict)
+    ctx.obj["debug"] = debug
 
 
 @main.group()

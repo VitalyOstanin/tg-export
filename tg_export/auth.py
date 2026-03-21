@@ -86,11 +86,7 @@ class AccountManager:
 
     async def add_account(self, name: str):
         """Interactive Telethon login. Requires terminal interaction."""
-        import logging
         from telethon import TelegramClient
-
-        logging.basicConfig(level=logging.DEBUG)
-        logging.getLogger("telethon").setLevel(logging.DEBUG)
 
         api_id, api_hash = self.load_credentials()
         session_path = str(self.session_path(name))

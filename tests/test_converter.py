@@ -61,3 +61,49 @@ def test_convert_outgoing_message():
     msg.out = True
     result = convert_message(msg, chat_id=1)
     assert result.is_outgoing is True
+
+
+def test_convert_chat_migrated_to_extracts_channel_id():
+    """migrated_to is an InputChannel object, we need just the int channel_id."""
+    dialog = MagicMock()
+    entity = MagicMock()
+    entity.__class__.__name__ = "Chat"
+    entity.id = 100
+    entity.title = "Old Group"
+    entity.username = None
+    entity.participants_count = 5
+    entity.left = False
+    entity.forum = False
+    entity.monoforum = False
+    # migrated_to is an InputChannel with channel_id and access_hash
+    migrated_to = MagicMock()
+    migrated_to.channel_id = 200
+    migrated_to.access_hash = 9999
+    entity.migrated_to = migrated_to
+    dialog.entity = entity
+    dialog.date = datetime(2024, 1, 1)
+    dialog.unread_count = 0
+    chat = convert_chat(dialog)
+    assert chat.migrated_to_id == 200
+
+
+def test_convert_chat_no_migration():
+    dialog = MagicMock()
+    entity = MagicMock()
+    entity.__class__.__name__ = "User"
+    entity.id = 50
+    entity.first_name = "Test"
+    entity.last_name = ""
+    entity.username = "testuser"
+    entity.is_self = False
+    entity.bot = False
+    entity.participants_count = None
+    entity.left = False
+    entity.forum = False
+    entity.monoforum = False
+    entity.migrated_to = None
+    dialog.entity = entity
+    dialog.date = datetime(2024, 1, 1)
+    dialog.unread_count = 0
+    chat = convert_chat(dialog)
+    assert chat.migrated_to_id is None
