@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import click
 import yaml
 
 
@@ -47,6 +48,30 @@ class AccountManager:
         journal = path.with_suffix(".session-journal")
         if journal.exists():
             journal.unlink()
+
+    def set_default_account(self, name: str):
+        """Set default account alias."""
+        default_path = self.config_dir / "default_account"
+        default_path.write_text(name)
+
+    def get_default_account(self) -> str | None:
+        """Get default account alias, or None."""
+        default_path = self.config_dir / "default_account"
+        if default_path.exists():
+            return default_path.read_text().strip()
+        return None
+
+    def resolve_account(self, account: str | None) -> str:
+        """Resolve account: explicit arg > default > error."""
+        if account:
+            return account
+        default = self.get_default_account()
+        if default:
+            return default
+        raise click.UsageError(
+            "No --account specified and no default set. "
+            "Use 'tg-export auth default <name>' to set one."
+        )
 
     def save_credentials(self, api_id: int, api_hash: str):
         cred_path = self.config_dir / "api_credentials.yaml"

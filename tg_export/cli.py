@@ -95,6 +95,25 @@ async def _auth_check(name):
             await api.disconnect()
 
 
+@auth.command("default")
+@click.argument("name", required=False, default=None)
+def auth_default(name):
+    """Set or show default account."""
+    mgr = _mgr()
+    if name:
+        if name not in mgr.list_accounts():
+            click.echo(f"Account '{name}' not found.")
+            raise SystemExit(1)
+        mgr.set_default_account(name)
+        click.echo(f"Default account set to '{name}'.")
+    else:
+        default = mgr.get_default_account()
+        if default:
+            click.echo(f"Default account: {default}")
+        else:
+            click.echo("No default account set.")
+
+
 @auth.command("remove")
 @click.argument("name")
 def auth_remove(name):
@@ -108,7 +127,7 @@ def auth_remove(name):
 
 
 @main.command("list")
-@click.option("--account", required=True, help="Account alias")
+@click.option("--account", default=None, help="Account alias (default: from 'auth default')")
 @click.option("--output", type=click.Path(), help="Output file path")
 @click.option("--format", "fmt", type=click.Choice(["yaml", "json"]), default="yaml")
 @click.option("--include-left", is_flag=True, help="Include left channels")
@@ -122,6 +141,7 @@ async def _list_chats(account, output, fmt, include_left):
     from tg_export.catalog import fetch_catalog, format_catalog_yaml, format_catalog_json
 
     mgr = _mgr()
+    account = mgr.resolve_account(account)
     api_id, api_hash = mgr.load_credentials()
     api = TgApi(mgr.session_path(account), api_id, api_hash)
     await api.connect()
@@ -143,7 +163,7 @@ async def _list_chats(account, output, fmt, include_left):
 
 
 @main.command("init")
-@click.option("--account", required=True, help="Account alias")
+@click.option("--account", default=None, help="Account alias (default: from 'auth default')")
 @click.option("--from", "from_catalog", type=click.Path(exists=True), help="Catalog file")
 @click.option("--output", type=click.Path(), default=None, help="Override output config path")
 def init_config(account, from_catalog, output):
@@ -155,6 +175,7 @@ async def _init_config(account, from_catalog, output):
     from tg_export.catalog import generate_config_template
 
     mgr = _mgr()
+    account = mgr.resolve_account(account)
     config_path = Path(output) if output else mgr.config_path(account)
 
     if from_catalog:
@@ -183,7 +204,7 @@ async def _init_config(account, from_catalog, output):
 
 
 @main.command("run")
-@click.option("--account", required=True, help="Account alias (loads ~/.config/tg-export/<account>.yaml)")
+@click.option("--account", default=None, help="Account alias (default: from 'auth default')")
 @click.option("--config", type=click.Path(exists=True), default=None, help="Override config path")
 @click.option("--output", type=click.Path(), help="Override output directory")
 @click.option("--verify", is_flag=True, help="Verify file integrity after export")
@@ -203,6 +224,7 @@ async def _run_export(account, config_override, output_override, verify, dry_run
     from tg_export.state import ExportState
 
     mgr = _mgr()
+    account = mgr.resolve_account(account)
     config_path = mgr.resolve_config(account, config_override)
     if not config_path.exists():
         click.echo(f"Config not found: {config_path}")
@@ -309,7 +331,7 @@ def _render_index(renderer, chats, cfg):
 
 
 @main.command("verify")
-@click.option("--account", required=True, help="Account alias")
+@click.option("--account", default=None, help="Account alias (default: from 'auth default')")
 @click.option("--config", type=click.Path(exists=True), default=None, help="Override config path")
 @click.option("--output", type=click.Path(), help="Export output directory")
 def verify_files(account, config, output):
@@ -322,6 +344,7 @@ async def _verify_files(account, config_override, output_override):
     from tg_export.state import ExportState
 
     mgr = _mgr()
+    account = mgr.resolve_account(account)
     config_path = mgr.resolve_config(account, config_override)
     if not config_path.exists():
         click.echo(f"Config not found: {config_path}")
