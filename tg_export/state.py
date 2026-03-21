@@ -234,6 +234,7 @@ class ExportState:
                 messages_count    INTEGER,
                 last_message_date TIMESTAMP,
                 is_left           INTEGER DEFAULT 0,
+                is_archived       INTEGER DEFAULT 0,
                 is_forum          INTEGER DEFAULT 0,
                 is_monoforum      INTEGER DEFAULT 0,
                 updated_at        TIMESTAMP
@@ -439,19 +440,19 @@ class ExportState:
     async def cache_catalog(self, chat_id: int, name: str, chat_type: str,
                             folder: str | None, members_count: int | None,
                             messages_count: int, last_message_date: datetime | None,
-                            is_left: bool, is_forum: bool, is_monoforum: bool):
+                            is_left: bool, is_archived: bool, is_forum: bool, is_monoforum: bool):
         await self._db.execute(
             """INSERT INTO catalog_cache
                (chat_id, name, type, folder, members_count, messages_count,
-                last_message_date, is_left, is_forum, is_monoforum, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                last_message_date, is_left, is_archived, is_forum, is_monoforum, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(chat_id) DO UPDATE SET
                    name=?, type=?, folder=?, members_count=?, messages_count=?,
-                   last_message_date=?, is_left=?, is_forum=?, is_monoforum=?, updated_at=?""",
+                   last_message_date=?, is_left=?, is_archived=?, is_forum=?, is_monoforum=?, updated_at=?""",
             (chat_id, name, chat_type, folder, members_count, messages_count,
-             last_message_date, int(is_left), int(is_forum), int(is_monoforum), datetime.now(),
+             last_message_date, int(is_left), int(is_archived), int(is_forum), int(is_monoforum), datetime.now(),
              name, chat_type, folder, members_count, messages_count,
-             last_message_date, int(is_left), int(is_forum), int(is_monoforum), datetime.now()),
+             last_message_date, int(is_left), int(is_archived), int(is_forum), int(is_monoforum), datetime.now()),
         )
         await self._db.commit()
 

@@ -225,6 +225,7 @@ class Chat:
     last_message_date: datetime | None
     messages_count: int
     is_left: bool
+    is_archived: bool
     is_forum: bool
     migrated_to_id: int | None
     migrated_from_id: int | None

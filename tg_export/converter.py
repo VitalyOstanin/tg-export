@@ -522,6 +522,7 @@ def convert_chat(tl_dialog: Any, folder: str | None = None) -> Chat:
         last_message_date=getattr(tl_dialog, "date", None),
         messages_count=getattr(tl_dialog, "unread_count", 0),  # approximate
         is_left=getattr(entity, "left", False),
+        is_archived=False,
         is_forum=getattr(entity, "forum", False),
         migrated_to_id=getattr(entity, "migrated_to", None),
         migrated_from_id=None,

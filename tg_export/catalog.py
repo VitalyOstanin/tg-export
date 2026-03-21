@@ -24,6 +24,10 @@ def _chat_to_dict(chat: Chat) -> dict:
         d["members"] = chat.members_count
     if chat.username:
         d["username"] = chat.username
+    if chat.is_left:
+        d["is_left"] = True
+    if chat.is_archived:
+        d["is_archived"] = True
     if chat.is_forum:
         d["is_forum"] = True
     if chat.is_monoforum:
@@ -40,17 +44,20 @@ def format_catalog_yaml(chats: list[Chat]) -> str:
     folders: dict[str, list[dict]] = defaultdict(list)
     unfiled: list[dict] = []
     left: list[dict] = []
+    archived: list[dict] = []
 
     for chat in chats:
         d = _chat_to_dict(chat)
         if chat.is_left:
             left.append(d)
+        elif chat.is_archived:
+            archived.append(d)
         elif chat.folder:
             folders[chat.folder].append(d)
         else:
             unfiled.append(d)
 
-    result = {
+    result: dict = {
         "generated": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
     }
 
@@ -58,6 +65,8 @@ def format_catalog_yaml(chats: list[Chat]) -> str:
         result["folders"] = dict(folders)
     if unfiled:
         result["unfiled"] = unfiled
+    if archived:
+        result["archived"] = archived
     if left:
         result["left"] = left
 
@@ -133,13 +142,39 @@ async def fetch_catalog(api, include_left: bool = False) -> list[Chat]:
         for pid in peer_ids:
             peer_to_folder[pid] = folder_name
 
+    # All dialogs (folders + unfiled + archived)
     chats = []
-    async for dialog in api.iter_dialogs():
+    all_ids: set[int] = set()
+    async for dialog in api.iter_dialogs():  # archived=None -> all
         entity = dialog.entity
         entity_id = getattr(entity, "id", 0)
+        all_ids.add(entity_id)
         folder = peer_to_folder.get(entity_id)
         chat = convert_chat(dialog, folder=folder)
         chats.append(chat)
+
+    # Determine which are archive-only:
+    # archived=True gives folder=1 (archive), we check which of those
+    # are NOT also in folder=0 (non-archive non-folder dialogs) or in a named folder
+    archived_ids: set[int] = set()
+    async for dialog in api.iter_dialogs(archived=True):
+        entity = dialog.entity
+        archived_ids.add(getattr(entity, "id", 0))
+
+    # Non-archived = those in folder=0 or in named folders
+    non_archived_ids: set[int] = set()
+    async for dialog in api.iter_dialogs(archived=False):  # folder=0
+        entity = dialog.entity
+        non_archived_ids.add(getattr(entity, "id", 0))
+    # Add those in named folders
+    for peer_ids in folders.values():
+        non_archived_ids.update(peer_ids)
+
+    # Mark archive-only chats
+    archive_only_ids = archived_ids - non_archived_ids
+    for chat in chats:
+        if chat.id in archive_only_ids:
+            chat.is_archived = True
 
     if include_left:
         try:
@@ -155,6 +190,7 @@ async def fetch_catalog(api, include_left: bool = False) -> list[Chat]:
                     last_message_date=None,
                     messages_count=0,
                     is_left=True,
+                    is_archived=False,
                     is_forum=False,
                     migrated_to_id=None,
                     migrated_from_id=None,

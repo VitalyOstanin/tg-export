@@ -47,11 +47,14 @@ def resolve_chat_dir(
     chat_id: int,
     folder: str | None,
     is_left: bool,
+    is_archived: bool = False,
 ) -> Path:
     """Resolve output directory for a chat."""
     dir_name = f"{sanitize_name(chat_name)}_{chat_id}"
     if is_left:
         return base / "left" / dir_name
+    if is_archived:
+        return base / "archived" / dir_name
     if folder:
         return base / "folders" / sanitize_name(folder) / dir_name
     return base / "unfiled" / dir_name
@@ -159,6 +162,7 @@ class Exporter:
                     chat_id=chat.id,
                     folder=chat.folder,
                     is_left=chat.is_left,
+                    is_archived=chat.is_archived,
                 )
 
                 try:

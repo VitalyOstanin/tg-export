@@ -8,7 +8,7 @@ def test_migrated_chat_combines_messages():
         id=100, name="Old Group", type=ChatType.private_group,
         username=None, folder=None, members_count=5,
         last_message_date=None, messages_count=1000,
-        is_left=False, is_forum=False,
+        is_left=False, is_archived=False, is_forum=False,
         migrated_to_id=200, migrated_from_id=None,
         is_monoforum=False,
     )

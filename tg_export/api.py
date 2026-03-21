@@ -45,9 +45,14 @@ class TgApi:
         """Return takeout client if available, else regular client."""
         return self.takeout if self.takeout else self.client
 
-    async def iter_dialogs(self):
-        async for dialog in self.client.iter_dialogs():
-            yield dialog
+    async def iter_dialogs(self, archived: bool | None = None):
+        """Iterate dialogs. None=all, False=non-archived only, True=archived only."""
+        if archived is None:
+            async for dialog in self.client.iter_dialogs():
+                yield dialog
+        else:
+            async for dialog in self.client.iter_dialogs(archived=archived):
+                yield dialog
 
     async def get_left_channels(self):
         result = await self.client(GetLeftChannelsRequest(offset=0))

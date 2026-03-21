@@ -87,7 +87,7 @@ def test_render_chat_pagination(renderer, tmp_path):
         id=123, name="Test", type=ChatType.personal,
         username=None, folder=None, members_count=None,
         last_message_date=None, messages_count=5,
-        is_left=False, is_forum=False, migrated_to_id=None,
+        is_left=False, is_archived=False, is_forum=False, migrated_to_id=None,
         migrated_from_id=None, is_monoforum=False,
     )
     messages = [_make_msg(id=i, text=f"Msg {i}") for i in range(2500)]

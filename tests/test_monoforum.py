@@ -8,7 +8,7 @@ def test_monoforum_detected():
         id=100, name="Channel DMs", type=ChatType.private_supergroup,
         username=None, folder=None, members_count=None,
         last_message_date=None, messages_count=50,
-        is_left=False, is_forum=False,
+        is_left=False, is_archived=False, is_forum=False,
         migrated_to_id=None, migrated_from_id=None,
         is_monoforum=True,
     )

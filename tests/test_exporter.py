@@ -53,6 +53,18 @@ def test_resolve_chat_dir_left():
     assert result == Path("/output/left/Старый_канал_111")
 
 
+def test_resolve_chat_dir_archived():
+    result = resolve_chat_dir(
+        base=Path("/output"),
+        chat_name="Старый чат",
+        chat_id=222,
+        folder=None,
+        is_left=False,
+        is_archived=True,
+    )
+    assert result == Path("/output/archived/Старый_чат_222")
+
+
 def test_sanitize_name():
     assert sanitize_name("Рабочий чат") == "Рабочий_чат"
     assert sanitize_name("file/with:special<chars>") == "file_with_special_chars_"
