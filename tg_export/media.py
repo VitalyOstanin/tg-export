@@ -52,16 +52,20 @@ class MediaDownloader:
         self.min_free_bytes = min_free_bytes
         self.semaphore = asyncio.Semaphore(config.concurrent_downloads)
 
-    async def download(self, tl_message, media: Media, chat_dir: Path) -> Path | None:
-        """Download media file if needed. Returns local path or None."""
+    async def download(self, tl_message, media: Media, chat_dir: Path) -> tuple[Path | None, bool]:
+        """Download media file if needed. Returns (local_path, is_new).
+
+        is_new=True means file was actually downloaded this run.
+        is_new=False means file was already in cache.
+        """
         if not should_download(media, self.config):
-            return None
+            return None, False
 
         # Already downloaded?
         if media.file:
             existing = await self.state.get_file(media.file.id, tl_message.chat_id if hasattr(tl_message, 'chat_id') else 0)
             if existing and existing["status"] == "done":
-                return Path(existing["local_path"])
+                return Path(existing["local_path"]), False
 
         # Disk space check
         chat_dir.mkdir(parents=True, exist_ok=True)
@@ -79,7 +83,7 @@ class MediaDownloader:
             path = await self._download_with_retry(tl_message, target_dir)
 
         if path is None:
-            return None
+            return None, False
 
         local_path = Path(path)
         actual_size = local_path.stat().st_size if local_path.exists() else 0
@@ -97,7 +101,7 @@ class MediaDownloader:
             status=status,
         )
 
-        return local_path
+        return local_path, True
 
     async def _download_with_retry(self, tl_message, target_dir: Path) -> str | None:
         for attempt in range(3):

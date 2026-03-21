@@ -82,9 +82,9 @@ class TgApi:
                 folders[title] = peer_ids
         return folders
 
-    async def iter_messages(self, chat_id: int, min_id: int = 0):
+    async def iter_messages(self, chat_id: int, **kwargs):
         client = self._active_client
-        async for msg in client.iter_messages(chat_id, min_id=min_id):
+        async for msg in client.iter_messages(chat_id, **kwargs):
             yield msg
 
     async def iter_topic_messages(self, chat_id: int, topic_id: int, min_id: int = 0):

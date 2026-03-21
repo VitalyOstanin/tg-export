@@ -9,7 +9,7 @@
 <div class="section">
   <h2>{{ section.title }}</h2>
   <ul class="chat-list">
-  {% for item in section.items %}
+  {% for item in section.entries %}
     <li><a href="{{ item.href }}" class="chat-name">{{ item.name }}</a>
     <div class="chat-meta">{{ item.meta }}</div></li>
   {% endfor %}

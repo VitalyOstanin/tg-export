@@ -103,7 +103,7 @@ async def test_get_folders_with_text_with_entities_title():
     mock_filter = MagicMock()
     # title is TextWithEntities with .text attribute
     mock_title = MagicMock()
-    mock_title.text = "Семья"
+    mock_title.text = "Test Folder"
     mock_filter.title = mock_title
     mock_filter.include_peers = []
 
@@ -112,7 +112,7 @@ async def test_get_folders_with_text_with_entities_title():
     api.client.return_value = mock_result
 
     folders = await api.get_folders()
-    assert "Семья" in folders
+    assert "Test Folder" in folders
 
 
 @pytest.mark.asyncio

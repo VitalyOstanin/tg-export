@@ -397,6 +397,11 @@ def convert_message(tl_msg: Any, chat_id: int) -> Message:
         elif hasattr(tl_msg.from_id, "channel_id"):
             from_id = tl_msg.from_id.channel_id
 
+    # Resolve sender name from cached entity
+    sender = getattr(tl_msg, "sender", None)
+    if sender:
+        from_name = _user_display_name(sender)
+
     # Text with entities
     text_parts = convert_entities(tl_msg.message, tl_msg.entities)
 

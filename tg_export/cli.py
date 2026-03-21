@@ -258,6 +258,44 @@ def _show_account_config(config_path):
 
 
 # ---------------------------------------------------------------------------
+# Takeout management
+# ---------------------------------------------------------------------------
+
+@main.group()
+def takeout():
+    """Manage Telegram Takeout sessions."""
+    pass
+
+
+@takeout.command("clear")
+@click.argument("name", required=False, default=None)
+def takeout_clear(name):
+    """Clear stale takeout session ID from local session file."""
+    asyncio.run(_takeout_clear(name))
+
+
+async def _takeout_clear(name):
+    from tg_export.api import TgApi
+
+    mgr = _mgr()
+    account = mgr.resolve_account(name)
+    api_id, api_hash = mgr.load_credentials()
+    proxy = mgr.load_proxy()
+    api = TgApi(mgr.session_path(account), api_id, api_hash, proxy=proxy)
+    await api.connect()
+    try:
+        old_id = api.client.session.takeout_id
+        if old_id is None:
+            click.echo(f"  {account}: no active takeout session")
+            return
+        api.client.session.takeout_id = None
+        api.client.session.save()
+        click.echo(f"  {account}: takeout session cleared (was id={old_id})")
+    finally:
+        await api.disconnect()
+
+
+# ---------------------------------------------------------------------------
 # tg: direct Telegram API commands
 # ---------------------------------------------------------------------------
 
@@ -429,6 +467,9 @@ async def _run_export(account, config_override, output_override, verify, dry_run
 
     output_base = Path(output_override) if output_override else Path(cfg.output.path)
 
+    # Ensure output dir exists (needed for state DB)
+    output_base.mkdir(parents=True, exist_ok=True)
+
     # State DB next to output
     state_path = output_base / ".tg-export-state.db"
     state = ExportState(state_path)
@@ -442,16 +483,26 @@ async def _run_export(account, config_override, output_override, verify, dry_run
 
     try:
         # Start takeout if possible
+        from telethon.errors import TakeoutInitDelayError
         try:
             await api.start_takeout(
                 contacts=cfg.contacts,
-                message_users=True,
-                message_chats=True,
-                message_megagroups=True,
-                message_channels=True,
+                users=True,
+                chats=True,
+                megagroups=True,
+                channels=True,
                 files=True,
+                max_file_size=cfg.defaults.media.max_file_size_bytes,
             )
             click.echo("Takeout session started.")
+        except TakeoutInitDelayError as e:
+            hours = e.seconds // 3600
+            minutes = (e.seconds % 3600) // 60
+            click.echo(
+                f"Takeout cooldown: need to wait {hours}h {minutes}m "
+                f"({e.seconds}s). Approve takeout in your Telegram client "
+                f"to skip the wait. Using regular API for now."
+            )
         except Exception as e:
             click.echo(f"Takeout not available: {e}. Using regular API.")
 
@@ -479,25 +530,33 @@ async def _run_export(account, config_override, output_override, verify, dry_run
 
         # Render index
         if not dry_run:
-            _render_index(renderer, chats, cfg)
+            await _render_index(renderer, chats, cfg, state)
 
         # Summary
+        from tg_export.exporter import _format_size
         click.echo(f"\nExport complete:")
-        click.echo(f"  Chats: {stats.chats_exported}")
+        click.echo(f"  Chats: {stats.chats_exported}/{stats.chats_included} (skipped {stats.chats_skipped})")
         click.echo(f"  Messages: {stats.messages_exported}")
         click.echo(f"  Files downloaded: {stats.files_downloaded}")
         click.echo(f"  Files skipped: {stats.files_skipped}")
+        click.echo(f"  Data size: {_format_size(stats.data_size)}")
         if stats.errors:
             click.echo(f"  Errors: {len(stats.errors)}")
 
     finally:
+        if api.takeout:
+            try:
+                await api.stop_takeout(success=True)
+            except Exception:
+                pass
         await api.disconnect()
         await state.close()
 
 
-def _render_index(renderer, chats, cfg):
+async def _render_index(renderer, chats, cfg, state):
     """Build and render the main index page."""
     from collections import defaultdict
+    from tg_export.exporter import sanitize_name
     folders = defaultdict(list)
     unfiled = []
 
@@ -505,11 +564,26 @@ def _render_index(renderer, chats, cfg):
         chat_cfg = cfg.resolve_chat_config(chat.id, chat.name, chat.folder, chat.type.value)
         if chat_cfg is None:
             continue
+        # Get real message count from DB if available
+        msg_count = chat.messages_count
+        chat_state = await state.get_chat_state(chat.id)
+        if chat_state and chat_state.get("messages_count"):
+            msg_count = chat_state["messages_count"]
+        else:
+            # Count from messages table
+            try:
+                msgs = await state.count_messages(chat.id)
+                if msgs > 0:
+                    msg_count = msgs
+            except Exception:
+                pass
+
+        dir_name = f"{sanitize_name(chat.name)}_{chat.id}"
         entry = {
             "name": chat.name,
             "type": chat.type.value,
-            "messages": chat.messages_count,
-            "href": f"{'folders/' + chat.folder + '/' if chat.folder else 'unfiled/'}{chat.name}_{chat.id}/messages.html",
+            "messages": msg_count,
+            "href": f"{'folders/' + chat.folder + '/' if chat.folder else 'unfiled/'}{dir_name}/messages.html",
         }
         if chat.folder:
             folders[chat.folder].append(entry)
@@ -518,11 +592,132 @@ def _render_index(renderer, chats, cfg):
 
     sections = []
     if cfg.personal_info:
-        sections.append({"title": "Personal Info", "items": [{"name": "Personal Information", "href": "personal_info.html", "meta": ""}]})
+        sections.append({"title": "Personal Info", "entries": [{"name": "Personal Information", "href": "personal_info.html", "meta": ""}]})
     if cfg.contacts:
-        sections.append({"title": "Contacts", "items": [{"name": "Contacts", "href": "contacts.html", "meta": ""}]})
+        sections.append({"title": "Contacts", "entries": [{"name": "Contacts", "href": "contacts.html", "meta": ""}]})
 
     renderer.render_index(folders=dict(folders), unfiled=unfiled, sections=sections)
+
+
+@main.group()
+def state():
+    """Manage export state (reset, show status, force re-export)."""
+    pass
+
+
+def _open_state(account, config_override, output_override):
+    """Helper: resolve paths and return (state, output_base, account). Caller must open/close."""
+    from tg_export.config import load_config
+    from tg_export.state import ExportState
+
+    mgr = _mgr()
+    account = mgr.resolve_account(account)
+    config_path = mgr.resolve_config(account, config_override)
+    if not config_path.exists():
+        click.echo(f"Config not found: {config_path}")
+        raise SystemExit(1)
+
+    cfg = load_config(config_path)
+    output_base = Path(output_override) if output_override else Path(cfg.output.path)
+    state_path = output_base / ".tg-export-state.db"
+
+    if not state_path.exists():
+        click.echo("No state database found.")
+        raise SystemExit(1)
+
+    return ExportState(state_path), output_base, account
+
+
+@state.command("show")
+@click.option("--account", default=None, help="Account alias")
+@click.option("--config", type=click.Path(exists=True), default=None)
+@click.option("--output", type=click.Path(), default=None)
+@click.argument("chat_id", type=int, required=False)
+def state_show(account, config, output, chat_id):
+    """Show export state for all chats or a specific chat."""
+    asyncio.run(_state_show(account, config, output, chat_id))
+
+
+async def _state_show(account, config_override, output_override, chat_id):
+    st, output_base, account = _open_state(account, config_override, output_override)
+    await st.open()
+    try:
+        if chat_id:
+            chat_state = await st.get_chat_state(chat_id)
+            if not chat_state:
+                click.echo(f"No state for chat {chat_id}")
+                return
+            msg_count = await st.count_messages(chat_id)
+            click.echo(f"Chat {chat_id}:")
+            click.echo(f"  last_msg_id:   {chat_state['last_msg_id']}")
+            click.echo(f"  oldest_msg_id: {chat_state['oldest_msg_id']}")
+            click.echo(f"  full_history:  {bool(chat_state['full_history'])}")
+            click.echo(f"  messages in DB: {msg_count}")
+            click.echo(f"  updated_at:    {chat_state['updated_at']}")
+        else:
+            async with st._db.execute(
+                "SELECT es.*, (SELECT COUNT(*) FROM messages m WHERE m.chat_id=es.chat_id) as msg_count "
+                "FROM export_state es ORDER BY es.updated_at DESC"
+            ) as cur:
+                rows = await cur.fetchall()
+            if not rows:
+                click.echo("No export state records.")
+                return
+            click.echo(f"{'chat_id':>15}  {'msgs':>6}  {'last_id':>8}  {'oldest_id':>9}  {'full':>4}  updated_at")
+            click.echo("-" * 80)
+            for r in rows:
+                r = dict(r)
+                full = "yes" if r["full_history"] else "no"
+                click.echo(f"{r['chat_id']:>15}  {r['msg_count']:>6}  {r['last_msg_id']:>8}  {r['oldest_msg_id']:>9}  {full:>4}  {r['updated_at']}")
+    finally:
+        await st.close()
+
+
+@state.command("reset")
+@click.option("--account", default=None, help="Account alias")
+@click.option("--config", type=click.Path(exists=True), default=None)
+@click.option("--output", type=click.Path(), default=None)
+@click.option("--all", "reset_all", is_flag=True, help="Reset all chats")
+@click.option("--delete-messages", is_flag=True, help="Also delete messages from DB")
+@click.argument("chat_id", type=int, required=False)
+def state_reset(account, config, output, reset_all, delete_messages, chat_id):
+    """Reset export state to force re-download. Specify chat_id or --all."""
+    if not chat_id and not reset_all:
+        click.echo("Specify chat_id or --all")
+        raise SystemExit(1)
+    asyncio.run(_state_reset(account, config, output, reset_all, delete_messages, chat_id))
+
+
+async def _state_reset(account, config_override, output_override, reset_all, delete_messages, chat_id):
+    st, output_base, account = _open_state(account, config_override, output_override)
+    await st.open()
+    try:
+        if reset_all:
+            await st._db.execute("UPDATE export_state SET last_msg_id=0, oldest_msg_id=0, full_history=0")
+            if delete_messages:
+                await st._db.execute("DELETE FROM messages")
+                await st._db.execute("DELETE FROM files")
+            await st._db.commit()
+            click.echo("Reset all chats.")
+        else:
+            chat_state = await st.get_chat_state(chat_id)
+            if not chat_state:
+                click.echo(f"No state for chat {chat_id}")
+                return
+            await st._db.execute(
+                "UPDATE export_state SET last_msg_id=0, oldest_msg_id=0, full_history=0 WHERE chat_id=?",
+                (chat_id,),
+            )
+            if delete_messages:
+                await st._db.execute("DELETE FROM messages WHERE chat_id=?", (chat_id,))
+                await st._db.execute("DELETE FROM files WHERE chat_id=?", (chat_id,))
+            await st._db.commit()
+            msg = f"Reset chat {chat_id}."
+            if delete_messages:
+                msg += " Messages and files records deleted."
+            click.echo(msg)
+    finally:
+        await st.close()
 
 
 @main.command("verify")

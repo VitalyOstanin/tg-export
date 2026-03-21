@@ -170,6 +170,8 @@ class ExportState:
             CREATE TABLE IF NOT EXISTS export_state (
                 chat_id        INTEGER PRIMARY KEY,
                 last_msg_id    INTEGER NOT NULL,
+                oldest_msg_id  INTEGER DEFAULT 0,
+                full_history   INTEGER DEFAULT 0,
                 messages_count INTEGER DEFAULT 0,
                 updated_at     TIMESTAMP
             );
@@ -255,12 +257,36 @@ class ExportState:
 
     # -- export_state --
 
+    async def get_chat_state(self, chat_id: int) -> dict | None:
+        """Get full export state for a chat."""
+        async with self._db.execute(
+            "SELECT * FROM export_state WHERE chat_id=?", (chat_id,)
+        ) as cur:
+            row = await cur.fetchone()
+            return dict(row) if row else None
+
     async def set_last_msg_id(self, chat_id: int, msg_id: int):
         await self._db.execute(
             """INSERT INTO export_state (chat_id, last_msg_id, updated_at)
                VALUES (?, ?, ?)
                ON CONFLICT(chat_id) DO UPDATE SET last_msg_id=?, updated_at=?""",
             (chat_id, msg_id, datetime.now(), msg_id, datetime.now()),
+        )
+        await self._db.commit()
+
+    async def set_oldest_msg_id(self, chat_id: int, msg_id: int):
+        await self._db.execute(
+            """UPDATE export_state SET oldest_msg_id=?, updated_at=?
+               WHERE chat_id=?""",
+            (msg_id, datetime.now(), chat_id),
+        )
+        await self._db.commit()
+
+    async def set_full_history(self, chat_id: int, full: bool = True):
+        await self._db.execute(
+            """UPDATE export_state SET full_history=?, updated_at=?
+               WHERE chat_id=?""",
+            (int(full), datetime.now(), chat_id),
         )
         await self._db.commit()
 
@@ -304,10 +330,31 @@ class ExportState:
 
     # -- messages --
 
-    async def store_message(self, msg: Message):
-        """Store message with searchable columns + JSON for complex fields."""
-        await self._db.execute(
-            """INSERT INTO messages (
+    def _msg_to_params(self, msg: Message) -> tuple:
+        """Convert Message to SQL parameter tuple (insert + update values)."""
+        values = (
+            msg.chat_id, msg.id,
+            msg.date.isoformat() if msg.date else None,
+            msg.edited.isoformat() if msg.edited else None,
+            msg.from_id, msg.from_name,
+            _plain_text(msg.text),
+            _text_parts_to_json(msg.text),
+            msg.media.type.value if msg.media else None,
+            _media_to_json(msg.media),
+            msg.action.type if msg.action else None,
+            _action_to_json(msg.action),
+            msg.reply_to_msg_id, msg.reply_to_peer_id,
+            _forward_to_json(msg.forwarded_from),
+            _reactions_to_json(msg.reactions),
+            int(msg.is_outgoing), msg.signature, msg.via_bot_id,
+            msg.saved_from_chat_id,
+            _buttons_to_json(msg.inline_buttons),
+            msg.topic_id, msg.grouped_id,
+        )
+        # UPDATE values are same as INSERT values minus chat_id and msg_id
+        return values + values[2:]
+
+    _UPSERT_SQL = """INSERT INTO messages (
                 chat_id, msg_id, date, edited, from_id, from_name,
                 text, text_parts, media_type, media, action_type, action,
                 reply_to_msg_id, reply_to_peer_id, forwarded_from,
@@ -320,45 +367,20 @@ class ExportState:
                 action_type=?, action=?,
                 reply_to_msg_id=?, reply_to_peer_id=?, forwarded_from=?,
                 reactions=?, is_outgoing=?, signature=?, via_bot_id=?,
-                saved_from_chat_id=?, inline_buttons=?, topic_id=?, grouped_id=?""",
-            (
-                # INSERT values
-                msg.chat_id, msg.id,
-                msg.date.isoformat() if msg.date else None,
-                msg.edited.isoformat() if msg.edited else None,
-                msg.from_id, msg.from_name,
-                _plain_text(msg.text),
-                _text_parts_to_json(msg.text),
-                msg.media.type.value if msg.media else None,
-                _media_to_json(msg.media),
-                msg.action.type if msg.action else None,
-                _action_to_json(msg.action),
-                msg.reply_to_msg_id, msg.reply_to_peer_id,
-                _forward_to_json(msg.forwarded_from),
-                _reactions_to_json(msg.reactions),
-                int(msg.is_outgoing), msg.signature, msg.via_bot_id,
-                msg.saved_from_chat_id,
-                _buttons_to_json(msg.inline_buttons),
-                msg.topic_id, msg.grouped_id,
-                # UPDATE values
-                msg.date.isoformat() if msg.date else None,
-                msg.edited.isoformat() if msg.edited else None,
-                msg.from_id, msg.from_name,
-                _plain_text(msg.text),
-                _text_parts_to_json(msg.text),
-                msg.media.type.value if msg.media else None,
-                _media_to_json(msg.media),
-                msg.action.type if msg.action else None,
-                _action_to_json(msg.action),
-                msg.reply_to_msg_id, msg.reply_to_peer_id,
-                _forward_to_json(msg.forwarded_from),
-                _reactions_to_json(msg.reactions),
-                int(msg.is_outgoing), msg.signature, msg.via_bot_id,
-                msg.saved_from_chat_id,
-                _buttons_to_json(msg.inline_buttons),
-                msg.topic_id, msg.grouped_id,
-            ),
-        )
+                saved_from_chat_id=?, inline_buttons=?, topic_id=?, grouped_id=?"""
+
+    async def store_message(self, msg: Message):
+        """Store single message (no commit — caller should batch-commit)."""
+        await self._db.execute(self._UPSERT_SQL, self._msg_to_params(msg))
+
+    async def store_messages_batch(self, messages: list[Message]):
+        """Store a batch of messages in a single transaction."""
+        params = [self._msg_to_params(msg) for msg in messages]
+        await self._db.executemany(self._UPSERT_SQL, params)
+        await self._db.commit()
+
+    async def commit(self):
+        """Explicit commit for batched operations."""
         await self._db.commit()
 
     async def load_messages(self, chat_id: int) -> list[Message]:
@@ -368,6 +390,14 @@ class ExportState:
         ) as cur:
             rows = await cur.fetchall()
             return [_row_to_message(dict(r)) for r in rows]
+
+    async def count_messages(self, chat_id: int) -> int:
+        """Count messages for a chat."""
+        async with self._db.execute(
+            "SELECT COUNT(*) FROM messages WHERE chat_id=?", (chat_id,)
+        ) as cur:
+            row = await cur.fetchone()
+            return row[0] if row else 0
 
     async def search_messages(
         self, chat_id: int,

@@ -134,6 +134,10 @@ class HtmlRenderer:
         chat_dir.mkdir(parents=True, exist_ok=True)
         per_file = self.config.messages_per_file
 
+        # Fix media paths: make local_path relative to chat_dir
+        for msg in messages:
+            _fix_media_path(msg, chat_dir)
+
         # Group albums
         processed = _group_albums(messages)
 
@@ -479,6 +483,36 @@ def _relative_path(from_dir: Path, to_dir: Path) -> str:
                 if current == current.parent:
                     break
         return str(to_dir)
+
+
+def _fix_media_path(msg: Message, chat_dir: Path):
+    """Make media local_path relative to chat_dir for correct HTML references."""
+    media = msg.media
+    if media is None:
+        return
+    file_obj = getattr(media, "file", None)
+    if file_obj is None or not file_obj.local_path:
+        return
+    p = Path(file_obj.local_path)
+    if p.is_absolute():
+        try:
+            file_obj.local_path = str(p.relative_to(chat_dir))
+        except ValueError:
+            pass
+    else:
+        # Relative path like "export_output/account/unfiled/Chat_123/photos/file.jpg"
+        # Try to find chat_dir suffix in the path
+        try:
+            resolved = Path.cwd() / p
+            file_obj.local_path = str(resolved.relative_to(chat_dir.resolve()))
+        except ValueError:
+            # Last resort: just keep the filename parts after the media subdir
+            parts = p.parts
+            for i, part in enumerate(parts):
+                if part in ("photos", "videos", "files", "voice_messages",
+                            "video_messages", "stickers", "gifs"):
+                    file_obj.local_path = str(Path(*parts[i:]))
+                    return
 
 
 def _format_size(size: int) -> str:
