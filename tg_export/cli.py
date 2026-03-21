@@ -59,6 +59,42 @@ def auth_list():
         click.echo(f"  {acc}")
 
 
+@auth.command("check")
+@click.argument("name", required=False, default=None)
+def auth_check(name):
+    """Check if account sessions are valid."""
+    asyncio.run(_auth_check(name))
+
+
+async def _auth_check(name):
+    from tg_export.api import TgApi
+
+    mgr = _mgr()
+    accounts = [name] if name else mgr.list_accounts()
+    if not accounts:
+        click.echo("No accounts configured.")
+        return
+
+    api_id, api_hash = mgr.load_credentials()
+    for acc in accounts:
+        session = mgr.session_path(acc)
+        if not session.exists():
+            click.echo(f"  {acc}: session file missing")
+            continue
+        api = TgApi(session, api_id, api_hash)
+        try:
+            await api.connect()
+            if await api.client.is_user_authorized():
+                me = await api.client.get_me()
+                click.echo(f"  {acc}: OK - {me.first_name} {me.last_name or ''} (id={me.id})")
+            else:
+                click.echo(f"  {acc}: not authorized")
+        except Exception as e:
+            click.echo(f"  {acc}: error - {e}")
+        finally:
+            await api.disconnect()
+
+
 @auth.command("remove")
 @click.argument("name")
 def auth_remove(name):

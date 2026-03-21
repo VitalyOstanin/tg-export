@@ -14,6 +14,7 @@ class AccountManager:
 
     def ensure_dirs(self):
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
+        os.chmod(self.sessions_dir, 0o700)
 
     @property
     def sessions_dir(self) -> Path:
@@ -60,10 +61,44 @@ class AccountManager:
 
     async def add_account(self, name: str):
         """Interactive Telethon login. Requires terminal interaction."""
+        import logging
         from telethon import TelegramClient
+
+        logging.basicConfig(level=logging.DEBUG)
+        logging.getLogger("telethon").setLevel(logging.DEBUG)
 
         api_id, api_hash = self.load_credentials()
         session_path = str(self.session_path(name))
+
+        # Удаляем старую сессию если есть (может быть битая)
+        old = self.session_path(name)
+        if old.exists():
+            old.unlink()
+        journal = old.with_suffix(".session-journal")
+        if journal.exists():
+            journal.unlink()
+
         client = TelegramClient(session_path, api_id, api_hash)
-        await client.start()
+        await client.connect()
+
+        if not await client.is_user_authorized():
+            phone = input("Phone number (with +): ")
+            sent = await client.send_code_request(phone)
+            print(f"Code type: {sent.type.__class__.__name__}")
+            print(f"Next type: {sent.next_type.__class__.__name__ if sent.next_type else 'none'}")
+            print(f"Timeout: {sent.timeout}s" if sent.timeout else "No timeout")
+
+            code = input("Enter code: ")
+            try:
+                await client.sign_in(phone, code)
+            except Exception as e:
+                if "Two-steps verification" in str(e) or "SessionPasswordNeeded" in str(type(e).__name__) or "password" in str(e).lower():
+                    import getpass
+                    password = getpass.getpass("2FA password: ")
+                    await client.sign_in(password=password)
+                else:
+                    raise
+
+        me = await client.get_me()
+        print(f"Logged in as: {me.first_name} (id={me.id})")
         await client.disconnect()
