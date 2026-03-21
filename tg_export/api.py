@@ -56,10 +56,12 @@ class TgApi:
     async def get_folders(self) -> dict[str, list[int]]:
         """Get Telegram folders as {name: [chat_ids]}."""
         result = await self.client(GetDialogFiltersRequest())
+        filters = getattr(result, "filters", result) or []
         folders = {}
-        for f in result:
+        for f in filters:
             if hasattr(f, "title") and hasattr(f, "include_peers"):
-                title = f.title
+                raw_title = f.title
+                title = raw_title.text if hasattr(raw_title, "text") else str(raw_title)
                 peer_ids = []
                 for peer in f.include_peers:
                     if hasattr(peer, "channel_id"):

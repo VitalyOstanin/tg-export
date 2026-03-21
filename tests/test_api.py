@@ -66,3 +66,68 @@ async def test_fallback_to_client_when_no_takeout():
         pass
 
     api.client.iter_messages.assert_called_once_with(123, min_id=0)
+
+
+@pytest.mark.asyncio
+async def test_get_folders_with_dialog_filters_object():
+    """get_folders should handle DialogFilters object with .filters attribute."""
+    api = TgApi.__new__(TgApi)
+    api.client = AsyncMock()
+
+    # Telethon returns DialogFilters with .filters, not iterable directly
+    mock_filter = MagicMock()
+    mock_title = MagicMock()
+    mock_title.text = "Work"
+    mock_filter.title = mock_title
+    mock_peer = MagicMock()
+    mock_peer.user_id = 123
+    del mock_peer.channel_id
+    del mock_peer.chat_id
+    mock_filter.include_peers = [mock_peer]
+
+    mock_result = MagicMock()
+    mock_result.filters = [mock_filter]
+    api.client.return_value = mock_result
+
+    folders = await api.get_folders()
+    assert "Work" in folders
+    assert 123 in folders["Work"]
+
+
+@pytest.mark.asyncio
+async def test_get_folders_with_text_with_entities_title():
+    """get_folders should extract .text from TextWithEntities title."""
+    api = TgApi.__new__(TgApi)
+    api.client = AsyncMock()
+
+    mock_filter = MagicMock()
+    # title is TextWithEntities with .text attribute
+    mock_title = MagicMock()
+    mock_title.text = "Семья"
+    mock_filter.title = mock_title
+    mock_filter.include_peers = []
+
+    mock_result = MagicMock()
+    mock_result.filters = [mock_filter]
+    api.client.return_value = mock_result
+
+    folders = await api.get_folders()
+    assert "Семья" in folders
+
+
+@pytest.mark.asyncio
+async def test_get_folders_with_plain_string_title():
+    """get_folders should handle plain string title (older Telethon)."""
+    api = TgApi.__new__(TgApi)
+    api.client = AsyncMock()
+
+    mock_filter = MagicMock()
+    mock_filter.title = "News"  # plain string, no .text
+    mock_filter.include_peers = []
+
+    mock_result = MagicMock()
+    mock_result.filters = [mock_filter]
+    api.client.return_value = mock_result
+
+    folders = await api.get_folders()
+    assert "News" in folders
