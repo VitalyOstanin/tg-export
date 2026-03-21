@@ -117,10 +117,24 @@ class AccountManager:
             try:
                 await client.sign_in(phone, code)
             except Exception as e:
-                if "Two-steps verification" in str(e) or "SessionPasswordNeeded" in str(type(e).__name__) or "password" in str(e).lower():
+                if "SessionPasswordNeeded" in type(e).__name__:
                     import getpass
-                    password = getpass.getpass("2FA password: ")
-                    await client.sign_in(password=password)
+                    for attempt in range(3):
+                        password = getpass.getpass("2FA password: ")
+                        try:
+                            await client.sign_in(password=password)
+                            break
+                        except Exception as e2:
+                            if "PasswordHashInvalid" in type(e2).__name__:
+                                remaining = 2 - attempt
+                                if remaining > 0:
+                                    print(f"Wrong password. {remaining} attempts left.")
+                                else:
+                                    print("Too many wrong attempts.")
+                                    await client.disconnect()
+                                    raise
+                            else:
+                                raise
                 else:
                     raise
 
