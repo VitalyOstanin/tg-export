@@ -20,15 +20,22 @@ def _mgr() -> AccountManager:
 def main(ctx, debug):
     """tg-export: Flexible Telegram data export tool."""
     import logging
+    from rich.logging import RichHandler
     level = logging.DEBUG if debug else logging.WARNING
-    logging.basicConfig(level=level, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+    logging.basicConfig(
+        level=level,
+        format="%(name)s %(message)s",
+        handlers=[RichHandler(rich_tracebacks=True, show_path=debug)],
+    )
+    if not debug:
+        logging.getLogger("aiosqlite").setLevel(logging.ERROR)
     ctx.ensure_object(dict)
     ctx.obj["debug"] = debug
 
 
 @main.group()
 def auth():
-    """Manage Telegram accounts."""
+    """Telegram authentication: credentials, login, session check."""
     pass
 
 
@@ -53,18 +60,6 @@ def auth_add(name):
         raise SystemExit(1)
     asyncio.run(mgr.add_account(name))
     click.echo(f"Account '{name}' added successfully.")
-
-
-@auth.command("list")
-def auth_list():
-    """List configured accounts."""
-    mgr = _mgr()
-    accounts = mgr.list_accounts()
-    if not accounts:
-        click.echo("No accounts configured.")
-        return
-    for acc in accounts:
-        click.echo(f"  {acc}")
 
 
 @auth.command("check")
@@ -104,9 +99,29 @@ async def _auth_check(name):
             await api.disconnect()
 
 
-@auth.command("default")
+@main.group()
+def account():
+    """Manage accounts: list, set default, remove."""
+    pass
+
+
+@account.command("list")
+def account_list():
+    """List configured accounts."""
+    mgr = _mgr()
+    accounts = mgr.list_accounts()
+    default = mgr.get_default_account()
+    if not accounts:
+        click.echo("No accounts configured.")
+        return
+    for acc in accounts:
+        marker = " (default)" if acc == default else ""
+        click.echo(f"  {acc}{marker}")
+
+
+@account.command("default")
 @click.argument("name", required=False, default=None)
-def auth_default(name):
+def account_default(name):
     """Set or show default account."""
     mgr = _mgr()
     if name:
@@ -123,9 +138,9 @@ def auth_default(name):
             click.echo("No default account set.")
 
 
-@auth.command("remove")
+@account.command("remove")
 @click.argument("name")
-def auth_remove(name):
+def account_remove(name):
     """Remove a Telegram account."""
     mgr = _mgr()
     if name not in mgr.list_accounts():
@@ -464,8 +479,9 @@ async def _run_export(account, config_override, output_override, verify, dry_run
         raise SystemExit(1)
 
     cfg = load_config(config_path)
-
     output_base = Path(output_override) if output_override else Path(cfg.output.path)
+    click.echo(f"Account: {account}")
+    click.echo(f"Output: {output_base.resolve()}")
 
     # Ensure output dir exists (needed for state DB)
     output_base.mkdir(parents=True, exist_ok=True)
@@ -510,12 +526,36 @@ async def _run_export(account, config_override, output_override, verify, dry_run
         renderer = HtmlRenderer(output_dir=output_base, config=cfg.output)
         renderer.setup()
 
+        # Setup tdesktop import indexes
+        from tg_export.importer import build_tdesktop_indexes
+        tdesktop_indexes = build_tdesktop_indexes(cfg.import_existing)
+        if tdesktop_indexes:
+            for idx in tdesktop_indexes:
+                click.echo(f"tdesktop import: {idx.export_path}")
+
+        # Auto-discover sibling account state DBs for file deduplication
+        import logging
+        logger = logging.getLogger(__name__)
+        sibling_dbs = []
+        for sibling in output_base.parent.iterdir():
+            if sibling == output_base or not sibling.is_dir():
+                continue
+            sdb = sibling / ".tg-export-state.db"
+            if sdb.exists():
+                sibling_dbs.append(sdb)
+                logger.debug("sibling state DB: %s", sdb)
+        if sibling_dbs:
+            names = [s.parent.name for s in sibling_dbs]
+            click.echo(f"Sibling exports for file dedup: {', '.join(names)}")
+
         # Setup downloader
         min_free = mgr.load_min_free_space() or 20 * 1024**3  # default 20GB
         downloader = MediaDownloader(
             api=api, state=state,
             config=cfg.defaults.media,
             min_free_bytes=min_free,
+            tdesktop_indexes=tdesktop_indexes,
+            sibling_db_paths=sibling_dbs,
         )
 
         # Fetch chat list
@@ -538,7 +578,14 @@ async def _run_export(account, config_override, output_override, verify, dry_run
         click.echo(f"  Chats: {stats.chats_exported}/{stats.chats_included} (skipped {stats.chats_skipped})")
         click.echo(f"  Messages: {stats.messages_exported}")
         click.echo(f"  Files downloaded: {stats.files_downloaded}")
-        click.echo(f"  Files skipped: {stats.files_skipped}")
+        if stats.files_imported:
+            click.echo(f"  Files imported: {stats.files_imported}")
+        if stats.files_cached:
+            click.echo(f"  Files cached: {stats.files_cached}")
+        if stats.files_too_large:
+            click.echo(f"  Files too large: {stats.files_too_large}")
+        if stats.files_type_skip:
+            click.echo(f"  Files type skip: {stats.files_type_skip}")
         click.echo(f"  Data size: {_format_size(stats.data_size)}")
         if stats.errors:
             click.echo(f"  Errors: {len(stats.errors)}")
