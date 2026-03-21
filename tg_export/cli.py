@@ -24,11 +24,25 @@ def auth():
     pass
 
 
+@auth.command("credentials")
+@click.option("--api-id", prompt="API ID (from https://my.telegram.org)", type=int, help="Telegram API ID")
+@click.option("--api-hash", prompt="API Hash", help="Telegram API Hash")
+def auth_credentials(api_id, api_hash):
+    """Set Telegram API credentials (api_id and api_hash)."""
+    mgr = _mgr()
+    mgr.save_credentials(api_id=api_id, api_hash=api_hash)
+    click.echo("Credentials saved.")
+
+
 @auth.command("add")
 @click.option("--name", prompt="Account alias", help="Account alias")
 def auth_add(name):
     """Add a new Telegram account (interactive login)."""
     mgr = _mgr()
+    cred_path = mgr.config_dir / "api_credentials.yaml"
+    if not cred_path.exists():
+        click.echo("No API credentials found. Run 'tg-export auth credentials' first.")
+        raise SystemExit(1)
     asyncio.run(mgr.add_account(name))
     click.echo(f"Account '{name}' added successfully.")
 
