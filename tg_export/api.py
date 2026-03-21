@@ -16,8 +16,12 @@ from telethon.tl.types import InputUserSelf
 
 
 class TgApi:
-    def __init__(self, session_path: str | Path, api_id: int, api_hash: str):
-        self.client = TelegramClient(str(session_path), api_id, api_hash)
+    def __init__(self, session_path: str | Path, api_id: int, api_hash: str,
+                 proxy: tuple | None = None):
+        kwargs = {}
+        if proxy:
+            kwargs["proxy"] = proxy
+        self.client = TelegramClient(str(session_path), api_id, api_hash, **kwargs)
         self.takeout = None
 
     async def connect(self):

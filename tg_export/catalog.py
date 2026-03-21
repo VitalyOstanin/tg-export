@@ -80,14 +80,15 @@ def format_catalog_json(chats: list[Chat]) -> str:
     return json.dumps(data, ensure_ascii=False, indent=2)
 
 
-def generate_config_template(chats: list[Chat]) -> str:
+def generate_config_template(chats: list[Chat], account: str | None = None) -> str:
     """Generate config YAML template from catalog."""
+    output_path = f"./export_output/{account}" if account else "./export_output"
     lines = [
         "# tg-export config template",
         "# Uncomment and customize sections as needed",
         "",
         "output:",
-        "  path: ./export_output",
+        f"  path: {output_path}",
         "  format: html",
         "  messages_per_file: 1000",
         "  min_free_space: 20GB",
@@ -95,7 +96,7 @@ def generate_config_template(chats: list[Chat]) -> str:
         "defaults:",
         "  media:",
         "    types: [photo, video, voice, video_note, sticker, gif, document]",
-        "    max_file_size: 50MB",
+        "    max_file_size: 100MB",
         "    concurrent_downloads: 3",
         "  export_service_messages: true",
         "",
@@ -112,6 +113,20 @@ def generate_config_template(chats: list[Chat]) -> str:
         "",
         "unmatched:",
         "  action: skip  # skip | export_with_defaults | ask",
+        "",
+        "# type_rules:",
+        "#   bots:",
+        "#     skip: true",
+        "#   public_channel:",
+        "#     media:",
+        "#       types: [photo]",
+        "#       max_file_size: 10MB",
+        "#   private:  # category: personal, private_group, private_supergroup, private_channel, self",
+        "#     media:",
+        "#       types: [photo, document]",
+        "#   # categories: private, public, groups, channels, bots",
+        "#   # exact types: personal, bot, self, private_group, private_supergroup,",
+        "#   #   public_supergroup, private_channel, public_channel",
         "",
         "# folders:",
         '#   "Folder Name":',

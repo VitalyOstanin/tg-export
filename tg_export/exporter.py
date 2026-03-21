@@ -128,7 +128,7 @@ class Exporter:
         if chat_list is None:
             return stats
 
-        output_base = Path(self.config.output.path) / self.account
+        output_base = Path(self.config.output.path)
 
         with Progress(
             SpinnerColumn(),
@@ -146,6 +146,7 @@ class Exporter:
 
                 chat_config = self.config.resolve_chat_config(
                     chat_id=chat.id, chat_name=chat.name, folder=chat.folder,
+                    chat_type=chat.type.value,
                 )
                 if chat_config is None:
                     progress.advance(main_task)

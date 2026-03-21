@@ -12,6 +12,8 @@ def _mgr() -> AccountManager:
     return mgr
 
 
+
+
 @click.group()
 @click.option("--debug", is_flag=True, default=False, help="Enable debug logging")
 @click.pass_context
@@ -87,7 +89,8 @@ async def _auth_check(name):
         if not session.exists():
             click.echo(f"  {acc}: session file missing")
             continue
-        api = TgApi(session, api_id, api_hash)
+        proxy = mgr.load_proxy()
+        api = TgApi(session, api_id, api_hash, proxy=proxy)
         try:
             await api.connect()
             if await api.client.is_user_authorized():
@@ -149,7 +152,8 @@ async def _list_chats(account, output, fmt, include_left):
     mgr = _mgr()
     account = mgr.resolve_account(account)
     api_id, api_hash = mgr.load_credentials()
-    api = TgApi(mgr.session_path(account), api_id, api_hash)
+    proxy = mgr.load_proxy()
+    api = TgApi(mgr.session_path(account), api_id, api_hash, proxy=proxy)
     await api.connect()
 
     try:
@@ -195,11 +199,12 @@ async def _init_config(account, from_catalog, output):
         from tg_export.api import TgApi
         from tg_export.catalog import fetch_catalog
         api_id, api_hash = mgr.load_credentials()
-        api = TgApi(mgr.session_path(account), api_id, api_hash)
+        proxy = mgr.load_proxy()
+        api = TgApi(mgr.session_path(account), api_id, api_hash, proxy=proxy)
         await api.connect()
         try:
             chats = await fetch_catalog(api)
-            template = generate_config_template(chats)
+            template = generate_config_template(chats, account=account)
             config_path.write_text(template, encoding="utf-8")
             click.echo(f"Config template saved to {config_path}")
         finally:
@@ -239,8 +244,7 @@ async def _run_export(account, config_override, output_override, verify, dry_run
 
     cfg = load_config(config_path)
 
-    # Output directory: {config.output.path}/{account}/
-    output_base = Path(output_override) if output_override else Path(cfg.output.path) / account
+    output_base = Path(output_override) if output_override else Path(cfg.output.path)
 
     # State DB next to output
     state_path = output_base / ".tg-export-state.db"
@@ -249,7 +253,8 @@ async def _run_export(account, config_override, output_override, verify, dry_run
 
     # Connect API
     api_id, api_hash = mgr.load_credentials()
-    api = TgApi(mgr.session_path(account), api_id, api_hash)
+    proxy = mgr.load_proxy()
+    api = TgApi(mgr.session_path(account), api_id, api_hash, proxy=proxy)
     await api.connect()
 
     try:
@@ -313,7 +318,7 @@ def _render_index(renderer, chats, cfg):
     unfiled = []
 
     for chat in chats:
-        chat_cfg = cfg.resolve_chat_config(chat.id, chat.name, chat.folder)
+        chat_cfg = cfg.resolve_chat_config(chat.id, chat.name, chat.folder, chat.type.value)
         if chat_cfg is None:
             continue
         entry = {
@@ -357,7 +362,7 @@ async def _verify_files(account, config_override, output_override):
         raise SystemExit(1)
 
     cfg = load_config(config_path)
-    output_base = Path(output_override) if output_override else Path(cfg.output.path) / account
+    output_base = Path(output_override) if output_override else Path(cfg.output.path)
     state_path = output_base / ".tg-export-state.db"
 
     if not state_path.exists():

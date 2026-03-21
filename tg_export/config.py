@@ -83,16 +83,34 @@ class ChatRule:
 
 
 @dataclass
+class TypeRule:
+    media: MediaConfig | None = None
+    date_from: date | None = None
+    date_to: date | None = None
+    skip: bool = False
+
+
+@dataclass
 class FolderRule:
     media: MediaConfig | None = None
     skip: bool = False
     chats: list[ChatRule] = field(default_factory=list)
 
 
+# Shortcut categories -> exact ChatType values
+TYPE_CATEGORIES: dict[str, list[str]] = {
+    "private": ["personal", "private_group", "private_supergroup", "private_channel", "self"],
+    "public": ["public_supergroup", "public_channel"],
+    "groups": ["private_group", "private_supergroup", "public_supergroup"],
+    "channels": ["private_channel", "public_channel"],
+    "bots": ["bot"],
+}
+
+
 @dataclass
 class DefaultsConfig:
     media: MediaConfig = field(default_factory=lambda: MediaConfig(
-        types=["photo"], max_file_size_bytes=50 * 1024**2, concurrent_downloads=3
+        types=["photo"], max_file_size_bytes=100 * 1024**2, concurrent_downloads=3
     ))
     date_from: date | None = None
     date_to: date | None = None
@@ -113,6 +131,7 @@ class Config:
     left_channels_action: str = "skip"
     import_existing: list[ImportExistingEntry] = field(default_factory=list)
     folders: dict[str, FolderRule] = field(default_factory=dict)
+    type_rules: dict[str, TypeRule] = field(default_factory=dict)
     chats: list[ChatRule] = field(default_factory=list)
     unmatched_action: str = "skip"
 
@@ -121,9 +140,11 @@ class Config:
         chat_id: int,
         chat_name: str,
         folder: str | None,
+        chat_type: str | None = None,
     ) -> ChatExportConfig | None:
-        """Resolve config for a chat using priority rules (spec 5.3).
+        """Resolve config for a chat using priority rules.
 
+        Priority: chats > folders.chats > folders > type_rules > defaults.
         Returns None if the chat should be skipped.
         """
         # Priority 1: explicit chats section
@@ -155,7 +176,13 @@ class Config:
                     export_service_messages=self.defaults.export_service_messages,
                 )
 
-        # Priority 4: defaults (if unmatched allows it)
+        # Priority 4: type_rules
+        if chat_type and self.type_rules:
+            type_rule = self._match_type_rule(chat_type)
+            if type_rule is not None:
+                return self._type_rule_to_export_config(type_rule)
+
+        # Priority 5: defaults (if unmatched allows it)
         if self.unmatched_action == "skip":
             return None
 
@@ -166,7 +193,29 @@ class Config:
             export_service_messages=self.defaults.export_service_messages,
         )
 
+    def _match_type_rule(self, chat_type: str) -> TypeRule | None:
+        """Find matching type rule. Exact type > category, first match wins."""
+        # Exact type match first
+        if chat_type in self.type_rules:
+            return self.type_rules[chat_type]
+        # Category match (order of type_rules dict)
+        for key, rule in self.type_rules.items():
+            if key in TYPE_CATEGORIES and chat_type in TYPE_CATEGORIES[key]:
+                return rule
+        return None
+
     def _rule_to_export_config(self, rule: ChatRule) -> ChatExportConfig | None:
+        if rule.skip:
+            return None
+        media = rule.media if rule.media is not None else self.defaults.media
+        return ChatExportConfig(
+            media=media,
+            date_from=rule.date_from or self.defaults.date_from,
+            date_to=rule.date_to or self.defaults.date_to,
+            export_service_messages=self.defaults.export_service_messages,
+        )
+
+    def _type_rule_to_export_config(self, rule: TypeRule) -> ChatExportConfig | None:
         if rule.skip:
             return None
         media = rule.media if rule.media is not None else self.defaults.media
@@ -186,7 +235,7 @@ def _parse_media_config(d: dict) -> MediaConfig:
     types = d.get("types", ["photo"])
     if types == "all":
         types = ["all"]
-    max_size = parse_size(d.get("max_file_size", "50MB"))
+    max_size = parse_size(d.get("max_file_size", "100MB"))
     concurrent = d.get("concurrent_downloads", 3)
     return MediaConfig(types=types, max_file_size_bytes=max_size, concurrent_downloads=concurrent)
 
@@ -212,6 +261,18 @@ def _parse_chat_rule(d: dict) -> ChatRule:
         date_from=_parse_date(d.get("date_from")),
         date_to=_parse_date(d.get("date_to")),
         skip=d.get("skip", False),
+    )
+
+
+def _parse_type_rule(d: dict) -> TypeRule:
+    if isinstance(d, dict) and d.get("skip"):
+        return TypeRule(skip=True)
+    media = _parse_media_config(d["media"]) if "media" in d else None
+    return TypeRule(
+        media=media,
+        date_from=_parse_date(d.get("date_from")),
+        date_to=_parse_date(d.get("date_to")),
+        skip=False,
     )
 
 
@@ -267,6 +328,11 @@ def load_config(path: Path) -> Config:
     for name, folder_data in raw.get("folders", {}).items():
         folders[name] = _parse_folder_rule(folder_data)
 
+    # Type rules
+    type_rules = {}
+    for type_key, type_data in raw.get("type_rules", {}).items():
+        type_rules[type_key] = _parse_type_rule(type_data)
+
     # Chats
     chats = [_parse_chat_rule(c) for c in raw.get("chats", [])]
 
@@ -291,6 +357,7 @@ def load_config(path: Path) -> Config:
         left_channels_action=left_channels_action,
         import_existing=import_existing,
         folders=folders,
+        type_rules=type_rules,
         chats=chats,
         unmatched_action=unmatched_action,
     )

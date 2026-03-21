@@ -84,6 +84,28 @@ class AccountManager:
         data = yaml.safe_load(cred_path.read_text())
         return data["api_id"], data["api_hash"]
 
+    def load_proxy(self) -> tuple | None:
+        """Load global proxy settings from api_credentials.yaml."""
+        cred_path = self.config_dir / "api_credentials.yaml"
+        if not cred_path.exists():
+            return None
+        data = yaml.safe_load(cred_path.read_text())
+        proxy_raw = data.get("proxy")
+        if not proxy_raw or not isinstance(proxy_raw, dict):
+            return None
+        proxy_type = proxy_raw.get("type", "socks5")
+        valid_types = ("socks5", "socks4", "http")
+        if proxy_type not in valid_types:
+            raise ValueError(f"Unknown proxy type: {proxy_type!r}, expected one of {valid_types}")
+        return (
+            proxy_type,
+            proxy_raw.get("host", "127.0.0.1"),
+            proxy_raw.get("port", 1080),
+            proxy_raw.get("rdns", True),
+            proxy_raw.get("username"),
+            proxy_raw.get("password"),
+        )
+
     async def add_account(self, name: str):
         """Interactive Telethon login. Requires terminal interaction."""
         from telethon import TelegramClient
