@@ -6,6 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "tg-export"
 version = "0.1.0"
 description = "Flexible Telegram data export tool"
+license = "MIT"
 requires-python = ">=3.11"
 dependencies = [
     "telethon>=1.36",

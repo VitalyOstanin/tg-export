@@ -221,3 +221,7 @@ export_output/
 ```bash
 uv run python -m pytest tests/ -v
 ```
+
+## Лицензия
+
+[MIT License](LICENSE)
