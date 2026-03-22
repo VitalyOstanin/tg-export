@@ -1126,3 +1126,134 @@ async def _verify_files(account, config_override, output_override):
             await api.disconnect()
     finally:
         await state.close()
+
+
+# ---------------------------------------------------------------------------
+# tg send / tg download — additional direct Telegram API commands
+# ---------------------------------------------------------------------------
+
+async def _connect_tg(account_name):
+    """Helper: connect to Telegram API and return (api, account_name).
+    Caller must call api.disconnect() when done."""
+    from tg_export.api import TgApi
+    mgr = _mgr()
+    acc = mgr.resolve_account(account_name)
+    api_id, api_hash = mgr.load_credentials()
+    proxy = mgr.load_proxy()
+    api = TgApi(mgr.session_path(acc), api_id, api_hash, proxy=proxy)
+    await api.connect()
+    return api, acc
+
+
+@tg.command("send")
+@click.option("--account", default=None, help="Account alias")
+@click.option("--file", "-f", "files", multiple=True, type=click.Path(exists=True),
+              help="File(s) to attach (can be specified multiple times)")
+@click.option("--text", "-t", default=None, help="Message text")
+@click.argument("recipients", nargs=-1, required=True)
+def tg_send(account, files, text, recipients):
+    """Send message to one or more recipients.
+
+    RECIPIENTS: chat IDs or usernames (multiple allowed).
+    Use --text for message text and --file for attachments.
+    At least --text or --file must be specified.
+    """
+    if not text and not files:
+        click.echo("Error: specify --text and/or --file")
+        raise SystemExit(1)
+
+    parsed = []
+    for r in recipients:
+        try:
+            parsed.append(int(r))
+        except ValueError:
+            parsed.append(r)
+
+    asyncio.run(_tg_send(account, parsed, text, files))
+
+
+async def _tg_send(account_name, recipients, text, files):
+    api, _ = await _connect_tg(account_name)
+    try:
+        file_paths = [Path(f) for f in files] if files else None
+
+        for recipient in recipients:
+            try:
+                if file_paths:
+                    if len(file_paths) == 1:
+                        await api.client.send_file(
+                            recipient, file_paths[0], caption=text or "",
+                        )
+                    else:
+                        await api.client.send_file(
+                            recipient, file_paths, caption=text or "",
+                        )
+                elif text:
+                    await api.client.send_message(recipient, text)
+
+                click.echo(f"  sent to {recipient}")
+            except Exception as e:
+                click.echo(f"  error sending to {recipient}: {e}")
+    finally:
+        await api.disconnect()
+
+
+@tg.command("download")
+@click.option("--account", default=None, help="Account alias")
+@click.option("--output", "-o", type=click.Path(), default=".", help="Output directory")
+@click.argument("chat_id", type=int)
+@click.argument("msg_id", type=int)
+def tg_download(account, output, chat_id, msg_id):
+    """Download message content: text and all media files.
+
+    Saves message text to <msg_id>.txt and media files to the output directory.
+    """
+    asyncio.run(_tg_download(account, chat_id, msg_id, output))
+
+
+async def _tg_download(account_name, chat_id, msg_id, output_dir):
+    api, _ = await _connect_tg(account_name)
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+
+    try:
+        tl_msg = await api.client.get_messages(chat_id, ids=msg_id)
+        if isinstance(tl_msg, list):
+            tl_msg = tl_msg[0] if tl_msg else None
+        if tl_msg is None:
+            click.echo(f"Message {msg_id} not found in chat {chat_id}")
+            return
+
+        # Save text
+        if tl_msg.text:
+            text_file = out / f"{msg_id}.txt"
+            text_file.write_text(tl_msg.text, encoding="utf-8")
+            click.echo(f"  text: {text_file}")
+
+        # Download media
+        if tl_msg.media:
+            path = await api.client.download_media(tl_msg, file=str(out))
+            if path:
+                click.echo(f"  media: {path}")
+            else:
+                click.echo("  media: download failed")
+
+        # Check for grouped_id (album) — download all parts
+        if tl_msg.grouped_id:
+            count = 0
+            async for grouped_msg in api.client.iter_messages(
+                chat_id, min_id=msg_id - 10, max_id=msg_id + 10,
+            ):
+                if grouped_msg.grouped_id == tl_msg.grouped_id and grouped_msg.id != msg_id:
+                    if grouped_msg.media:
+                        path = await api.client.download_media(grouped_msg, file=str(out))
+                        if path:
+                            click.echo(f"  album media: {path}")
+                            count += 1
+            if count:
+                click.echo(f"  ({count} additional album files)")
+
+        if not tl_msg.text and not tl_msg.media:
+            click.echo("  (empty message, no text or media)")
+    finally:
+        await api.disconnect()
