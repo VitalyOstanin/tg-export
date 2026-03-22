@@ -81,7 +81,7 @@ def test_render_text_parts_formatting():
     assert "Hello " in html
 
 
-def test_render_chat_pagination(renderer, tmp_path):
+def test_render_chat_monthly_split(renderer, tmp_path):
     chat = Chat(
         id=123, name="Test", type=ChatType.personal,
         username=None, folder=None, members_count=None,
@@ -89,13 +89,28 @@ def test_render_chat_pagination(renderer, tmp_path):
         is_left=False, is_archived=False, is_forum=False, migrated_to_id=None,
         migrated_from_id=None, is_monoforum=False,
     )
-    messages = [_make_msg(id=i, text=f"Msg {i}") for i in range(2500)]
+    messages = (
+        [_make_msg(id=i, text=f"Msg {i}", date=datetime(2024, 1, 15, 10, 0)) for i in range(1, 4)]
+        + [_make_msg(id=i, text=f"Msg {i}", date=datetime(2024, 2, 10, 12, 0)) for i in range(4, 7)]
+        + [_make_msg(id=i, text=f"Msg {i}", date=datetime(2024, 3, 5, 8, 0)) for i in range(7, 10)]
+    )
     chat_dir = tmp_path / "output" / "unfiled" / "Test_123"
     renderer.render_chat(chat, messages, chat_dir)
+    # Redirect file
     assert (chat_dir / "messages.html").exists()
-    assert (chat_dir / "messages2.html").exists()
-    assert (chat_dir / "messages3.html").exists()
-    assert not (chat_dir / "messages4.html").exists()
+    # Monthly files
+    assert (chat_dir / "messages_2024-01.html").exists()
+    assert (chat_dir / "messages_2024-02.html").exists()
+    assert (chat_dir / "messages_2024-03.html").exists()
+    # Check redirect points to first month
+    redirect = (chat_dir / "messages.html").read_text()
+    assert "messages_2024-01.html" in redirect
+    # Check TOC exists in monthly file
+    jan_html = (chat_dir / "messages_2024-01.html").read_text()
+    assert "January 2024" in jan_html
+    assert "February 2024" in jan_html  # in TOC
+    # Check hover title on timestamp
+    assert 'title="2024-01-15 10:00:00"' in jan_html
 
 
 def test_render_album(renderer):

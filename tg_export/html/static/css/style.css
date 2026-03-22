@@ -141,6 +141,44 @@ a:hover { text-decoration: underline; }
   color: #fff;
 }
 
+/* TOC */
+.toc {
+  margin: 10px 0;
+  padding: 10px 16px;
+  background: var(--bg-alt);
+  border-radius: var(--radius-sm);
+}
+
+.toc summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.toc ul {
+  margin: 8px 0 0 0;
+  padding: 0;
+  list-style: none;
+  column-count: 3;
+  column-gap: 16px;
+}
+
+.toc li {
+  padding: 2px 0;
+}
+
+.toc a {
+  color: var(--text);
+}
+
+.toc a:hover {
+  color: var(--accent);
+}
+
+.bottom-nav {
+  margin-top: 20px;
+}
+
 /* Chat list / Index */
 .chat-list {
   list-style: none;

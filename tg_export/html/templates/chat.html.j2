@@ -8,9 +8,20 @@
 <div class="nav">
   <a href="{{ index_href }}">Index</a>
   {% if prev_href %}<a href="{{ prev_href }}">Previous</a>{% endif %}
-  <span class="current">Page {{ page_num }}</span>
+  <span class="current">{{ page_label }}</span>
   {% if next_href %}<a href="{{ next_href }}">Next</a>{% endif %}
 </div>
+
+{% if pages_info|length > 1 %}
+<details class="toc">
+  <summary>Months ({{ pages_info|length }})</summary>
+  <ul>
+    {% for p in pages_info %}
+    <li>{% if p.filename == current_page %}<strong>{{ p.label }}</strong>{% else %}<a href="{{ p.filename }}">{{ p.label }}</a>{% endif %}</li>
+    {% endfor %}
+  </ul>
+</details>
+{% endif %}
 
 {% for item in items %}
 {% if item.type == "date_separator" %}
@@ -24,7 +35,7 @@
   <div class="message-wrap">
     <div class="author-avatar">{{ item.author_initial }}</div>
     <div class="message-body">
-      <div class="author">{{ item.author }}<span class="timestamp">{{ item.time }}</span></div>
+      <div class="author">{{ item.author }}<span class="timestamp" title="{{ item.full_date }}">{{ item.time }}</span></div>
       <div class="album">
         {% for m in item.media_html %}{{ m }}{% endfor %}
       </div>
@@ -38,8 +49,8 @@
   <div class="message-wrap">
     <div class="author-avatar">{{ item.author_initial }}</div>
     <div class="message-body">
-      {% if not item.joined %}<div class="author">{{ item.author }}<span class="timestamp">{{ item.time }}</span></div>{% endif %}
-      {% if item.joined %}<span class="timestamp">{{ item.time }}</span>{% endif %}
+      {% if not item.joined %}<div class="author">{{ item.author }}<span class="timestamp" title="{{ item.full_date }}">{{ item.time }}</span></div>{% endif %}
+      {% if item.joined %}<span class="timestamp" title="{{ item.full_date }}">{{ item.time }}</span>{% endif %}
       {% if item.reply_html %}{{ item.reply_html }}{% endif %}
       {% if item.forward_html %}{{ item.forward_html }}{% endif %}
       {% if item.media_html %}{{ item.media_html }}{% endif %}
@@ -52,13 +63,20 @@
 {% endif %}
 {% endfor %}
 
-{% if total_pages > 1 %}
+<div class="nav bottom-nav">
+  <a href="{{ index_href }}">Index</a>
+  {% if prev_href %}<a href="{{ prev_href }}">Previous</a>{% endif %}
+  <span class="current">{{ page_label }}</span>
+  {% if next_href %}<a href="{{ next_href }}">Next</a>{% endif %}
+</div>
+
+{% if pages_info|length > 1 %}
 <div class="pagination">
-  {% for p in range(1, total_pages + 1) %}
-    {% if p == page_num %}
-      <span class="current">{{ p }}</span>
+  {% for p in pages_info %}
+    {% if p.filename == current_page %}
+      <span class="current">{{ p.label }}</span>
     {% else %}
-      <a href="{{ page_href(p) }}">{{ p }}</a>
+      <a href="{{ p.filename }}">{{ p.label }}</a>
     {% endif %}
   {% endfor %}
 </div>

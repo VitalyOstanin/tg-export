@@ -130,9 +130,12 @@ class HtmlRenderer:
         return "\n".join(parts)
 
     def render_chat(self, chat: Chat, messages: list[Message], chat_dir: Path):
-        """Render chat with file pagination."""
+        """Render chat split by month with TOC and prev/next navigation."""
         chat_dir.mkdir(parents=True, exist_ok=True)
-        per_file = self.config.messages_per_file
+
+        # Clean up old HTML files (from previous renders)
+        for old in chat_dir.glob("messages*.html"):
+            old.unlink()
 
         # Fix media paths: make local_path relative to chat_dir
         for msg in messages:
@@ -141,24 +144,43 @@ class HtmlRenderer:
         # Group albums
         processed = _group_albums(messages)
 
-        # Split into pages
-        pages = []
-        for i in range(0, len(processed), per_file):
-            pages.append(processed[i:i + per_file])
+        # Split by month
+        monthly: dict[str, list] = {}  # "YYYY-MM" -> items
+        for entry in processed:
+            first_msg = entry[0] if isinstance(entry, list) else entry
+            if first_msg.date:
+                key = first_msg.date.strftime("%Y-%m")
+            else:
+                key = "0000-00"
+            monthly.setdefault(key, []).append(entry)
 
-        if not pages:
-            pages = [[]]
+        if not monthly:
+            monthly = {"0000-00": []}
 
-        total_pages = len(pages)
+        month_keys = sorted(monthly.keys())
+
+        # Build page info: (month_key, filename, label)
+        pages_info = []
+        for key in month_keys:
+            filename = f"messages_{key}.html"
+            # Human-readable label
+            if key == "0000-00":
+                label = "Unknown date"
+            else:
+                try:
+                    dt = datetime.strptime(key, "%Y-%m")
+                    label = dt.strftime("%B %Y")
+                except ValueError:
+                    label = key
+            pages_info.append({"key": key, "filename": filename, "label": label})
 
         # Relative path from chat_dir to output root for CSS/JS
         rel = _relative_path(chat_dir, self.output_dir)
 
         template = self.env.get_template("chat.html.j2")
 
-        for page_idx, page_items in enumerate(pages):
-            page_num = page_idx + 1
-            filename = "messages.html" if page_num == 1 else f"messages{page_num}.html"
+        for page_idx, pinfo in enumerate(pages_info):
+            page_items = monthly[pinfo["key"]]
 
             # Build render items
             items = []
@@ -182,6 +204,7 @@ class HtmlRenderer:
                         "author": first.from_name or "Unknown",
                         "author_initial": (first.from_name or "?")[0].upper(),
                         "time": first.date.strftime("%H:%M") if first.date else "",
+                        "full_date": first.date.strftime("%Y-%m-%d %H:%M:%S") if first.date else "",
                         "media_html": [self._render_media(m.media) for m in entry if m.media],
                         "text_html": next((render_text_parts(m.text) for m in reversed(entry) if m.text), ""),
                         "reactions_html": next((self._render_reactions(m) for m in reversed(entry) if m.reactions), ""),
@@ -212,6 +235,7 @@ class HtmlRenderer:
                             "author": msg.from_name or "Unknown",
                             "author_initial": (msg.from_name or "?")[0].upper(),
                             "time": msg.date.strftime("%H:%M") if msg.date else "",
+                            "full_date": msg.date.strftime("%Y-%m-%d %H:%M:%S") if msg.date else "",
                             "reply_html": self._render_reply(msg) if msg.reply_to_msg_id else "",
                             "forward_html": self._render_forward(msg) if msg.forwarded_from else "",
                             "media_html": self._render_media(msg.media) if msg.media else "",
@@ -221,26 +245,31 @@ class HtmlRenderer:
                         })
                     prev_msg = msg
 
-            def page_href(p):
-                return "messages.html" if p == 1 else f"messages{p}.html"
+            prev_href = pages_info[page_idx - 1]["filename"] if page_idx > 0 else None
+            next_href = pages_info[page_idx + 1]["filename"] if page_idx < len(pages_info) - 1 else None
 
             html = template.render(
-                title=f"{chat.name} - tg-export",
+                title=f"{chat.name} - {pinfo['label']} - tg-export",
                 css_path=f"{rel}/css/style.css",
                 js_path=f"{rel}/js/script.js",
                 chat_name=chat.name,
                 chat_type=chat.type.value,
                 chat_members=chat.members_count,
                 index_href=f"{rel}/index.html",
-                prev_href=page_href(page_num - 1) if page_num > 1 else None,
-                next_href=page_href(page_num + 1) if page_num < total_pages else None,
-                page_num=page_num,
-                total_pages=total_pages,
+                prev_href=prev_href,
+                next_href=next_href,
+                page_label=pinfo["label"],
+                pages_info=pages_info,
+                current_page=pinfo["filename"],
                 items=items,
-                page_href=page_href,
             )
 
-            (chat_dir / filename).write_text(html, encoding="utf-8")
+            (chat_dir / pinfo["filename"]).write_text(html, encoding="utf-8")
+
+        # Write messages.html as redirect to first month
+        if pages_info:
+            redirect_html = f'<!DOCTYPE html><html><head><meta http-equiv="refresh" content="0;url={pages_info[0]["filename"]}"></head></html>'
+            (chat_dir / "messages.html").write_text(redirect_html, encoding="utf-8")
 
     def render_index(self, folders: dict, unfiled: list, sections: list):
         """Render main index page."""
