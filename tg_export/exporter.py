@@ -419,7 +419,7 @@ class Exporter:
             last_log_time = start_time
             for chat, chat_config in included_chats:
                 if self._shutdown:
-                    console.print("[yellow]Shutdown requested, saving state...[/]")
+                    console.log("[yellow]Shutdown requested, saving state...[/]")
                     break
 
                 folder_str = f" [{chat.folder}]" if chat.folder else ""
@@ -478,14 +478,14 @@ class Exporter:
                         last_log_time = now
 
                 except DiskSpaceError as e:
-                    _log(f"Disk space error: {e}")
+                    console.log(f"Disk space error: {e}")
                     stats.errors.append(str(e))
                     break
                 except asyncio.CancelledError:
-                    console.print("[yellow]Force shutdown during export...[/]")
+                    console.log("[yellow]Force shutdown during export...[/]")
                     break
                 except Exception as e:
-                    _log(f"Error exporting {chat.name}: {e}")
+                    console.log(f"Error exporting {chat.name}: {e}")
                     stats.errors.append(f"{chat.name}: {e}")
 
         except asyncio.CancelledError:
@@ -499,7 +499,7 @@ class Exporter:
         if not dry_run and not self._force_shutdown and not self._shutdown:
             try:
                 console.print("\n[cyan]Exporting global data...[/]")
-                await self.export_global_data(output_base)
+                await self.export_global_data()
             except Exception as e:
                 logger.warning("Failed to export global data: %s", e)
 
@@ -723,7 +723,7 @@ class Exporter:
         except Exception as e:
             stats.errors.append(f"Media error msg {msg.id}: {e}")
 
-    async def export_global_data(self, output_base: Path):
+    async def export_global_data(self):
         """Export personal_info, userpics, stories, contacts, sessions, etc."""
         if self.config.personal_info:
             try:
@@ -839,7 +839,13 @@ class Exporter:
 
         app_sessions = []
         for auth in getattr(sessions_result, "authorizations", []):
-            date_active = datetime.fromtimestamp(auth.date_active) if auth.date_active else None
+            da = getattr(auth, "date_active", None)
+            if isinstance(da, datetime):
+                date_str = da.strftime("%Y-%m-%d %H:%M")
+            elif da:
+                date_str = datetime.fromtimestamp(da).strftime("%Y-%m-%d %H:%M")
+            else:
+                date_str = ""
             app_sessions.append({
                 "app_name": getattr(auth, "app_name", ""),
                 "app_version": getattr(auth, "app_version", ""),
@@ -848,20 +854,26 @@ class Exporter:
                 "system_version": getattr(auth, "system_version", ""),
                 "ip": getattr(auth, "ip", ""),
                 "country": getattr(auth, "country", ""),
-                "date_active": date_active.strftime("%Y-%m-%d %H:%M") if date_active else "",
+                "date_active": date_str,
                 "current": bool(getattr(auth, "current", False)),
             })
 
         web_sessions = []
         for wa in getattr(web_result, "authorizations", []):
-            date_active = datetime.fromtimestamp(wa.date_active) if wa.date_active else None
+            da = getattr(wa, "date_active", None)
+            if isinstance(da, datetime):
+                date_str = da.strftime("%Y-%m-%d %H:%M")
+            elif da:
+                date_str = datetime.fromtimestamp(da).strftime("%Y-%m-%d %H:%M")
+            else:
+                date_str = ""
             web_sessions.append({
                 "domain": getattr(wa, "domain", ""),
                 "browser": getattr(wa, "browser", ""),
                 "platform": getattr(wa, "platform", ""),
                 "ip": getattr(wa, "ip", ""),
                 "region": getattr(wa, "region", ""),
-                "date_active": date_active.strftime("%Y-%m-%d %H:%M") if date_active else "",
+                "date_active": date_str,
             })
 
         self.renderer.render_sessions(app_sessions, web_sessions)
