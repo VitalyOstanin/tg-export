@@ -892,6 +892,108 @@ async def _state_reset(account, config_override, output_override, reset_all, del
         await st.close()
 
 
+@main.command("purge")
+@click.argument("chat", required=True)
+@click.option("--account", default=None, help="Account alias (default: from 'auth default')")
+@click.option("--config", type=click.Path(exists=True), default=None, help="Override config path")
+@click.option("--output", type=click.Path(), help="Export output directory")
+@click.option("--yes", is_flag=True, help="Skip confirmation")
+def purge_chat(chat, account, config, output, yes):
+    """Purge chat data: messages, files, state, and rendered HTML.
+
+    CHAT can be a chat ID (number) or a name (substring search).
+    """
+    asyncio.run(_purge_chat(chat, account, config, output, yes))
+
+
+async def _purge_chat(chat_arg, account, config_override, output_override, skip_confirm):
+    import shutil
+    from tg_export.config import load_config
+    from tg_export.state import ExportState
+
+    mgr = _mgr()
+    account = mgr.resolve_account(account)
+    config_path = mgr.resolve_config(account, config_override)
+    if not config_path.exists():
+        click.echo(f"Config not found: {config_path}")
+        raise SystemExit(1)
+
+    cfg = load_config(config_path)
+    output_base = Path(output_override) if output_override else Path(cfg.output.path)
+    state_path = output_base / ".tg-export-state.db"
+
+    if not state_path.exists():
+        click.echo("No state database found.")
+        raise SystemExit(1)
+
+    state = ExportState(state_path)
+    await state.open()
+
+    try:
+        # Resolve chat: by ID or by name search
+        try:
+            chat_id = int(chat_arg)
+            matches = await state.find_chat_by_name("")
+            chat_name = next((c["name"] for c in matches if c["chat_id"] == chat_id), f"id={chat_id}")
+        except ValueError:
+            matches = await state.find_chat_by_name(chat_arg)
+            if not matches:
+                click.echo(f"No chats found matching '{chat_arg}'")
+                raise SystemExit(1)
+            if len(matches) > 1:
+                click.echo(f"Multiple chats match '{chat_arg}':")
+                for m in matches:
+                    click.echo(f"  {m['chat_id']}  {m['name']}  ({m['type']})")
+                click.echo("Specify exact chat ID.")
+                raise SystemExit(1)
+            chat_id = matches[0]["chat_id"]
+            chat_name = matches[0]["name"]
+
+        # Show what will be deleted
+        counts = {}
+        for table in ("messages", "files", "export_state", "catalog_cache"):
+            async with state._db.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE chat_id=?", (chat_id,)
+            ) as cur:
+                row = await cur.fetchone()
+                counts[table] = row[0] if row else 0
+
+        # Find chat directory on disk
+        from tg_export.exporter import sanitize_name
+        dir_suffix = f"{sanitize_name(chat_name)}_{chat_id}"
+        chat_dirs = list(output_base.rglob(dir_suffix))
+
+        click.echo(f"Chat: {chat_name} (id={chat_id})")
+        click.echo(f"  DB: messages={counts['messages']}, files={counts['files']}, "
+                    f"export_state={counts['export_state']}, catalog_cache={counts['catalog_cache']}")
+        if chat_dirs:
+            for d in chat_dirs:
+                size = sum(f.stat().st_size for f in d.rglob("*") if f.is_file())
+                from tg_export.exporter import _format_size
+                click.echo(f"  Dir: {d} ({_format_size(size)})")
+        else:
+            click.echo("  Dir: not found")
+
+        if not skip_confirm:
+            if not click.confirm("Delete all data for this chat?"):
+                click.echo("Cancelled.")
+                return
+
+        # Purge from DB
+        deleted = await state.purge_chat(chat_id)
+        click.echo(f"  Deleted from DB: {deleted}")
+
+        # Remove directory
+        for d in chat_dirs:
+            shutil.rmtree(d)
+            click.echo(f"  Removed: {d}")
+
+        click.echo("Done.")
+
+    finally:
+        await state.close()
+
+
 @main.command("verify")
 @click.option("--account", default=None, help="Account alias (default: from 'auth default')")
 @click.option("--config", type=click.Path(exists=True), default=None, help="Override config path")

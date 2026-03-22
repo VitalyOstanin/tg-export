@@ -407,7 +407,7 @@ class Exporter:
                 )
 
                 try:
-                    progress.update(main_task, description=f"[dim]{chat.name}[/]")
+                    progress.update(main_task, description=f"[cyan]{chat.name}[/]")
                     logger.debug("start chat %s (id=%d, type=%s, msgs~%d)",
                                  chat.name, chat.id, chat.type.value, chat.messages_count or 0)
 

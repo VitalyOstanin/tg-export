@@ -449,6 +449,30 @@ class ExportState:
             "files_downloaded": files_downloaded,
         }
 
+    async def purge_chat(self, chat_id: int) -> dict[str, int]:
+        """Delete all data for a chat. Returns counts of deleted rows."""
+        counts = {}
+        for table in ("messages", "files", "export_state", "catalog_cache"):
+            async with self._db.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE chat_id=?", (chat_id,)
+            ) as cur:
+                row = await cur.fetchone()
+                counts[table] = row[0] if row else 0
+            await self._db.execute(
+                f"DELETE FROM {table} WHERE chat_id=?", (chat_id,)
+            )
+        await self._db.commit()
+        return counts
+
+    async def find_chat_by_name(self, name: str) -> list[dict]:
+        """Search chats in catalog_cache by name (case-insensitive substring)."""
+        async with self._db.execute(
+            "SELECT chat_id, name, type FROM catalog_cache WHERE name LIKE ?",
+            (f"%{name}%",)
+        ) as cur:
+            rows = await cur.fetchall()
+            return [dict(r) for r in rows]
+
     async def search_messages(
         self, chat_id: int,
         text_query: str | None = None,
