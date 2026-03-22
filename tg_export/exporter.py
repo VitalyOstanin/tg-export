@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 from rich.console import Console
 from rich.live import Live
+from rich.text import Text
 from rich.table import Table
 from rich.progress import (
     Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn,
@@ -309,7 +310,7 @@ class Exporter:
         # Track which msg_ids have progress tasks
         file_tasks: dict[int, TaskID] = {}  # msg_id -> task_id
 
-        def _status_lines() -> str:
+        def _status_line1() -> str:
             elapsed = time.monotonic() - start_time
             elapsed_str = _format_elapsed(elapsed)
             chat_data = stats.chat_data_size
@@ -328,14 +329,14 @@ class Exporter:
                     msgs_str += f", [green]{chat_msgs / elapsed:.0f}/s[/]"
                 msgs_str += ")"
 
-            # Line 1: chats, messages, data, elapsed
             line1 = f"  chats: [cyan]{stats.chats_exported}/{stats.chats_included}[/] | msgs: {msgs_str}"
             line1 += f" | data: [cyan]{_format_size(chat_data)}[/]"
             if speed_str:
                 line1 += f" ([green]{speed_str}[/])"
             line1 += f" | elapsed: {elapsed_str}"
+            return line1
 
-            # Line 2: file counts
+        def _status_line2() -> str:
             parts = [f"  files: [cyan]{stats.chat_files_downloaded}[/] downloaded"]
             if stats.chat_files_existing:
                 parts.append(f"[green]{stats.chat_files_existing}[/] existing")
@@ -352,9 +353,10 @@ class Exporter:
                 skipped.append(f"[yellow]{stats.chat_files_skipped_by_type}[/] by_type")
             if skipped:
                 parts.append(f"skipped: {', '.join(skipped)}")
-            line2 = " | ".join(parts)
+            return " | ".join(parts)
 
-            return f"{line1}\n{line2}"
+        def _status_lines() -> str:
+            return f"{_status_line1()}\n{_status_line2()}"
 
         def _make_status_table() -> Table:
             # Sync progress bar: per-chat progress
@@ -390,7 +392,14 @@ class Exporter:
 
             table = Table.grid()
             table.add_row(progress)
-            table.add_row(_status_lines())
+            t1 = Text.from_markup(_status_line1())
+            t1.no_wrap = True
+            t1.overflow = "ellipsis"
+            table.add_row(t1)
+            t2 = Text.from_markup(_status_line2())
+            t2.no_wrap = True
+            t2.overflow = "ellipsis"
+            table.add_row(t2)
             if file_tasks:
                 table.add_row(file_progress)
             return table
@@ -398,7 +407,11 @@ class Exporter:
         use_live = console.is_terminal
         self._use_live = use_live
 
-        live_ctx = Live(console=console, refresh_per_second=2, get_renderable=_make_status_table) if use_live else None
+        live_ctx = Live(
+            console=console, refresh_per_second=2,
+            get_renderable=_make_status_table,
+            vertical_overflow="visible",
+        ) if use_live else None
         if live_ctx:
             live_ctx.__enter__()
 
