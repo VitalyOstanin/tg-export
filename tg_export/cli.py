@@ -780,8 +780,39 @@ async def _render_index(renderer, chats, cfg, state):
         sections.append({"title": "Personal Info", "entries": [{"name": "Personal Information", "href": "personal_info.html", "meta": ""}]})
     if cfg.contacts:
         sections.append({"title": "Contacts", "entries": [{"name": "Contacts", "href": "contacts.html", "meta": ""}]})
+    if cfg.sessions:
+        sections.append({"title": "Sessions", "entries": [{"name": "Active Sessions", "href": "sessions.html", "meta": ""}]})
+    if cfg.userpics:
+        sections.append({"title": "Profile Photos", "entries": [{"name": "Profile Photos", "href": "userpics.html", "meta": ""}]})
+    if cfg.stories:
+        sections.append({"title": "Stories", "entries": [{"name": "Stories", "href": "stories.html", "meta": ""}]})
+    if cfg.other_data or cfg.profile_music:
+        sections.append({"title": "Other Data", "entries": [{"name": "Other Data", "href": "other_data.html", "meta": ""}]})
 
-    renderer.render_index(folders=dict(folders), unfiled=unfiled, sections=sections)
+    # Build folders_list with hrefs for folder index pages
+    folders_list = []
+    for folder_name, folder_chats in folders.items():
+        folder_dir_name = sanitize_name(folder_name)
+        folders_list.append({
+            "name": folder_name,
+            "href": f"folders/{folder_dir_name}/index.html",
+            "chats": folder_chats,
+        })
+
+    renderer.render_index(folders_list=folders_list, unfiled=unfiled, sections=sections)
+
+    # Render per-folder index pages
+    for folder_info in folders_list:
+        adjusted = []
+        for entry in folder_info["chats"]:
+            dir_name = entry["href"].split("/")[-2]  # Chat_123 from folders/Folder/Chat_123/messages.html
+            adjusted.append({
+                "name": entry["name"],
+                "type": entry["type"],
+                "messages": entry["messages"],
+                "href": f"{dir_name}/messages.html",
+            })
+        renderer.render_folder_index(folder_info["name"], adjusted)
 
 
 @main.group()
@@ -824,7 +855,7 @@ def state_show(account, config, output, chat_id):
 
 
 async def _state_show(account, config_override, output_override, chat_id):
-    st, output_base, account = _open_state(account, config_override, output_override)
+    st, _, account = _open_state(account, config_override, output_override)
     await st.open()
     try:
         if chat_id:
@@ -840,7 +871,7 @@ async def _state_show(account, config_override, output_override, chat_id):
             click.echo(f"  messages in DB: {msg_count}")
             click.echo(f"  updated_at:    {chat_state['updated_at']}")
         else:
-            async with st._db.execute(
+            async with st.db.execute(
                 "SELECT es.*, (SELECT COUNT(*) FROM messages m WHERE m.chat_id=es.chat_id) as msg_count "
                 "FROM export_state es ORDER BY es.updated_at DESC"
             ) as cur:
@@ -874,29 +905,29 @@ def state_reset(account, config, output, reset_all, delete_messages, chat_id):
 
 
 async def _state_reset(account, config_override, output_override, reset_all, delete_messages, chat_id):
-    st, output_base, account = _open_state(account, config_override, output_override)
+    st, _, account = _open_state(account, config_override, output_override)
     await st.open()
     try:
         if reset_all:
-            await st._db.execute("UPDATE export_state SET last_msg_id=0, oldest_msg_id=0, full_history=0")
+            await st.db.execute("UPDATE export_state SET last_msg_id=0, oldest_msg_id=0, full_history=0")
             if delete_messages:
-                await st._db.execute("DELETE FROM messages")
-                await st._db.execute("DELETE FROM files")
-            await st._db.commit()
+                await st.db.execute("DELETE FROM messages")
+                await st.db.execute("DELETE FROM files")
+            await st.db.commit()
             click.echo("Reset all chats.")
         else:
             chat_state = await st.get_chat_state(chat_id)
             if not chat_state:
                 click.echo(f"No state for chat {chat_id}")
                 return
-            await st._db.execute(
+            await st.db.execute(
                 "UPDATE export_state SET last_msg_id=0, oldest_msg_id=0, full_history=0 WHERE chat_id=?",
                 (chat_id,),
             )
             if delete_messages:
-                await st._db.execute("DELETE FROM messages WHERE chat_id=?", (chat_id,))
-                await st._db.execute("DELETE FROM files WHERE chat_id=?", (chat_id,))
-            await st._db.commit()
+                await st.db.execute("DELETE FROM messages WHERE chat_id=?", (chat_id,))
+                await st.db.execute("DELETE FROM files WHERE chat_id=?", (chat_id,))
+            await st.db.commit()
             msg = f"Reset chat {chat_id}."
             if delete_messages:
                 msg += " Messages and files records deleted."
@@ -965,7 +996,7 @@ async def _purge_chat(chat_arg, account, config_override, output_override, skip_
         # Show what will be deleted
         counts = {}
         for table in ("messages", "files", "export_state", "catalog_cache"):
-            async with state._db.execute(
+            async with state.db.execute(
                 f"SELECT COUNT(*) FROM {table} WHERE chat_id=?", (chat_id,)
             ) as cur:
                 row = await cur.fetchone()

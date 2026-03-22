@@ -17,7 +17,7 @@ sqlite3.register_adapter(datetime, lambda dt: dt.isoformat())
 sqlite3.register_converter("timestamp", lambda b: datetime.fromisoformat(b.decode()))
 
 from tg_export.models import (
-    Message, TextPart, TextType, Media, MediaType, Reaction, ReactionType,
+    Message, TextPart, TextType, Media, Reaction, ReactionType,
     ForwardInfo, InlineButton, InlineButtonType, ServiceAction,
     _media_to_dict, _media_from_dict, _action_to_dict, _action_from_dict,
     _encode_default, _decode_hook,
@@ -28,11 +28,6 @@ def _plain_text(text_parts: list[TextPart]) -> str:
     """Extract plain text from TextPart list for searchable column."""
     return "".join(tp.text for tp in text_parts)
 
-
-def _json_dumps(obj: Any) -> str | None:
-    if obj is None:
-        return None
-    return json.dumps(obj, default=_encode_default, ensure_ascii=False)
 
 
 def _text_parts_to_json(parts: list[TextPart]) -> str:
@@ -155,9 +150,16 @@ class ExportState:
         self.db_path = db_path
         self._db: aiosqlite.Connection | None = None
 
+    @property
+    def db(self) -> aiosqlite.Connection:
+        """Return open DB connection. Raises RuntimeError if not opened."""
+        if self._db is None:
+            raise RuntimeError("ExportState not opened, call open() first")
+        return self._db
+
     async def open(self):
         self._db = await aiosqlite.connect(self.db_path)
-        self._db.row_factory = aiosqlite.Row
+        self.db.row_factory = aiosqlite.Row
         await self._create_tables()
 
     async def close(self):
@@ -166,7 +168,7 @@ class ExportState:
             self._db = None
 
     async def _create_tables(self):
-        await self._db.executescript("""
+        await self.db.executescript("""
             CREATE TABLE IF NOT EXISTS export_state (
                 chat_id        INTEGER PRIMARY KEY,
                 last_msg_id    INTEGER NOT NULL,
@@ -253,52 +255,52 @@ class ExportState:
                 value TEXT
             );
         """)
-        await self._db.commit()
+        await self.db.commit()
 
     # -- export_state --
 
     async def get_chat_state(self, chat_id: int) -> dict | None:
         """Get full export state for a chat."""
-        async with self._db.execute(
+        async with self.db.execute(
             "SELECT * FROM export_state WHERE chat_id=?", (chat_id,)
         ) as cur:
             row = await cur.fetchone()
             return dict(row) if row else None
 
     async def set_last_msg_id(self, chat_id: int, msg_id: int):
-        await self._db.execute(
+        await self.db.execute(
             """INSERT INTO export_state (chat_id, last_msg_id, updated_at)
                VALUES (?, ?, ?)
                ON CONFLICT(chat_id) DO UPDATE SET last_msg_id=?, updated_at=?""",
             (chat_id, msg_id, datetime.now(), msg_id, datetime.now()),
         )
-        await self._db.commit()
+        await self.db.commit()
 
     async def set_oldest_msg_id(self, chat_id: int, msg_id: int):
-        await self._db.execute(
+        await self.db.execute(
             """UPDATE export_state SET oldest_msg_id=?, updated_at=?
                WHERE chat_id=?""",
             (msg_id, datetime.now(), chat_id),
         )
-        await self._db.commit()
+        await self.db.commit()
 
     async def set_full_history(self, chat_id: int, full: bool = True):
-        await self._db.execute(
+        await self.db.execute(
             """UPDATE export_state SET full_history=?, updated_at=?
                WHERE chat_id=?""",
             (int(full), datetime.now(), chat_id),
         )
-        await self._db.commit()
+        await self.db.commit()
 
     async def update_messages_count(self, chat_id: int, count: int):
-        await self._db.execute(
+        await self.db.execute(
             "UPDATE export_state SET messages_count=?, updated_at=? WHERE chat_id=?",
             (count, datetime.now(), chat_id),
         )
-        await self._db.commit()
+        await self.db.commit()
 
     async def get_last_msg_id(self, chat_id: int) -> int | None:
-        async with self._db.execute(
+        async with self.db.execute(
             "SELECT last_msg_id FROM export_state WHERE chat_id=?", (chat_id,)
         ) as cur:
             row = await cur.fetchone()
@@ -311,7 +313,7 @@ class ExportState:
         expected_size: int, actual_size: int | None,
         local_path: str, status: str = "done",
     ):
-        await self._db.execute(
+        await self.db.execute(
             """INSERT INTO files (file_id, chat_id, msg_id, expected_size, actual_size, local_path, status, downloaded_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(file_id, chat_id) DO UPDATE SET
@@ -321,7 +323,7 @@ class ExportState:
         )
 
     async def get_file(self, file_id: int, chat_id: int) -> dict | None:
-        async with self._db.execute(
+        async with self.db.execute(
             "SELECT * FROM files WHERE file_id=? AND chat_id=?", (file_id, chat_id)
         ) as cur:
             row = await cur.fetchone()
@@ -329,14 +331,14 @@ class ExportState:
 
     async def get_file_any_chat(self, file_id: int) -> dict | None:
         """Find file_id in any chat (for intra-account deduplication)."""
-        async with self._db.execute(
+        async with self.db.execute(
             "SELECT * FROM files WHERE file_id=? AND status='done' LIMIT 1", (file_id,)
         ) as cur:
             row = await cur.fetchone()
             return dict(row) if row else None
 
     async def get_files_to_verify(self) -> list[dict]:
-        async with self._db.execute(
+        async with self.db.execute(
             "SELECT * FROM files WHERE status != 'done' OR actual_size != expected_size"
         ) as cur:
             rows = await cur.fetchall()
@@ -385,21 +387,21 @@ class ExportState:
 
     async def store_message(self, msg: Message):
         """Store single message (no commit — caller should batch-commit)."""
-        await self._db.execute(self._UPSERT_SQL, self._msg_to_params(msg))
+        await self.db.execute(self._UPSERT_SQL, self._msg_to_params(msg))
 
     async def store_messages_batch(self, messages: list[Message]):
         """Store a batch of messages in a single transaction."""
         params = [self._msg_to_params(msg) for msg in messages]
-        await self._db.executemany(self._UPSERT_SQL, params)
-        await self._db.commit()
+        await self.db.executemany(self._UPSERT_SQL, params)
+        await self.db.commit()
 
     async def commit(self):
         """Explicit commit for batched operations."""
-        await self._db.commit()
+        await self.db.commit()
 
     async def load_messages(self, chat_id: int) -> list[Message]:
         """Load all messages for a chat, sorted by msg_id."""
-        async with self._db.execute(
+        async with self.db.execute(
             "SELECT * FROM messages WHERE chat_id=? ORDER BY msg_id", (chat_id,)
         ) as cur:
             rows = await cur.fetchall()
@@ -407,7 +409,7 @@ class ExportState:
 
     async def count_messages(self, chat_id: int) -> int:
         """Count messages for a chat."""
-        async with self._db.execute(
+        async with self.db.execute(
             "SELECT COUNT(*) FROM messages WHERE chat_id=?", (chat_id,)
         ) as cur:
             row = await cur.fetchone()
@@ -441,13 +443,13 @@ class ExportState:
         )
         q_files = f"SELECT COUNT(*) FROM files {file_where} status='done'"
 
-        async with self._db.execute(q_media, msg_args) as cur:
+        async with self.db.execute(q_media, msg_args) as cur:
             row = await cur.fetchone()
             media_messages = row[0] if row else 0
-        async with self._db.execute(q_expected, msg_args) as cur:
+        async with self.db.execute(q_expected, msg_args) as cur:
             row = await cur.fetchone()
             expected_files = row[0] if row else 0
-        async with self._db.execute(q_files, file_args) as cur:
+        async with self.db.execute(q_files, file_args) as cur:
             row = await cur.fetchone()
             files_downloaded = row[0] if row else 0
         return {
@@ -460,20 +462,20 @@ class ExportState:
         """Delete all data for a chat. Returns counts of deleted rows."""
         counts = {}
         for table in ("messages", "files", "export_state", "catalog_cache"):
-            async with self._db.execute(
+            async with self.db.execute(
                 f"SELECT COUNT(*) FROM {table} WHERE chat_id=?", (chat_id,)
             ) as cur:
                 row = await cur.fetchone()
                 counts[table] = row[0] if row else 0
-            await self._db.execute(
+            await self.db.execute(
                 f"DELETE FROM {table} WHERE chat_id=?", (chat_id,)
             )
-        await self._db.commit()
+        await self.db.commit()
         return counts
 
     async def find_chat_by_name(self, name: str) -> list[dict]:
         """Search chats in catalog_cache by name (case-insensitive substring)."""
-        async with self._db.execute(
+        async with self.db.execute(
             "SELECT chat_id, name, type FROM catalog_cache WHERE name LIKE ?",
             (f"%{name}%",)
         ) as cur:
@@ -509,7 +511,7 @@ class ExportState:
             params.append(date_to.isoformat())
 
         where = " AND ".join(clauses)
-        async with self._db.execute(
+        async with self.db.execute(
             f"SELECT * FROM messages WHERE {where} ORDER BY msg_id", params
         ) as cur:
             rows = await cur.fetchall()
@@ -518,16 +520,16 @@ class ExportState:
     # -- takeout --
 
     async def save_takeout(self, account: str, takeout_id: int):
-        await self._db.execute(
+        await self.db.execute(
             """INSERT INTO takeout (account, takeout_id, created_at)
                VALUES (?, ?, ?)
                ON CONFLICT(account) DO UPDATE SET takeout_id=?, created_at=?""",
             (account, takeout_id, datetime.now(), takeout_id, datetime.now()),
         )
-        await self._db.commit()
+        await self.db.commit()
 
     async def get_takeout(self, account: str) -> int | None:
-        async with self._db.execute(
+        async with self.db.execute(
             "SELECT takeout_id FROM takeout WHERE account=?", (account,)
         ) as cur:
             row = await cur.fetchone()
@@ -536,7 +538,7 @@ class ExportState:
     # -- users_cache --
 
     async def cache_user(self, user_id: int, display_name: str, username: str | None):
-        await self._db.execute(
+        await self.db.execute(
             """INSERT INTO users_cache (user_id, display_name, username, updated_at)
                VALUES (?, ?, ?, ?)
                ON CONFLICT(user_id) DO UPDATE SET display_name=?, username=?, updated_at=?""",
@@ -545,7 +547,7 @@ class ExportState:
         )
 
     async def get_user(self, user_id: int) -> dict | None:
-        async with self._db.execute(
+        async with self.db.execute(
             "SELECT * FROM users_cache WHERE user_id=?", (user_id,)
         ) as cur:
             row = await cur.fetchone()
@@ -557,7 +559,7 @@ class ExportState:
                             folder: str | None, members_count: int | None,
                             messages_count: int, last_message_date: datetime | None,
                             is_left: bool, is_archived: bool, is_forum: bool, is_monoforum: bool):
-        await self._db.execute(
+        await self.db.execute(
             """INSERT INTO catalog_cache
                (chat_id, name, type, folder, members_count, messages_count,
                 last_message_date, is_left, is_archived, is_forum, is_monoforum, updated_at)
@@ -572,22 +574,22 @@ class ExportState:
         )
 
     async def get_catalog(self) -> list[dict]:
-        async with self._db.execute("SELECT * FROM catalog_cache") as cur:
+        async with self.db.execute("SELECT * FROM catalog_cache") as cur:
             rows = await cur.fetchall()
             return [dict(r) for r in rows]
 
     # -- meta --
 
     async def set_meta(self, key: str, value: str):
-        await self._db.execute(
+        await self.db.execute(
             """INSERT INTO meta (key, value) VALUES (?, ?)
                ON CONFLICT(key) DO UPDATE SET value=?""",
             (key, value, value),
         )
-        await self._db.commit()
+        await self.db.commit()
 
     async def get_meta(self, key: str) -> str | None:
-        async with self._db.execute(
+        async with self.db.execute(
             "SELECT value FROM meta WHERE key=?", (key,)
         ) as cur:
             row = await cur.fetchone()
