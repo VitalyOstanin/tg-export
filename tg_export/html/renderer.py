@@ -271,19 +271,114 @@ class HtmlRenderer:
             redirect_html = f'<!DOCTYPE html><html><head><meta http-equiv="refresh" content="0;url={pages_info[0]["filename"]}"></head></html>'
             (chat_dir / "messages.html").write_text(redirect_html, encoding="utf-8")
 
-    def render_index(self, folders: dict, unfiled: list, sections: list):
-        """Render main index page."""
+    def render_index(self, folders_list: list[dict], unfiled: list, sections: list):
+        """Render main index page.
+
+        folders_list: list of {name, href, chats} dicts.
+        """
         template = self.env.get_template("index.html.j2")
         html = template.render(
             title="Telegram Export - tg-export",
             css_path="css/style.css",
             js_path="js/script.js",
             generated=datetime.now().strftime("%Y-%m-%d %H:%M"),
-            folders=folders,
+            folders_list=folders_list,
             unfiled=unfiled,
             sections=sections,
         )
         (self.output_dir / "index.html").write_text(html, encoding="utf-8")
+
+    def render_folder_index(self, folder_name: str, chats: list[dict]):
+        """Render per-folder index page with chat list."""
+        from tg_export.exporter import sanitize_name
+        folder_dir = self.output_dir / "folders" / sanitize_name(folder_name)
+        folder_dir.mkdir(parents=True, exist_ok=True)
+        rel = _relative_path(folder_dir, self.output_dir)
+
+        template = self.env.get_template("folder_index.html.j2")
+        html = template.render(
+            title=f"{folder_name} - tg-export",
+            css_path=f"{rel}/css/style.css",
+            js_path=f"{rel}/js/script.js",
+            folder_name=folder_name,
+            index_href=f"{rel}/index.html",
+            chats=chats,
+        )
+        (folder_dir / "index.html").write_text(html, encoding="utf-8")
+
+    def render_personal_info(self, user_data: dict):
+        """Render personal information page."""
+        template = self.env.get_template("personal_info.html.j2")
+        html = template.render(
+            title="Personal Information - tg-export",
+            css_path="css/style.css",
+            js_path="js/script.js",
+            index_href="index.html",
+            **user_data,
+        )
+        (self.output_dir / "personal_info.html").write_text(html, encoding="utf-8")
+
+    def render_contacts(self, contacts: list[dict], frequent: list[dict]):
+        """Render contacts page."""
+        template = self.env.get_template("contacts.html.j2")
+        html = template.render(
+            title="Contacts - tg-export",
+            css_path="css/style.css",
+            js_path="js/script.js",
+            index_href="index.html",
+            contacts=contacts,
+            frequent=frequent,
+        )
+        (self.output_dir / "contacts.html").write_text(html, encoding="utf-8")
+
+    def render_sessions(self, app_sessions: list[dict], web_sessions: list[dict]):
+        """Render sessions page."""
+        template = self.env.get_template("sessions.html.j2")
+        html = template.render(
+            title="Active Sessions - tg-export",
+            css_path="css/style.css",
+            js_path="js/script.js",
+            index_href="index.html",
+            app_sessions=app_sessions,
+            web_sessions=web_sessions,
+        )
+        (self.output_dir / "sessions.html").write_text(html, encoding="utf-8")
+
+    def render_userpics(self, photos: list[dict]):
+        """Render profile photos gallery page."""
+        template = self.env.get_template("userpics.html.j2")
+        html = template.render(
+            title="Profile Photos - tg-export",
+            css_path="css/style.css",
+            js_path="js/script.js",
+            index_href="index.html",
+            photos=photos,
+        )
+        (self.output_dir / "userpics.html").write_text(html, encoding="utf-8")
+
+    def render_stories(self, stories: list[dict]):
+        """Render stories page."""
+        template = self.env.get_template("stories.html.j2")
+        html = template.render(
+            title="Stories - tg-export",
+            css_path="css/style.css",
+            js_path="js/script.js",
+            index_href="index.html",
+            stories=stories,
+        )
+        (self.output_dir / "stories.html").write_text(html, encoding="utf-8")
+
+    def render_other_data(self, data: dict):
+        """Render other data page."""
+        template = self.env.get_template("other_data.html.j2")
+        html = template.render(
+            title="Other Data - tg-export",
+            css_path="css/style.css",
+            js_path="js/script.js",
+            index_href="index.html",
+            **data,
+        )
+        (self.output_dir / "other_data.html").write_text(html, encoding="utf-8")
 
     # -- Private rendering helpers --
 

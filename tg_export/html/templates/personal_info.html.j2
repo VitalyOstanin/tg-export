@@ -1,0 +1,37 @@
+{% extends "base.html.j2" %}
+{% block content %}
+<div class="page-header">
+  <h1>Personal Information</h1>
+  <div class="meta"><a href="{{ index_href }}">Back to index</a></div>
+</div>
+
+<div class="info-card">
+{% if photo_path %}
+  <div class="profile-photo"><img src="{{ photo_path }}" alt="Profile photo"></div>
+{% endif %}
+
+  <table class="info-table">
+{% if first_name %}
+    <tr><td class="info-label">First name</td><td>{{ first_name }}</td></tr>
+{% endif %}
+{% if last_name %}
+    <tr><td class="info-label">Last name</td><td>{{ last_name }}</td></tr>
+{% endif %}
+{% if username %}
+    <tr><td class="info-label">Username</td><td>@{{ username }}</td></tr>
+{% endif %}
+{% if phone %}
+    <tr><td class="info-label">Phone</td><td>+{{ phone }}</td></tr>
+{% endif %}
+{% if bio %}
+    <tr><td class="info-label">Bio</td><td>{{ bio }}</td></tr>
+{% endif %}
+{% if user_id %}
+    <tr><td class="info-label">User ID</td><td>{{ user_id }}</td></tr>
+{% endif %}
+{% if premium %}
+    <tr><td class="info-label">Premium</td><td>Yes</td></tr>
+{% endif %}
+  </table>
+</div>
+{% endblock %}

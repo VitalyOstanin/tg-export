@@ -1,0 +1,25 @@
+{% extends "base.html.j2" %}
+{% block content %}
+<div class="page-header">
+  <h1>Other Data</h1>
+  <div class="meta"><a href="{{ index_href }}">Back to index</a></div>
+</div>
+
+{% if ringtones %}
+<div class="section">
+  <h2>Saved Ringtones ({{ ringtones | length }})</h2>
+  <ul class="data-list">
+  {% for r in ringtones %}
+    <li>
+      {% if r.path %}<a href="{{ r.path }}">{{ r.name }}</a>{% else %}{{ r.name }}{% endif %}
+      {% if r.size %}<span class="file-size">({{ r.size }})</span>{% endif %}
+    </li>
+  {% endfor %}
+  </ul>
+</div>
+{% endif %}
+
+{% if not ringtones %}
+<p>No additional data available.</p>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,55 @@
+{% extends "base.html.j2" %}
+{% block content %}
+<div class="page-header">
+  <h1>Active Sessions</h1>
+  <div class="meta"><a href="{{ index_href }}">Back to index</a></div>
+</div>
+
+{% if app_sessions %}
+<div class="section">
+  <h2>App Sessions ({{ app_sessions | length }})</h2>
+  <table class="data-table">
+    <thead>
+      <tr><th>App</th><th>Device</th><th>Platform</th><th>Location</th><th>Active</th></tr>
+    </thead>
+    <tbody>
+    {% for s in app_sessions %}
+      <tr{% if s.current %} class="current-session"{% endif %}>
+        <td>{{ s.app_name }} {{ s.app_version }}</td>
+        <td>{{ s.device_model }}</td>
+        <td>{{ s.platform }} {{ s.system_version }}</td>
+        <td>{{ s.country }}{% if s.ip %} ({{ s.ip }}){% endif %}</td>
+        <td>{{ s.date_active }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+{% if web_sessions %}
+<div class="section">
+  <h2>Web Sessions ({{ web_sessions | length }})</h2>
+  <table class="data-table">
+    <thead>
+      <tr><th>Domain</th><th>Browser</th><th>Platform</th><th>Location</th><th>Active</th></tr>
+    </thead>
+    <tbody>
+    {% for s in web_sessions %}
+      <tr>
+        <td>{{ s.domain }}</td>
+        <td>{{ s.browser }}</td>
+        <td>{{ s.platform }}</td>
+        <td>{{ s.region }}</td>
+        <td>{{ s.date_active }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+{% if not app_sessions and not web_sessions %}
+<p>No active sessions found.</p>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,14 @@
+{% extends "base.html.j2" %}
+{% block content %}
+<div class="page-header">
+  <h1>{{ folder_name }}</h1>
+  <div class="meta"><a href="{{ index_href }}">Back to index</a></div>
+</div>
+
+<ul class="chat-list">
+{% for chat in chats %}
+  <li><a href="{{ chat.href }}" class="chat-name">{{ chat.name }}</a>
+  <div class="chat-meta">{{ chat.type }} | {{ chat.messages }} messages</div></li>
+{% endfor %}
+</ul>
+{% endblock %}

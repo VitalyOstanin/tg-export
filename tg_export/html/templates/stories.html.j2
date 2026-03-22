@@ -1,0 +1,25 @@
+{% extends "base.html.j2" %}
+{% block content %}
+<div class="page-header">
+  <h1>Stories</h1>
+  <div class="meta"><a href="{{ index_href }}">Back to index</a></div>
+</div>
+
+{% if stories %}
+<div class="stories-list">
+{% for story in stories %}
+  <div class="story-item">
+    {% if story.photo_path %}
+    <div class="story-media"><img src="{{ story.photo_path }}" alt="Story {{ loop.index }}"></div>
+    {% elif story.video_path %}
+    <div class="story-media"><video controls src="{{ story.video_path }}"></video></div>
+    {% endif %}
+    {% if story.caption %}<div class="story-caption">{{ story.caption }}</div>{% endif %}
+    {% if story.date %}<div class="story-date">{{ story.date }}</div>{% endif %}
+  </div>
+{% endfor %}
+</div>
+{% else %}
+<p>No stories found.</p>
+{% endif %}
+{% endblock %}

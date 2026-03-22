@@ -10,12 +10,14 @@ from typing import AsyncIterator
 
 from telethon import TelegramClient
 from telethon.errors import TakeoutInitDelayError
-from telethon.tl.functions.contacts import GetContactsRequest
+from telethon.tl.functions.contacts import GetContactsRequest, GetTopPeersRequest
 from telethon.tl.functions.messages import GetDialogFiltersRequest
 from telethon.tl.functions.channels import GetLeftChannelsRequest
 from telethon.tl.functions.users import GetFullUserRequest
-from telethon.tl.functions.account import GetAuthorizationsRequest, GetWebAuthorizationsRequest
-from telethon.tl.types import InputUserSelf
+from telethon.tl.functions.account import (
+    GetAuthorizationsRequest, GetWebAuthorizationsRequest, GetSavedRingtonesRequest,
+)
+from telethon.tl.types import InputUserSelf, InputPeerSelf
 
 
 class TgApi:
@@ -153,14 +155,36 @@ class TgApi:
         web_sessions = await self.client(GetWebAuthorizationsRequest())
         return sessions, web_sessions
 
+    async def get_top_peers(self):
+        try:
+            result = await self.client(GetTopPeersRequest(
+                correspondents=True, bots_pm=False, bots_inline=False,
+                phone_calls=False, forward_users=False, forward_chats=False,
+                groups=False, channels=False, bots_app=False,
+                offset=0, limit=100, hash=0,
+            ))
+            return result
+        except Exception:
+            return None
+
     async def iter_userpics(self):
         async for photo in self.client.iter_profile_photos("me"):
             yield photo
 
-    async def iter_stories(self):
-        # Stories API via raw request if available
-        pass
+    async def get_stories(self):
+        """Get pinned and archived stories."""
+        from telethon.tl.functions.stories import (
+            GetPinnedStoriesRequest, GetStoriesArchiveRequest,
+        )
+        pinned = await self.client(GetPinnedStoriesRequest(
+            peer=InputPeerSelf(), offset_id=0, limit=100,
+        ))
+        archived = await self.client(GetStoriesArchiveRequest(
+            peer=InputPeerSelf(), offset_id=0, limit=100,
+        ))
+        return pinned, archived
 
-    async def iter_profile_music(self):
-        # Profile music not directly available via standard API
-        pass
+    async def get_ringtones(self):
+        """Get saved ringtones."""
+        result = await self.client(GetSavedRingtonesRequest(hash=0))
+        return result

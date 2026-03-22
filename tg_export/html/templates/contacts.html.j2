@@ -1,0 +1,50 @@
+{% extends "base.html.j2" %}
+{% block content %}
+<div class="page-header">
+  <h1>Contacts</h1>
+  <div class="meta"><a href="{{ index_href }}">Back to index</a></div>
+</div>
+
+{% if contacts %}
+<div class="section">
+  <h2>Contacts ({{ contacts | length }})</h2>
+  <table class="data-table">
+    <thead>
+      <tr><th>Name</th><th>Username</th><th>Phone</th></tr>
+    </thead>
+    <tbody>
+    {% for c in contacts %}
+      <tr>
+        <td>{{ c.name }}</td>
+        <td>{% if c.username %}@{{ c.username }}{% endif %}</td>
+        <td>{% if c.phone %}+{{ c.phone }}{% endif %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+{% if frequent %}
+<div class="section">
+  <h2>Frequent Contacts ({{ frequent | length }})</h2>
+  <table class="data-table">
+    <thead>
+      <tr><th>Name</th><th>Rating</th></tr>
+    </thead>
+    <tbody>
+    {% for c in frequent %}
+      <tr>
+        <td>{{ c.name }}</td>
+        <td>{{ c.rating }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+{% if not contacts and not frequent %}
+<p>No contacts found.</p>
+{% endif %}
+{% endblock %}

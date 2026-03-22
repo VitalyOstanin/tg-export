@@ -1,0 +1,20 @@
+{% extends "base.html.j2" %}
+{% block content %}
+<div class="page-header">
+  <h1>Profile Photos</h1>
+  <div class="meta"><a href="{{ index_href }}">Back to index</a></div>
+</div>
+
+{% if photos %}
+<div class="photo-gallery">
+{% for photo in photos %}
+  <div class="gallery-item">
+    <a href="{{ photo.path }}"><img src="{{ photo.path }}" alt="Profile photo {{ loop.index }}"></a>
+    {% if photo.date %}<div class="photo-date">{{ photo.date }}</div>{% endif %}
+  </div>
+{% endfor %}
+</div>
+{% else %}
+<p>No profile photos found.</p>
+{% endif %}
+{% endblock %}

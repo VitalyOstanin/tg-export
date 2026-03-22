@@ -17,11 +17,11 @@
 </div>
 {% endfor %}
 
-{% for folder_name, chats in folders.items() %}
+{% for folder in folders_list %}
 <div class="folder-section">
-  <h2>{{ folder_name }}</h2>
+  <h2><a href="{{ folder.href }}">{{ folder.name }}</a></h2>
   <ul class="chat-list">
-  {% for chat in chats %}
+  {% for chat in folder.chats %}
     <li><a href="{{ chat.href }}" class="chat-name">{{ chat.name }}</a>
     <div class="chat-meta">{{ chat.type }} | {{ chat.messages }} messages</div></li>
   {% endfor %}
