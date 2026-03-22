@@ -1,0 +1,26 @@
+{# Macro for rendering a service (system) message #}
+{% macro render_service(msg) %}
+{% if msg.action %}
+{% set action_type = msg.action.type %}
+{% set author = (msg.from_name or "Someone")|e %}
+<div class="message service" id="message{{ msg.id }}">
+  <span class="service-text">
+  {%- if action_type == "ActionChatCreate" -%}
+    {{ author }} created the group
+  {%- elif action_type == "ActionChatEditTitle" -%}
+    {{ author }} changed the group name
+  {%- elif action_type == "ActionPinMessage" -%}
+    {{ author }} pinned a message
+  {%- elif action_type == "ActionPhoneCall" -%}
+    {{ author }} made a call
+  {%- elif action_type == "ActionContactSignUp" -%}
+    {{ author }} joined Telegram
+  {%- elif action_type == "ActionScreenshotTaken" -%}
+    {{ author }} took a screenshot
+  {%- else -%}
+    {{ author }}: {{ action_type }}
+  {%- endif -%}
+  </span>
+</div>
+{% endif %}
+{% endmacro %}

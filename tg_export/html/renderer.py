@@ -31,6 +31,9 @@ class HtmlRenderer:
             loader=FileSystemLoader(str(TEMPLATES_DIR)),
             autoescape=False,
         )
+        # Register helpers for use in Jinja2 templates
+        self.env.globals["render_text"] = render_text_parts
+        self.env.globals["format_size"] = _format_size
 
     def setup(self):
         """Copy static resources to output directory."""
@@ -205,9 +208,6 @@ class HtmlRenderer:
                         "author_initial": (first.from_name or "?")[0].upper(),
                         "time": first.date.strftime("%H:%M") if first.date else "",
                         "full_date": first.date.strftime("%Y-%m-%d %H:%M:%S") if first.date else "",
-                        "media_html": [self._render_media(m.media) for m in entry if m.media],
-                        "text_html": next((render_text_parts(m.text) for m in reversed(entry) if m.text), ""),
-                        "reactions_html": next((self._render_reactions(m) for m in reversed(entry) if m.reactions), ""),
                     })
                     prev_msg = entry[-1]
                 else:
@@ -224,7 +224,6 @@ class HtmlRenderer:
                         items.append({
                             "type": "service",
                             "msg": msg,
-                            "html": self._render_service_text(msg),
                         })
                     else:
                         joined = is_joined(msg, prev_msg)
@@ -236,12 +235,6 @@ class HtmlRenderer:
                             "author_initial": (msg.from_name or "?")[0].upper(),
                             "time": msg.date.strftime("%H:%M") if msg.date else "",
                             "full_date": msg.date.strftime("%Y-%m-%d %H:%M:%S") if msg.date else "",
-                            "reply_html": self._render_reply(msg) if msg.reply_to_msg_id else "",
-                            "forward_html": self._render_forward(msg) if msg.forwarded_from else "",
-                            "media_html": self._render_media(msg.media) if msg.media else "",
-                            "text_html": render_text_parts(msg.text) if msg.text else "",
-                            "buttons_html": self._render_buttons(msg) if msg.inline_buttons else "",
-                            "reactions_html": self._render_reactions(msg) if msg.reactions else "",
                         })
                     prev_msg = msg
 

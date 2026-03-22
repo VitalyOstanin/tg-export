@@ -1,0 +1,76 @@
+{# Macros for rendering message components #}
+{% from "media_block.html.j2" import render_media %}
+
+{% macro render_reply(msg) %}
+<div class="reply-block" data-msg-id="{{ msg.reply_to_msg_id }}"><span class="reply-author">Reply</span></div>
+{% endmacro %}
+
+{% macro render_forward(msg) %}
+{% if msg.forwarded_from %}
+<div class="forward-block"><span class="forward-from">Forwarded from {{ (msg.forwarded_from.from_name or "Unknown")|e }}</span></div>
+{% endif %}
+{% endmacro %}
+
+{% macro render_reactions(msg) %}
+{% if msg.reactions %}
+<div class="reactions">
+{% for r in msg.reactions %}
+  <span class="reaction">{{ r.emoji or "star" }} <span class="count">{{ r.count }}</span></span>
+{% endfor %}
+</div>
+{% endif %}
+{% endmacro %}
+
+{% macro render_buttons(msg) %}
+{% if msg.inline_buttons %}
+<div class="inline-buttons">
+{% for row in msg.inline_buttons %}
+  <div class="btn-row">
+  {% for btn in row %}
+    {% if btn.data and btn.type.value == "url" %}
+    <a class="btn" href="{{ btn.data|e }}" target="_blank">{{ btn.text|e }}</a>
+    {% else %}
+    <span class="btn">{{ btn.text|e }}</span>
+    {% endif %}
+  {% endfor %}
+  </div>
+{% endfor %}
+</div>
+{% endif %}
+{% endmacro %}
+
+{% macro render_message_block(item) %}
+<div class="message{% if item.joined %} joined{% endif %}" id="message{{ item.msg.id }}">
+  <div class="message-wrap">
+    <div class="author-avatar">{{ item.author_initial }}</div>
+    <div class="message-body">
+      {% if not item.joined %}<div class="author">{{ item.author }}<span class="timestamp" title="{{ item.full_date }}">{{ item.time }}</span></div>{% endif %}
+      {% if item.joined %}<span class="timestamp" title="{{ item.full_date }}">{{ item.time }}</span>{% endif %}
+      {% if item.msg.reply_to_msg_id %}{{ render_reply(item.msg) }}{% endif %}
+      {% if item.msg.forwarded_from %}{{ render_forward(item.msg) }}{% endif %}
+      {% if item.msg.media %}{{ render_media(item.msg.media) }}{% endif %}
+      {% if item.msg.text %}<div class="text">{{ render_text(item.msg.text) }}</div>{% endif %}
+      {% if item.msg.inline_buttons %}{{ render_buttons(item.msg) }}{% endif %}
+      {% if item.msg.reactions %}{{ render_reactions(item.msg) }}{% endif %}
+    </div>
+  </div>
+</div>
+{% endmacro %}
+
+{% macro render_album_block(item) %}
+<div class="message" id="message{{ item.msgs[0].id }}">
+  <div class="message-wrap">
+    <div class="author-avatar">{{ item.author_initial }}</div>
+    <div class="message-body">
+      <div class="author">{{ item.author }}<span class="timestamp" title="{{ item.full_date }}">{{ item.time }}</span></div>
+      <div class="album">
+        {% for m in item.msgs %}{% if m.media %}{{ render_media(m.media) }}{% endif %}{% endfor %}
+      </div>
+      {% set text = item.msgs|reverse|selectattr("text")|first %}
+      {% if text %}<div class="text">{{ render_text(text.text) }}</div>{% endif %}
+      {% set reacted = item.msgs|reverse|selectattr("reactions")|first %}
+      {% if reacted %}{{ render_reactions(reacted) }}{% endif %}
+    </div>
+  </div>
+</div>
+{% endmacro %}

@@ -1,0 +1,51 @@
+{# Macro for rendering a single media attachment #}
+{% macro render_media(media) %}
+{% if media %}
+{% set mtype = media.__class__.__name__ %}
+{% if mtype == "PhotoMedia" %}
+  {% if media.file and media.file.local_path %}
+  <div class="media-block"><img src="{{ media.file.local_path|e }}" alt="photo"></div>
+  {% else %}
+  <div class="media-block"><div class="file-block"><div class="file-icon">IMG</div><div class="file-info"><div class="file-name">Photo</div></div></div></div>
+  {% endif %}
+{% elif mtype == "DocumentMedia" %}
+  {% set name = (media.name or "File")|e %}
+  {% set size = format_size(media.file.size) if media.file else "" %}
+  {% if media.type.value == "voice" %}
+  <div class="media-block"><div class="voice">Voice message{% if media.duration %} ({{ media.duration }}s){% endif %}</div></div>
+  {% elif media.type.value == "video_note" %}
+  <div class="media-block"><div class="video-note">Video message{% if media.duration %} ({{ media.duration }}s){% endif %}</div></div>
+  {% elif media.type.value == "sticker" %}
+  <div class="media-block"><div class="sticker">{{ (media.sticker_emoji or "")|e }} Sticker</div></div>
+  {% elif media.type.value == "video" %}
+    {% if media.file and media.file.local_path %}
+    <div class="media-block"><video controls src="{{ media.file.local_path|e }}"></video></div>
+    {% else %}
+    <div class="media-block"><div class="file-block"><div class="file-icon">VID</div><div class="file-info"><div class="file-name">{{ name }}</div><div class="file-size">{{ size }}</div></div></div></div>
+    {% endif %}
+  {% else %}
+    {% set ext = name.rsplit(".", 1)[-1][:4]|upper if "." in name else "FILE" %}
+    {% if media.file and media.file.local_path %}
+    <div class="media-block"><a href="{{ media.file.local_path|e }}" class="file-block"><div class="file-icon">{{ ext }}</div><div class="file-info"><div class="file-name">{{ name }}</div><div class="file-size">{{ size }}</div></div></a></div>
+    {% else %}
+    <div class="media-block"><div class="file-block"><div class="file-icon">{{ ext }}</div><div class="file-info"><div class="file-name">{{ name }}</div><div class="file-size">{{ size }}</div></div></div></div>
+    {% endif %}
+  {% endif %}
+{% elif mtype == "ContactMedia" %}
+  <div class="media-block"><div class="contact-card">{{ (media.first_name ~ " " ~ media.last_name)|trim|e }}<br>{{ media.phone|e }}</div></div>
+{% elif mtype == "GeoMedia" %}
+  <div class="media-block"><div class="geo-card">Location: {{ "%.5f"|format(media.latitude) }}, {{ "%.5f"|format(media.longitude) }}</div></div>
+{% elif mtype == "VenueMedia" %}
+  <div class="media-block"><div class="venue-card">{{ media.title|e }}<br>{{ media.address|e }}</div></div>
+{% elif mtype == "PollMedia" %}
+  <div class="media-block"><div class="poll-block">
+    <div class="poll-question">{% if media.question %}{{ render_text(media.question) }}{% else %}Poll{% endif %}</div>
+    {% for ans in media.answers %}
+    <div class="poll-answer"><span>{{ render_text(ans.text) }}</span><span class="poll-votes">{{ ans.voters }} votes</span></div>
+    {% endfor %}
+  </div></div>
+{% else %}
+  <div class="media-block"><div class="file-block"><div class="file-icon">?</div><div class="file-info"><div class="file-name">{{ media.type.value }}</div></div></div></div>
+{% endif %}
+{% endif %}
+{% endmacro %}

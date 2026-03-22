@@ -13,10 +13,10 @@
   - [x] Шаг 6: stories.html.j2 -- API: stories.GetPinnedStoriesRequest + GetStoriesArchiveRequest
   - [x] Шаг 7: рингтоны -- API: account.GetSavedRingtonesRequest (вместо profile_music)
   - [x] Шаг 8: other_data.html.j2 -- рингтоны и прочие данные
-  - [ ] Шаг 9: вынести message/media/service логику из renderer.py в шаблоны (рефакторинг)
-    - message.html.j2 -- один блок сообщения (include)
-    - media_block.html.j2 -- рендеринг медиа вложения (include)
-    - service_message.html.j2 -- системное сообщение (include)
+  - [x] Шаг 9: вынести message/media/service логику из renderer.py в шаблоны (рефакторинг)
+    - message.html.j2 -- макросы render_message_block, render_album_block, render_reply и др.
+    - media_block.html.j2 -- макрос render_media
+    - service_message.html.j2 -- макрос render_service
   - [x] Шаг 10: добавить вызов export_global_data() в exporter.run()
 
 - [x] verify: перезагрузка проблемных файлов (exporter._verify_files + CLI verify)

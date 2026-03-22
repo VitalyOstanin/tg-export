@@ -1,4 +1,6 @@
 {% extends "base.html.j2" %}
+{% from "message.html.j2" import render_message_block, render_album_block %}
+{% from "service_message.html.j2" import render_service %}
 {% block content %}
 <div class="page-header">
   <h1>{{ chat_name }}</h1>
@@ -27,39 +29,11 @@
 {% if item.type == "date_separator" %}
 <div class="date-separator"><span>{{ item.date }}</span></div>
 {% elif item.type == "service" %}
-<div class="message service" id="message{{ item.msg.id }}">
-  <span class="service-text">{{ item.html }}</span>
-</div>
+{{ render_service(item.msg) }}
 {% elif item.type == "album" %}
-<div class="message" id="message{{ item.msgs[0].id }}">
-  <div class="message-wrap">
-    <div class="author-avatar">{{ item.author_initial }}</div>
-    <div class="message-body">
-      <div class="author">{{ item.author }}<span class="timestamp" title="{{ item.full_date }}">{{ item.time }}</span></div>
-      <div class="album">
-        {% for m in item.media_html %}{{ m }}{% endfor %}
-      </div>
-      {% if item.text_html %}<div class="text">{{ item.text_html }}</div>{% endif %}
-      {% if item.reactions_html %}{{ item.reactions_html }}{% endif %}
-    </div>
-  </div>
-</div>
+{{ render_album_block(item) }}
 {% else %}
-<div class="message{% if item.joined %} joined{% endif %}" id="message{{ item.msg.id }}">
-  <div class="message-wrap">
-    <div class="author-avatar">{{ item.author_initial }}</div>
-    <div class="message-body">
-      {% if not item.joined %}<div class="author">{{ item.author }}<span class="timestamp" title="{{ item.full_date }}">{{ item.time }}</span></div>{% endif %}
-      {% if item.joined %}<span class="timestamp" title="{{ item.full_date }}">{{ item.time }}</span>{% endif %}
-      {% if item.reply_html %}{{ item.reply_html }}{% endif %}
-      {% if item.forward_html %}{{ item.forward_html }}{% endif %}
-      {% if item.media_html %}{{ item.media_html }}{% endif %}
-      {% if item.text_html %}<div class="text">{{ item.text_html }}</div>{% endif %}
-      {% if item.buttons_html %}{{ item.buttons_html }}{% endif %}
-      {% if item.reactions_html %}{{ item.reactions_html }}{% endif %}
-    </div>
-  </div>
-</div>
+{{ render_message_block(item) }}
 {% endif %}
 {% endfor %}
 
