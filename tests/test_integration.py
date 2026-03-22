@@ -25,8 +25,23 @@ async def test_full_export_cycle(tmp_path, state):
 
     downloader = AsyncMock()
 
+    api = AsyncMock()
+
+    # Mock async generators to return empty iterators
+    async def _empty_async_gen():
+        return
+        yield  # noqa: unreachable — makes this an async generator
+
+    api.iter_userpics = _empty_async_gen
+    api.get_stories = AsyncMock(side_effect=Exception("not available"))
+    api.get_ringtones = AsyncMock(side_effect=Exception("not available"))
+    api.get_personal_info = AsyncMock(side_effect=Exception("not available"))
+    api.get_contacts = AsyncMock(side_effect=Exception("not available"))
+    api.get_sessions = AsyncMock(side_effect=Exception("not available"))
+    api.get_top_peers = AsyncMock(return_value=None)
+
     exporter = Exporter(
-        api=AsyncMock(), state=state, config=config,
+        api=api, state=state, config=config,
         renderer=renderer, downloader=downloader, account="test_account",
     )
 

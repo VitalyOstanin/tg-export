@@ -459,6 +459,14 @@ class Exporter:
             if live_ctx:
                 live_ctx.__exit__(None, None, None)
 
+        # Export global data (personal info, contacts, sessions, etc.)
+        if not dry_run and not self._force_shutdown and not self._shutdown:
+            try:
+                console.print("\n[cyan]Exporting global data...[/]")
+                await self.export_global_data(output_base)
+            except Exception as e:
+                logger.warning("Failed to export global data: %s", e)
+
         if verify and not self._force_shutdown:
             await self._verify_files(stats)
 
@@ -675,24 +683,271 @@ class Exporter:
         """Export personal_info, userpics, stories, contacts, sessions, etc."""
         if self.config.personal_info:
             try:
-                info = await self.api.get_personal_info()
-                # Render personal info HTML
-            except Exception:
-                pass
+                await self._export_personal_info()
+            except Exception as e:
+                logger.warning("Failed to export personal info: %s", e)
 
         if self.config.contacts:
             try:
-                contacts = await self.api.get_contacts()
-                # Render contacts HTML
-            except Exception:
-                pass
+                await self._export_contacts()
+            except Exception as e:
+                logger.warning("Failed to export contacts: %s", e)
 
         if self.config.sessions:
             try:
-                sessions, web_sessions = await self.api.get_sessions()
-                # Render sessions HTML
+                await self._export_sessions()
+            except Exception as e:
+                logger.warning("Failed to export sessions: %s", e)
+
+        if self.config.userpics:
+            try:
+                await self._export_userpics()
+            except Exception as e:
+                logger.warning("Failed to export userpics: %s", e)
+
+        if self.config.stories:
+            try:
+                await self._export_stories()
+            except Exception as e:
+                logger.warning("Failed to export stories: %s", e)
+
+        if self.config.other_data or self.config.profile_music:
+            try:
+                await self._export_other_data()
+            except Exception as e:
+                logger.warning("Failed to export other data: %s", e)
+
+    async def _export_personal_info(self):
+        """Fetch and render personal info."""
+        result = await self.api.get_personal_info()
+        full_user = result.full_user
+        user = result.users[0] if result.users else None
+
+        photo_path = None
+        if user and getattr(user, "photo", None):
+            photos_dir = self.renderer.output_dir / "profile_photos"
+            photos_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                path = await self.api.client.download_profile_photo(
+                    "me", file=str(photos_dir / "current"),
+                )
+                if path:
+                    photo_path = f"profile_photos/{Path(path).name}"
             except Exception:
                 pass
+
+        user_data = {
+            "first_name": getattr(user, "first_name", "") or "",
+            "last_name": getattr(user, "last_name", "") or "",
+            "username": getattr(user, "username", "") or "",
+            "phone": getattr(user, "phone", "") or "",
+            "bio": getattr(full_user, "about", "") or "",
+            "user_id": getattr(user, "id", ""),
+            "premium": bool(getattr(user, "premium", False)),
+            "photo_path": photo_path,
+        }
+        self.renderer.render_personal_info(user_data)
+        console.print("  [green]exported[/]: personal info")
+
+    async def _export_contacts(self):
+        """Fetch and render contacts list."""
+        result = await self.api.get_contacts()
+        users_by_id = {u.id: u for u in getattr(result, "users", [])}
+
+        contacts = []
+        for c in getattr(result, "contacts", []):
+            user = users_by_id.get(c.user_id)
+            if user:
+                name = f"{getattr(user, 'first_name', '') or ''} {getattr(user, 'last_name', '') or ''}".strip()
+                contacts.append({
+                    "name": name or str(c.user_id),
+                    "username": getattr(user, "username", "") or "",
+                    "phone": getattr(user, "phone", "") or "",
+                })
+
+        frequent = []
+        top_result = await self.api.get_top_peers()
+        if top_result and hasattr(top_result, "categories"):
+            for cat in top_result.categories:
+                for tp in cat.peers:
+                    peer_id = None
+                    if hasattr(tp.peer, "user_id"):
+                        peer_id = tp.peer.user_id
+                    elif hasattr(tp.peer, "chat_id"):
+                        peer_id = tp.peer.chat_id
+                    elif hasattr(tp.peer, "channel_id"):
+                        peer_id = tp.peer.channel_id
+                    user = users_by_id.get(peer_id)
+                    name = ""
+                    if user:
+                        name = f"{getattr(user, 'first_name', '') or ''} {getattr(user, 'last_name', '') or ''}".strip()
+                    frequent.append({
+                        "name": name or str(peer_id),
+                        "rating": f"{tp.rating:.2f}",
+                    })
+
+        self.renderer.render_contacts(contacts, frequent)
+        console.print(f"  [green]exported[/]: {len(contacts)} contacts, {len(frequent)} frequent")
+
+    async def _export_sessions(self):
+        """Fetch and render active sessions."""
+        sessions_result, web_result = await self.api.get_sessions()
+
+        app_sessions = []
+        for auth in getattr(sessions_result, "authorizations", []):
+            date_active = datetime.fromtimestamp(auth.date_active) if auth.date_active else None
+            app_sessions.append({
+                "app_name": getattr(auth, "app_name", ""),
+                "app_version": getattr(auth, "app_version", ""),
+                "device_model": getattr(auth, "device_model", ""),
+                "platform": getattr(auth, "platform", ""),
+                "system_version": getattr(auth, "system_version", ""),
+                "ip": getattr(auth, "ip", ""),
+                "country": getattr(auth, "country", ""),
+                "date_active": date_active.strftime("%Y-%m-%d %H:%M") if date_active else "",
+                "current": bool(getattr(auth, "current", False)),
+            })
+
+        web_sessions = []
+        for wa in getattr(web_result, "authorizations", []):
+            date_active = datetime.fromtimestamp(wa.date_active) if wa.date_active else None
+            web_sessions.append({
+                "domain": getattr(wa, "domain", ""),
+                "browser": getattr(wa, "browser", ""),
+                "platform": getattr(wa, "platform", ""),
+                "ip": getattr(wa, "ip", ""),
+                "region": getattr(wa, "region", ""),
+                "date_active": date_active.strftime("%Y-%m-%d %H:%M") if date_active else "",
+            })
+
+        self.renderer.render_sessions(app_sessions, web_sessions)
+        console.print(f"  [green]exported[/]: {len(app_sessions)} app sessions, {len(web_sessions)} web sessions")
+
+    async def _export_userpics(self):
+        """Fetch and render profile photos."""
+        photos_dir = self.renderer.output_dir / "profile_photos"
+        photos_dir.mkdir(parents=True, exist_ok=True)
+
+        photos = []
+        idx = 0
+        async for photo in self.api.iter_userpics():
+            try:
+                path = await self.api.client.download_media(
+                    photo, file=str(photos_dir / f"photo_{idx}"),
+                )
+                if path:
+                    date_str = ""
+                    if hasattr(photo, "date") and photo.date:
+                        date_str = photo.date.strftime("%Y-%m-%d %H:%M")
+                    photos.append({
+                        "path": f"profile_photos/{Path(path).name}",
+                        "date": date_str,
+                    })
+                    idx += 1
+            except Exception as e:
+                logger.debug("Failed to download userpic %d: %s", idx, e)
+
+        self.renderer.render_userpics(photos)
+        console.print(f"  [green]exported[/]: {len(photos)} profile photos")
+
+    async def _export_stories(self):
+        """Fetch and render stories."""
+        stories_dir = self.renderer.output_dir / "stories"
+        stories_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            pinned, archived = await self.api.get_stories()
+        except Exception as e:
+            logger.warning("Stories API not available: %s", e)
+            self.renderer.render_stories([])
+            return
+
+        # Combine pinned + archived, deduplicate by id
+        all_stories = {}
+        for story_item in getattr(pinned, "stories", []):
+            all_stories[story_item.id] = story_item
+        for story_item in getattr(archived, "stories", []):
+            all_stories.setdefault(story_item.id, story_item)
+
+        stories = []
+        for idx, (story_id, item) in enumerate(sorted(all_stories.items())):
+            photo_path = None
+            video_path = None
+            caption = ""
+
+            if hasattr(item, "caption") and item.caption:
+                caption = item.caption
+            elif hasattr(item, "message") and item.message:
+                caption = item.message
+
+            media = getattr(item, "media", None)
+            if media:
+                try:
+                    path = await self.api.client.download_media(
+                        media, file=str(stories_dir / f"story_{idx}"),
+                    )
+                    if path:
+                        rel = f"stories/{Path(path).name}"
+                        if any(Path(path).suffix.lower() in ext for ext in [".mp4", ".mov", ".avi"]):
+                            video_path = rel
+                        else:
+                            photo_path = rel
+                except Exception as e:
+                    logger.debug("Failed to download story %d: %s", story_id, e)
+
+            date_str = ""
+            if hasattr(item, "date") and item.date:
+                date_str = item.date.strftime("%Y-%m-%d %H:%M")
+
+            stories.append({
+                "photo_path": photo_path,
+                "video_path": video_path,
+                "caption": caption,
+                "date": date_str,
+            })
+
+        self.renderer.render_stories(stories)
+        console.print(f"  [green]exported[/]: {len(stories)} stories")
+
+    async def _export_other_data(self):
+        """Fetch and render ringtones and other data."""
+        ringtones_dir = self.renderer.output_dir / "ringtones"
+        ringtones = []
+
+        try:
+            result = await self.api.get_ringtones()
+            if hasattr(result, "ringtones"):
+                ringtones_dir.mkdir(parents=True, exist_ok=True)
+                for idx, doc in enumerate(result.ringtones):
+                    name = f"ringtone_{idx}"
+                    for attr in getattr(doc, "attributes", []):
+                        if hasattr(attr, "file_name") and attr.file_name:
+                            name = attr.file_name
+                            break
+
+                    path = None
+                    try:
+                        path = await self.api.client.download_media(
+                            doc, file=str(ringtones_dir / f"ringtone_{idx}"),
+                        )
+                    except Exception as e:
+                        logger.debug("Failed to download ringtone %d: %s", idx, e)
+
+                    size_str = ""
+                    if hasattr(doc, "size") and doc.size:
+                        size_str = _format_size(doc.size)
+
+                    ringtones.append({
+                        "name": name,
+                        "path": f"ringtones/{Path(path).name}" if path else None,
+                        "size": size_str,
+                    })
+        except Exception as e:
+            logger.warning("Failed to fetch ringtones: %s", e)
+
+        self.renderer.render_other_data({"ringtones": ringtones})
+        if ringtones:
+            console.print(f"  [green]exported[/]: {len(ringtones)} ringtones")
 
     async def _verify_files(self, stats: ExportStats):
         """Verify integrity of downloaded files and re-download broken ones."""
