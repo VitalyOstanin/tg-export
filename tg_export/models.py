@@ -666,6 +666,8 @@ def _encode_default(obj: Any) -> Any:
         return {"__datetime__": obj.isoformat()}
     if isinstance(obj, Enum):
         return obj.value
+    if isinstance(obj, bytes):
+        return obj.decode("utf-8", errors="replace")
     raise TypeError(f"Cannot serialize {type(obj)}")
 
 

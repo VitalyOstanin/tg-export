@@ -23,6 +23,15 @@ from tg_export.models import (
 )
 
 
+def _to_str(val: Any) -> str | None:
+    """Convert value to str, handling bytes from Telethon."""
+    if val is None:
+        return None
+    if isinstance(val, bytes):
+        return val.decode("utf-8", errors="replace")
+    return str(val)
+
+
 # ---------------------------------------------------------------------------
 # Entity type mapping
 # ---------------------------------------------------------------------------
@@ -106,10 +115,21 @@ def convert_media(tl_media: Any) -> Media | None:
         largest = sizes[-1] if sizes else None
         w = getattr(largest, "w", 0) if largest else 0
         h = getattr(largest, "h", 0) if largest else 0
+        # Extract file size from PhotoSize variant
+        file_size = 0
+        if largest is not None:
+            ls_cls = largest.__class__.__name__
+            if ls_cls == "PhotoSizeProgressive":
+                prog_sizes = getattr(largest, "sizes", []) or []
+                file_size = max(prog_sizes) if prog_sizes else 0
+            elif ls_cls == "PhotoCachedSize":
+                file_size = len(getattr(largest, "bytes", b""))
+            else:
+                file_size = getattr(largest, "size", 0) or 0
         return PhotoMedia(
             type=MediaType.photo,
             file=FileInfo(
-                id=photo.id, size=0, name=None,
+                id=photo.id, size=file_size, name=None,
                 mime_type="image/jpeg", local_path=None,
             ),
             width=w, height=h,
@@ -458,7 +478,7 @@ def convert_message(tl_msg: Any, chat_id: int) -> Message:
                 btn_row.append(InlineButton(
                     type=btn_type,
                     text=btn.text or "",
-                    data=getattr(btn, "url", None) or getattr(btn, "data", None),
+                    data=_to_str(getattr(btn, "url", None) or getattr(btn, "data", None)),
                 ))
             inline_buttons.append(btn_row)
 
