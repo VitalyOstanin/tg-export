@@ -49,6 +49,11 @@ def _format_size(size_bytes: int) -> str:
     return f"{size_bytes / 1024**3:.2f} GB"
 
 
+def _strip_markup(text: str) -> str:
+    """Remove Rich markup tags like [cyan], [/], [green] etc."""
+    return re.sub(r'\[/?[a-z_ ]*\]', '', text)
+
+
 def _format_speed(bytes_count: int, elapsed_s: float) -> str:
     """Format download speed as human-readable string."""
     if elapsed_s <= 0:
@@ -86,10 +91,12 @@ class ExportStats:
     messages_total: int = 0     # total messages in current chat (0 = unknown)
     messages_in_db: int = 0     # messages already in DB before this run
     files_downloaded: int = 0
-    files_cached: int = 0     # already downloaded before
-    files_imported: int = 0   # from tdesktop or sibling
-    files_too_large: int = 0  # exceeded max_file_size
-    files_type_skip: int = 0  # media type not in config
+    files_existing: int = 0       # already downloaded in previous runs
+    files_reused_chat: int = 0    # reused from another chat (same account)
+    files_reused_tdesktop: int = 0  # reused from tdesktop export
+    files_reused_sibling: int = 0   # reused from sibling account
+    files_skipped_by_size: int = 0  # exceeded max_file_size
+    files_skipped_by_type: int = 0  # media type not in config
     data_size: int = 0  # bytes downloaded
     errors: list[str] = field(default_factory=list)
     # Snapshot of global counters at start of current chat (for per-chat display)
@@ -102,10 +109,12 @@ class ExportStats:
         self._chat_snapshot = {
             "messages_exported": self.messages_exported,
             "files_downloaded": self.files_downloaded,
-            "files_cached": self.files_cached,
-            "files_imported": self.files_imported,
-            "files_too_large": self.files_too_large,
-            "files_type_skip": self.files_type_skip,
+            "files_existing": self.files_existing,
+            "files_reused_chat": self.files_reused_chat,
+            "files_reused_tdesktop": self.files_reused_tdesktop,
+            "files_reused_sibling": self.files_reused_sibling,
+            "files_skipped_by_size": self.files_skipped_by_size,
+            "files_skipped_by_type": self.files_skipped_by_type,
             "data_size": self.data_size,
         }
 
@@ -118,20 +127,28 @@ class ExportStats:
         return self.files_downloaded - self._chat_snapshot.get("files_downloaded", 0)
 
     @property
-    def chat_files_cached(self) -> int:
-        return self.files_cached - self._chat_snapshot.get("files_cached", 0)
+    def chat_files_existing(self) -> int:
+        return self.files_existing - self._chat_snapshot.get("files_existing", 0)
 
     @property
-    def chat_files_imported(self) -> int:
-        return self.files_imported - self._chat_snapshot.get("files_imported", 0)
+    def chat_files_reused_chat(self) -> int:
+        return self.files_reused_chat - self._chat_snapshot.get("files_reused_chat", 0)
 
     @property
-    def chat_files_too_large(self) -> int:
-        return self.files_too_large - self._chat_snapshot.get("files_too_large", 0)
+    def chat_files_reused_tdesktop(self) -> int:
+        return self.files_reused_tdesktop - self._chat_snapshot.get("files_reused_tdesktop", 0)
 
     @property
-    def chat_files_type_skip(self) -> int:
-        return self.files_type_skip - self._chat_snapshot.get("files_type_skip", 0)
+    def chat_files_reused_sibling(self) -> int:
+        return self.files_reused_sibling - self._chat_snapshot.get("files_reused_sibling", 0)
+
+    @property
+    def chat_files_skipped_by_size(self) -> int:
+        return self.files_skipped_by_size - self._chat_snapshot.get("files_skipped_by_size", 0)
+
+    @property
+    def chat_files_skipped_by_type(self) -> int:
+        return self.files_skipped_by_type - self._chat_snapshot.get("files_skipped_by_type", 0)
 
     @property
     def chat_data_size(self) -> int:
@@ -292,7 +309,7 @@ class Exporter:
         # Track which msg_ids have progress tasks
         file_tasks: dict[int, TaskID] = {}  # msg_id -> task_id
 
-        def _status_line() -> str:
+        def _status_lines() -> str:
             elapsed = time.monotonic() - start_time
             elapsed_str = _format_elapsed(elapsed)
             chat_data = stats.chat_data_size
@@ -301,37 +318,43 @@ class Exporter:
             # Per-chat message counts
             chat_msgs = stats.chat_messages_new
             msgs_done = stats.messages_in_db + chat_msgs
-            msgs_speed = f"{chat_msgs / elapsed:.0f}/s" if elapsed > 0 and chat_msgs > 0 else ""
-            msgs_str = str(msgs_done)
+            msgs_str = f"[cyan]{msgs_done}"
             if stats.messages_total > 0:
                 msgs_str += f"/{stats.messages_total}"
+            msgs_str += "[/]"
             if chat_msgs > 0:
-                msgs_str += f" (+{chat_msgs})"
+                msgs_str += f" ([green]+{chat_msgs}[/]"
+                if elapsed > 0:
+                    msgs_str += f", [green]{chat_msgs / elapsed:.0f}/s[/]"
+                msgs_str += ")"
 
-            line = (
-                f"  chats: {stats.chats_exported}/{stats.chats_included}  "
-                f"msgs: {msgs_str}"
-            )
-            if msgs_speed:
-                line += f" ({msgs_speed})"
-            # Per-chat file counts
-            line += f"  files: {stats.chat_files_downloaded}"
-            skip_parts = []
-            if stats.chat_files_cached:
-                skip_parts.append(f"cached {stats.chat_files_cached}")
-            if stats.chat_files_imported:
-                skip_parts.append(f"imported {stats.chat_files_imported}")
-            if stats.chat_files_too_large:
-                skip_parts.append(f"too_large {stats.chat_files_too_large}")
-            if stats.chat_files_type_skip:
-                skip_parts.append(f"type_skip {stats.chat_files_type_skip}")
-            if skip_parts:
-                line += f" ({', '.join(skip_parts)})"
-            line += f"  data: {_format_size(chat_data)}"
+            # Line 1: chats, messages, data, elapsed
+            line1 = f"  chats: [cyan]{stats.chats_exported}/{stats.chats_included}[/] | msgs: {msgs_str}"
+            line1 += f" | data: [cyan]{_format_size(chat_data)}[/]"
             if speed_str:
-                line += f" ({speed_str})"
-            line += f"  elapsed: {elapsed_str}"
-            return line
+                line1 += f" ([green]{speed_str}[/])"
+            line1 += f" | elapsed: {elapsed_str}"
+
+            # Line 2: file counts
+            parts = [f"  files: [cyan]{stats.chat_files_downloaded}[/] downloaded"]
+            if stats.chat_files_existing:
+                parts.append(f"[green]{stats.chat_files_existing}[/] existing")
+            if stats.chat_files_reused_chat:
+                parts.append(f"[green]{stats.chat_files_reused_chat}[/] from_chat")
+            if stats.chat_files_reused_tdesktop:
+                parts.append(f"[green]{stats.chat_files_reused_tdesktop}[/] from_tdesktop")
+            if stats.chat_files_reused_sibling:
+                parts.append(f"[green]{stats.chat_files_reused_sibling}[/] from_sibling")
+            skipped = []
+            if stats.chat_files_skipped_by_size:
+                skipped.append(f"[yellow]{stats.chat_files_skipped_by_size}[/] by_size")
+            if stats.chat_files_skipped_by_type:
+                skipped.append(f"[yellow]{stats.chat_files_skipped_by_type}[/] by_type")
+            if skipped:
+                parts.append(f"skipped: {', '.join(skipped)}")
+            line2 = " | ".join(parts)
+
+            return f"{line1}\n{line2}"
 
         def _make_status_table() -> Table:
             # Sync progress bar: per-chat progress
@@ -367,7 +390,7 @@ class Exporter:
 
             table = Table.grid()
             table.add_row(progress)
-            table.add_row(_status_line())
+            table.add_row(_status_lines())
             if file_tasks:
                 table.add_row(file_progress)
             return table
@@ -438,7 +461,7 @@ class Exporter:
                     # Log progress periodically for non-TTY
                     now = time.monotonic()
                     if not use_live and (now - last_log_time >= 10 or stats.chats_exported % 10 == 0):
-                        _log(_status_line())
+                        _log(_strip_markup(_status_lines()))
                         last_log_time = now
 
                 except DiskSpaceError as e:
@@ -666,16 +689,24 @@ class Exporter:
                 stats.files_downloaded += 1
                 if local_path and local_path.exists():
                     stats.data_size += local_path.stat().st_size
-            elif status == "cached":
-                stats.files_cached += 1
-            elif status == "imported":
-                stats.files_imported += 1
+            elif status == "existing":
+                stats.files_existing += 1
+            elif status == "reused_chat":
+                stats.files_reused_chat += 1
                 if local_path and local_path.exists():
                     stats.data_size += local_path.stat().st_size
-            elif status == "too_large":
-                stats.files_too_large += 1
-            elif status == "type_skip":
-                stats.files_type_skip += 1
+            elif status == "reused_tdesktop":
+                stats.files_reused_tdesktop += 1
+                if local_path and local_path.exists():
+                    stats.data_size += local_path.stat().st_size
+            elif status == "reused_sibling":
+                stats.files_reused_sibling += 1
+                if local_path and local_path.exists():
+                    stats.data_size += local_path.stat().st_size
+            elif status == "skipped_by_size":
+                stats.files_skipped_by_size += 1
+            elif status == "skipped_by_type":
+                stats.files_skipped_by_type += 1
         except Exception as e:
             stats.errors.append(f"Media error msg {msg.id}: {e}")
 

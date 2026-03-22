@@ -14,7 +14,7 @@ def test_check_skip_allowed_type():
 def test_check_skip_disallowed_type():
     media = PhotoMedia(type=MediaType.photo, file=FileInfo(id=1, size=1000, name="photo.jpg", mime_type="image/jpeg", local_path=None), width=100, height=100)
     cfg = MediaConfig(types=["document"], max_file_size_bytes=50 * 1024**2, concurrent_downloads=3)
-    assert check_skip_reason(media, cfg) == "type_skip"
+    assert check_skip_reason(media, cfg) == "skipped_by_type"
 
 
 def test_check_skip_file_too_large():
@@ -24,7 +24,7 @@ def test_check_skip_file_too_large():
         name="big.zip", mime_type="application/zip",
     )
     cfg = MediaConfig(types=["document"], max_file_size_bytes=50 * 1024**2, concurrent_downloads=3)
-    assert check_skip_reason(media, cfg) == "too_large"
+    assert check_skip_reason(media, cfg) == "skipped_by_size"
 
 
 def test_check_skip_all_types():

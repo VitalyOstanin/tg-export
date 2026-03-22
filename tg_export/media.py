@@ -36,9 +36,9 @@ def check_skip_reason(media: Media, config: MediaConfig) -> str | None:
     if media.file is None:
         return "no_file"
     if media.type.value not in config.types and "all" not in config.types:
-        return "type_skip"
+        return "skipped_by_type"
     if media.file.size > config.max_file_size_bytes:
-        return "too_large"
+        return "skipped_by_size"
     return None
 
 
@@ -98,7 +98,8 @@ class MediaDownloader:
         """Download media file if needed. Returns (local_path, status).
 
         chat_id: canonical chat ID (positive, as used in messages table).
-        status: "downloaded", "cached", "imported", "type_skip", "too_large", "no_file"
+        status: "downloaded", "existing", "reused_chat", "reused_tdesktop",
+                "reused_sibling", "skipped_by_type", "skipped_by_size", "no_file"
         """
         skip = check_skip_reason(media, self.config)
         if skip:
@@ -108,26 +109,26 @@ class MediaDownloader:
         if media.file:
             existing = await self.state.get_file(media.file.id, chat_id)
             if existing and existing["status"] == "done":
-                return Path(existing["local_path"]), "cached"
+                return Path(existing["local_path"]), "existing"
 
         # Try to hardlink from another chat within this account
         if media.file:
             linked = await self._try_link_intra_account(media, chat_dir, chat_id)
             if linked:
                 await self._register(tl_message, media, linked, chat_id)
-                return linked, "imported"
+                return linked, "reused_chat"
 
         # Try to copy from tdesktop export instead of downloading
         imported = self._try_import_tdesktop(tl_message, media, chat_dir)
         if imported:
             await self._register(tl_message, media, imported, chat_id)
-            return imported, "imported"
+            return imported, "reused_tdesktop"
 
         # Try to hardlink from sibling account export
         linked = self._try_link_sibling(media, chat_dir)
         if linked:
             await self._register(tl_message, media, linked, chat_id)
-            return linked, "imported"
+            return linked, "reused_sibling"
 
         # Disk space check
         chat_dir.mkdir(parents=True, exist_ok=True)
@@ -149,7 +150,7 @@ class MediaDownloader:
             logger.debug("file too large (real size %d > limit %d), msg %d",
                          e.size, self.config.max_file_size_bytes, tl_message.id)
             self._cleanup_new_files(target_dir, existing_files)
-            return None, "too_large"
+            return None, "skipped_by_size"
         except (asyncio.CancelledError, Exception):
             self._cleanup_new_files(target_dir, existing_files)
             raise

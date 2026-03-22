@@ -697,14 +697,18 @@ async def _run_export(account, config_override, output_override, verify, dry_run
             click.echo(f"  Chats: {stats.chats_exported}/{stats.chats_included} (skipped {stats.chats_skipped})")
             click.echo(f"  Messages: {stats.messages_exported}")
             click.echo(f"  Files downloaded: {stats.files_downloaded}")
-            if stats.files_imported:
-                click.echo(f"  Files imported: {stats.files_imported}")
-            if stats.files_cached:
-                click.echo(f"  Files cached: {stats.files_cached}")
-            if stats.files_too_large:
-                click.echo(f"  Files too large: {stats.files_too_large}")
-            if stats.files_type_skip:
-                click.echo(f"  Files type skip: {stats.files_type_skip}")
+            if stats.files_existing:
+                click.echo(f"  Files existing: {stats.files_existing}")
+            if stats.files_reused_chat:
+                click.echo(f"  Reused from chat: {stats.files_reused_chat}")
+            if stats.files_reused_tdesktop:
+                click.echo(f"  Reused from tdesktop: {stats.files_reused_tdesktop}")
+            if stats.files_reused_sibling:
+                click.echo(f"  Reused from sibling: {stats.files_reused_sibling}")
+            if stats.files_skipped_by_size:
+                click.echo(f"  Skipped by size: {stats.files_skipped_by_size}")
+            if stats.files_skipped_by_type:
+                click.echo(f"  Skipped by type: {stats.files_skipped_by_type}")
             if stats.data_size:
                 click.echo(f"  Downloaded: {_format_size(stats.data_size)}")
             # File counts from DB
