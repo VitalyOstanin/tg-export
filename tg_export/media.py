@@ -110,6 +110,13 @@ class MediaDownloader:
             if existing and existing["status"] == "done":
                 return Path(existing["local_path"]), "cached"
 
+        # Try to hardlink from another chat within this account
+        if media.file:
+            linked = await self._try_link_intra_account(media, chat_dir, chat_id)
+            if linked:
+                await self._register(tl_message, media, linked, chat_id)
+                return linked, "imported"
+
         # Try to copy from tdesktop export instead of downloading
         imported = self._try_import_tdesktop(tl_message, media, chat_dir)
         if imported:
@@ -177,6 +184,42 @@ class MediaDownloader:
             local_path=str(local_path),
             status=status,
         )
+
+    async def _try_link_intra_account(self, media: Media, chat_dir: Path,
+                                          chat_id: int) -> Path | None:
+        """Try to hardlink file from another chat within the same account."""
+        if not media.file or not media.file.id:
+            return None
+
+        existing = await self.state.get_file_any_chat(media.file.id)
+        if existing is None or existing["chat_id"] == chat_id:
+            return None
+
+        src = Path(existing["local_path"])
+        if not src.exists():
+            return None
+
+        subdir = media_subdir(media.type)
+        target_dir = chat_dir / subdir
+        target_dir.mkdir(parents=True, exist_ok=True)
+        dst = target_dir / src.name
+
+        if dst.exists():
+            return dst
+
+        try:
+            os.link(src, dst)
+            logger.debug("hardlinked intra-account: file_id=%d %s -> %s",
+                         media.file.id, src, dst)
+            return dst
+        except OSError:
+            try:
+                shutil.copy2(src, dst)
+                logger.debug("copied intra-account: file_id=%d %s -> %s",
+                             media.file.id, src, dst)
+                return dst
+            except OSError:
+                return None
 
     def _try_link_sibling(self, media: Media, chat_dir: Path) -> Path | None:
         """Try to hardlink file from a sibling account's export by file_id."""

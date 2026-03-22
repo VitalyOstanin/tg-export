@@ -240,6 +240,14 @@ class Exporter:
         # Pre-scan: count included vs skipped chats
         included_chats: list[tuple[Chat, ChatExportConfig]] = []
         for chat in chat_list:
+            # Check left/archived actions before resolve_chat_config
+            if chat.is_left and self.config.left_channels_action == "skip":
+                stats.chats_skipped += 1
+                continue
+            if chat.is_archived and self.config.archived_action == "skip":
+                stats.chats_skipped += 1
+                continue
+
             chat_config = self.config.resolve_chat_config(
                 chat_id=chat.id, chat_name=chat.name, folder=chat.folder,
                 chat_type=chat.type.value,
@@ -579,8 +587,8 @@ class Exporter:
                 # Continue from where phase 1 left off (but not first run)
                 pass
 
-            fetched_any = False
             reached_date_from = False
+            iterator_exhausted = False
             last_progress_time = time.monotonic()
             async for tl_msg in self.api.iter_messages(chat.id, **p2_kwargs):
                 if self._shutdown:
@@ -588,7 +596,6 @@ class Exporter:
                 if _before_date_from(tl_msg.date):
                     reached_date_from = True
                     break
-                fetched_any = True
                 msg = convert_message(tl_msg, chat_id=chat.id)
                 await self._process_media(msg, tl_msg, chat_dir, stats, chat_id=chat.id)
                 batch.append(msg)
@@ -606,6 +613,9 @@ class Exporter:
                 if not self._use_live and now - last_progress_time >= LOG_INTERVAL:
                     _log(_chat_progress())
                     last_progress_time = now
+            else:
+                # for/else: iterator exhausted naturally (no break)
+                iterator_exhausted = True
 
             if batch:
                 await self.state.store_messages_batch(batch)
@@ -617,7 +627,7 @@ class Exporter:
                 await self.state.set_oldest_msg_id(chat.id, current_oldest)
 
             if not self._shutdown:
-                if reached_date_from or fetched_any or oldest_msg_id > 0:
+                if reached_date_from or iterator_exhausted:
                     await self.state.set_full_history(chat.id)
                     logger.debug("  %s: full history complete", chat.name)
 
@@ -685,12 +695,54 @@ class Exporter:
                 pass
 
     async def _verify_files(self, stats: ExportStats):
-        """Verify integrity of downloaded files."""
+        """Verify integrity of downloaded files and re-download broken ones."""
         broken = await self.state.get_files_to_verify()
-        if broken:
-            console.print(f"[yellow]Found {len(broken)} files to re-download[/]")
-            for f in broken:
-                stats.errors.append(f"Broken file: {f['local_path']} (status={f['status']})")
+        if not broken:
+            return
+
+        console.print(f"[yellow]Found {len(broken)} files to re-download[/]")
+        redownloaded = 0
+        for f in broken:
+            if self._shutdown:
+                break
+            chat_id = f["chat_id"]
+            msg_id = f["msg_id"]
+            local_path = Path(f["local_path"])
+            try:
+                # Get original message from Telegram
+                tl_messages = await self.api.client.get_messages(chat_id, ids=msg_id)
+                tl_msg = tl_messages if not isinstance(tl_messages, list) else (tl_messages[0] if tl_messages else None)
+                if tl_msg is None or tl_msg.media is None:
+                    stats.errors.append(f"Cannot re-download: msg {msg_id} not found or no media")
+                    continue
+
+                # Remove broken file
+                if local_path.exists():
+                    local_path.unlink()
+
+                # Re-download to same directory
+                target_dir = local_path.parent
+                target_dir.mkdir(parents=True, exist_ok=True)
+                path = await self.api.download_media(tl_msg, target_dir)
+                if path:
+                    actual_size = Path(path).stat().st_size
+                    await self.state.register_file(
+                        file_id=f["file_id"], chat_id=chat_id, msg_id=msg_id,
+                        expected_size=f["expected_size"], actual_size=actual_size,
+                        local_path=str(path), status="done",
+                    )
+                    redownloaded += 1
+                    logger.debug("re-downloaded: %s", path)
+                else:
+                    stats.errors.append(f"Re-download failed: {local_path}")
+            except Exception as e:
+                stats.errors.append(f"Re-download error for {local_path}: {e}")
+                logger.debug("verify re-download error: %s", e)
+
+        if redownloaded:
+            console.print(f"[green]Re-downloaded {redownloaded}/{len(broken)} files[/]")
+        if stats.errors:
+            console.print(f"[red]{len(stats.errors)} files still have issues[/]")
 
     def _handle_shutdown(self):
         now = time.monotonic()

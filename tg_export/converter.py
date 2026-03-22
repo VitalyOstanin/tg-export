@@ -78,6 +78,10 @@ def convert_entities(text: str, entities: list | None) -> list[TextPart]:
         ent_offset = entity.offset
         ent_length = entity.length
 
+        # Skip overlapping entities (same approach as tdesktop)
+        if ent_offset < offset or ent_length <= 0 or ent_offset + ent_length > len(text):
+            continue
+
         # Add plain text before this entity
         if ent_offset > offset:
             parts.append(TextPart(type=TextType.text, text=text[offset:ent_offset]))
@@ -545,7 +549,7 @@ def convert_chat(tl_dialog: Any, folder: str | None = None) -> Chat:
         folder=folder,
         members_count=getattr(entity, "participants_count", None),
         last_message_date=getattr(tl_dialog, "date", None),
-        messages_count=getattr(tl_dialog, "unread_count", 0),  # approximate
+        messages_count=_get_messages_count(tl_dialog),
         is_left=getattr(entity, "left", False),
         is_archived=False,
         is_forum=getattr(entity, "forum", False),
@@ -553,6 +557,24 @@ def convert_chat(tl_dialog: Any, folder: str | None = None) -> Chat:
         migrated_from_id=None,
         is_monoforum=getattr(entity, "monoforum", False),
     )
+
+
+def _get_messages_count(tl_dialog: Any) -> int:
+    """Extract approximate messages count from Telethon Dialog.
+
+    Uses top_message ID from the underlying TL dialog as approximation.
+    Falls back to 0 if not available.
+    """
+    # TL Dialog.top_message is the ID of the last message (~= total for most chats)
+    try:
+        tl = getattr(tl_dialog, "dialog", None)
+        if tl is not None:
+            top = getattr(tl, "top_message", None)
+            if isinstance(top, int) and top > 0:
+                return top
+    except (TypeError, AttributeError):
+        pass
+    return 0
 
 
 def _extract_migrated_to(entity: Any) -> int | None:

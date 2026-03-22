@@ -124,7 +124,6 @@ def generate_config_template(chats: list[Chat], account: str | None = None) -> s
         "output:",
         f"  path: {output_path}",
         "  format: html",
-        "  messages_per_file: 1000",
         "",
         "defaults:",
         "  media:",

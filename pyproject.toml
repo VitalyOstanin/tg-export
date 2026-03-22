@@ -29,5 +29,8 @@ dev = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 
+[tool.setuptools.packages.find]
+include = ["tg_export*"]
+
 [project.scripts]
 tg-export = "tg_export.cli:main"

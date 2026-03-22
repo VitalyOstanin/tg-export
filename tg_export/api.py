@@ -41,10 +41,17 @@ class TgApi:
             takeout_ctx = self.client.takeout(**kwargs)
             self.takeout = await takeout_ctx.__aenter__()
             self._takeout_ctx = takeout_ctx
-        except ValueError:
-            # Stale takeout session exists — finish it and retry
-            logger.info("Finishing stale takeout session before creating a new one")
-            await self.client.end_takeout(success=False)
+        except (ValueError, Exception) as e:
+            err_msg = str(e).lower()
+            if "takeout" not in err_msg and "invalidat" not in err_msg:
+                raise
+            # Stale/invalidated takeout session — finish it and retry
+            logger.info("Finishing stale takeout session before creating a new one: %s", e)
+            try:
+                await self.client.end_takeout(success=False)
+            except Exception:
+                # If end_takeout also fails, clear takeout_id manually
+                self.client.session.takeout_id = None
             takeout_ctx = self.client.takeout(**kwargs)
             self.takeout = await takeout_ctx.__aenter__()
             self._takeout_ctx = takeout_ctx

@@ -8,7 +8,6 @@ FIXTURES = Path(__file__).parent / "fixtures"
 def test_load_valid_config():
     cfg = load_config(FIXTURES / "valid_config.yaml")
     assert cfg.output.format == "html"
-    assert cfg.output.messages_per_file == 1000
     assert cfg.defaults.media.max_file_size_bytes == 100 * 1024**2
     assert "photo" in cfg.defaults.media.types
     assert cfg.defaults.media.concurrent_downloads == 3

@@ -1,17 +1,7 @@
 import pytest
-import pytest_asyncio
 from pathlib import Path
 from datetime import datetime
-from tg_export.state import ExportState
 from tg_export.importer import TdesktopIndex
-
-
-@pytest_asyncio.fixture
-async def state(tmp_path):
-    s = ExportState(tmp_path / "state.db")
-    await s.open()
-    yield s
-    await s.close()
 
 
 @pytest.mark.asyncio

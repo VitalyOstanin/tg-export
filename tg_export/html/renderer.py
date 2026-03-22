@@ -53,7 +53,7 @@ class HtmlRenderer:
         initial = author[0].upper() if author else "?"
 
         parts = []
-        parts.append(f'<div class="message{"  joined" if joined else ""}" id="message{msg.id}">')
+        parts.append(f'<div class="message{" joined" if joined else ""}" id="message{msg.id}">')
         parts.append('<div class="message-wrap">')
         parts.append(f'<div class="author-avatar">{escape(initial)}</div>')
         parts.append('<div class="message-body">')

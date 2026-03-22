@@ -1,19 +1,8 @@
 import pytest
-import pytest_asyncio
-from pathlib import Path
 from datetime import datetime
-from tg_export.state import ExportState
 from tg_export.models import (
     Message, TextPart, TextType, PhotoMedia, MediaType, FileInfo,
 )
-
-
-@pytest_asyncio.fixture
-async def state(tmp_path):
-    s = ExportState(tmp_path / "state.db")
-    await s.open()
-    yield s
-    await s.close()
 
 
 def _make_msg(msg_id=1, chat_id=123, text="Hello", from_id=100, from_name="Test",

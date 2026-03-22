@@ -29,7 +29,6 @@ def renderer(tmp_path):
     config = OutputConfig(
         path=str(tmp_path / "output"),
         format="html",
-        messages_per_file=1000,
     )
     r = HtmlRenderer(output_dir=tmp_path / "output", config=config)
     r.setup()

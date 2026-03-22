@@ -319,11 +319,18 @@ class ExportState:
             (file_id, chat_id, msg_id, expected_size, actual_size, local_path, status, datetime.now(),
              actual_size, local_path, status, datetime.now()),
         )
-        await self._db.commit()
 
     async def get_file(self, file_id: int, chat_id: int) -> dict | None:
         async with self._db.execute(
             "SELECT * FROM files WHERE file_id=? AND chat_id=?", (file_id, chat_id)
+        ) as cur:
+            row = await cur.fetchone()
+            return dict(row) if row else None
+
+    async def get_file_any_chat(self, file_id: int) -> dict | None:
+        """Find file_id in any chat (for intra-account deduplication)."""
+        async with self._db.execute(
+            "SELECT * FROM files WHERE file_id=? AND status='done' LIMIT 1", (file_id,)
         ) as cur:
             row = await cur.fetchone()
             return dict(row) if row else None
@@ -536,7 +543,6 @@ class ExportState:
             (user_id, display_name, username, datetime.now(),
              display_name, username, datetime.now()),
         )
-        await self._db.commit()
 
     async def get_user(self, user_id: int) -> dict | None:
         async with self._db.execute(
@@ -564,7 +570,6 @@ class ExportState:
              name, chat_type, folder, members_count, messages_count,
              last_message_date, int(is_left), int(is_archived), int(is_forum), int(is_monoforum), datetime.now()),
         )
-        await self._db.commit()
 
     async def get_catalog(self) -> list[dict]:
         async with self._db.execute("SELECT * FROM catalog_cache") as cur:

@@ -62,7 +62,6 @@ class ChatExportConfig:
 class OutputConfig:
     path: str = "./export_output"
     format: str = "html"
-    messages_per_file: int = 1000
 
 
 @dataclass
@@ -308,7 +307,6 @@ def load_config(path: Path) -> Config:
     output = OutputConfig(
         path=out_raw.get("path", "./export_output"),
         format=out_raw.get("format", "html"),
-        messages_per_file=out_raw.get("messages_per_file", 1000),
     )
 
     # Defaults

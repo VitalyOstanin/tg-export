@@ -223,7 +223,6 @@ def _show_account_config(config_path):
 
     click.echo(f"    output.path: {cfg.output.path}")
     click.echo(f"    output.format: {cfg.output.format}")
-    click.echo(f"    output.messages_per_file: {cfg.output.messages_per_file}")
 
     d = cfg.defaults
     click.echo(f"    defaults.media.types: {d.media.types}")
@@ -552,6 +551,21 @@ async def _init_config(account, from_catalog, output):
     click.echo(f"Config saved to {config_path}")
 
 
+def _get_dir_size(path: Path) -> int | None:
+    """Get directory size using du -sb."""
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["du", "-sb", str(path)],
+            capture_output=True, text=True, timeout=60,
+        )
+        if result.returncode == 0:
+            return int(result.stdout.split()[0])
+    except (FileNotFoundError, subprocess.TimeoutExpired, ValueError):
+        pass
+    return None
+
+
 @main.command("run")
 @click.option("--account", default=None, help="Account alias (default: from 'auth default')")
 @click.option("--config", type=click.Path(exists=True), default=None, help="Override config path")
@@ -700,10 +714,9 @@ async def _run_export(account, config_override, output_override, verify, dry_run
             db_size = state.db_path.stat().st_size if state.db_path.exists() else 0
             click.echo(f"  DB size: {_format_size(db_size)}")
             # Total export size on disk (excluding DB)
-            total_disk = sum(
-                f.stat().st_size for f in output_base.rglob("*") if f.is_file()
-            )
-            click.echo(f"  Export size on disk: {_format_size(total_disk)}")
+            total_disk = _get_dir_size(output_base)
+            if total_disk is not None:
+                click.echo(f"  Export size on disk: {_format_size(total_disk)}")
             if stats.errors:
                 click.echo(f"  Errors: {len(stats.errors)}")
 
@@ -1030,9 +1043,55 @@ async def _verify_files(account, config_override, output_override):
         if not broken:
             click.echo("All files OK.")
             return
+
         click.echo(f"Found {len(broken)} files with issues:")
         for f in broken:
             click.echo(f"  {f['local_path']} - status: {f['status']}, "
                        f"expected: {f['expected_size']}, actual: {f['actual_size']}")
+
+        # Connect to Telegram and re-download
+        from tg_export.api import TgApi
+        api_id, api_hash = mgr.load_credentials()
+        proxy = mgr.load_proxy()
+        api = TgApi(mgr.session_path(account), api_id, api_hash, proxy=proxy)
+        await api.connect()
+
+        try:
+            redownloaded = 0
+            for f in broken:
+                chat_id = f["chat_id"]
+                msg_id = f["msg_id"]
+                local_path = Path(f["local_path"])
+                try:
+                    tl_messages = await api.client.get_messages(chat_id, ids=msg_id)
+                    tl_msg = tl_messages if not isinstance(tl_messages, list) else (tl_messages[0] if tl_messages else None)
+                    if tl_msg is None or tl_msg.media is None:
+                        click.echo(f"  [skip] msg {msg_id}: not found or no media")
+                        continue
+
+                    if local_path.exists():
+                        local_path.unlink()
+
+                    target_dir = local_path.parent
+                    target_dir.mkdir(parents=True, exist_ok=True)
+                    path = await api.download_media(tl_msg, target_dir)
+                    if path:
+                        actual_size = Path(path).stat().st_size
+                        await state.register_file(
+                            file_id=f["file_id"], chat_id=chat_id, msg_id=msg_id,
+                            expected_size=f["expected_size"], actual_size=actual_size,
+                            local_path=str(path), status="done",
+                        )
+                        await state.commit()
+                        redownloaded += 1
+                        click.echo(f"  [ok] {path}")
+                    else:
+                        click.echo(f"  [fail] {local_path}")
+                except Exception as e:
+                    click.echo(f"  [error] {local_path}: {e}")
+
+            click.echo(f"\nRe-downloaded: {redownloaded}/{len(broken)}")
+        finally:
+            await api.disconnect()
     finally:
         await state.close()
