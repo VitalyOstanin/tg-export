@@ -176,9 +176,23 @@ def show_config(verbose):
             click.echo("  proxy: none")
         import shutil
         mfs = data.get("min_free_space", "20GB")
-        usage = shutil.disk_usage(Path.cwd())
+        # Check free space on the output partition, not cwd
+        disk_check_path = Path.cwd()
+        default_name = mgr.get_default_account()
+        if default_name:
+            try:
+                import yaml as _y
+                cfg_path = mgr.config_path(default_name)
+                if cfg_path.exists():
+                    acc_cfg = _y.safe_load(cfg_path.read_text()) or {}
+                    output_path = Path(acc_cfg.get("output", {}).get("path", "."))
+                    if output_path.exists():
+                        disk_check_path = output_path
+            except Exception:
+                pass
+        usage = shutil.disk_usage(disk_check_path)
         free_gb = usage.free / 1024**3
-        click.echo(f"  min_free_space: {mfs}  # available: {free_gb:.1f} GB")
+        click.echo(f"  min_free_space: {mfs}  # available: {free_gb:.1f} GB (on {disk_check_path})")
     else:
         click.echo("  (not found)")
 
