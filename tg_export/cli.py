@@ -22,10 +22,11 @@ def main(ctx, debug):
     import logging
     from rich.logging import RichHandler
     level = logging.DEBUG if debug else logging.WARNING
+    from tg_export.exporter import console as export_console
     logging.basicConfig(
         level=level,
         format="%(name)s %(message)s",
-        handlers=[RichHandler(rich_tracebacks=True, show_path=debug)],
+        handlers=[RichHandler(console=export_console, rich_tracebacks=True, show_path=debug)],
     )
     if not debug:
         logging.getLogger("aiosqlite").setLevel(logging.ERROR)

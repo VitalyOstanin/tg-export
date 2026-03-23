@@ -400,8 +400,7 @@ class Exporter:
             t2.no_wrap = True
             t2.overflow = "ellipsis"
             table.add_row(t2)
-            if file_tasks:
-                table.add_row(file_progress)
+            table.add_row(file_progress)
             return table
 
         use_live = console.is_terminal
@@ -410,7 +409,6 @@ class Exporter:
         live_ctx = Live(
             console=console, refresh_per_second=2,
             get_renderable=_make_status_table,
-            vertical_overflow="visible",
         ) if use_live else None
         if live_ctx:
             live_ctx.__enter__()
