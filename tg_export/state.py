@@ -337,6 +337,14 @@ class ExportState:
             row = await cur.fetchone()
             return dict(row) if row else None
 
+    async def get_known_paths(self, chat_id: int) -> set[str]:
+        """Return set of local_path strings registered for a chat."""
+        async with self.db.execute(
+            "SELECT local_path FROM files WHERE chat_id=?", (chat_id,)
+        ) as cur:
+            rows = await cur.fetchall()
+            return {r[0] for r in rows}
+
     async def get_files_to_verify(self) -> list[dict]:
         async with self.db.execute(
             "SELECT * FROM files WHERE status != 'done' OR actual_size != expected_size"

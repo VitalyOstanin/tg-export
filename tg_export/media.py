@@ -146,6 +146,13 @@ class MediaDownloader:
         try:
             async with self.semaphore:
                 path = await self._download_with_retry(tl_message, target_dir, media)
+
+            if path is None:
+                return None, "no_file"
+
+            local_path = Path(path)
+            await self._register(tl_message, media, local_path, chat_id)
+            return local_path, "downloaded"
         except _FileTooLargeError as e:
             logger.debug("file too large (real size %d > limit %d), msg %d",
                          e.size, self.config.max_file_size_bytes, tl_message.id)
@@ -154,13 +161,6 @@ class MediaDownloader:
         except (asyncio.CancelledError, Exception):
             self._cleanup_new_files(target_dir, existing_files)
             raise
-
-        if path is None:
-            return None, "no_file"
-
-        local_path = Path(path)
-        await self._register(tl_message, media, local_path, chat_id)
-        return local_path, "downloaded"
 
     @staticmethod
     def _cleanup_new_files(target_dir: Path, existing_files: set):

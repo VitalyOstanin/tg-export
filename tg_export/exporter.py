@@ -303,7 +303,7 @@ class Exporter:
         file_progress = Progress(
             TextColumn("    [dim]{task.description}[/]"),
             BarColumn(bar_width=20),
-            DownloadColumn(),
+            DownloadColumn(binary_units=True),
             TransferSpeedColumn(),
             console=console,
         )
@@ -454,6 +454,9 @@ class Exporter:
                     progress.update(main_task, description=f"[cyan]{chat.name}[/]")
                     logger.debug("start chat %s (id=%d, type=%s, msgs~%d)",
                                  chat.name, chat.id, chat.type.value, chat.messages_count or 0)
+
+                    # Remove orphaned files (on disk but not in DB)
+                    await self._cleanup_orphaned_files(chat.id, chat_dir)
 
                     # Load tdesktop index for this chat
                     for idx in self.downloader.tdesktop_indexes:
@@ -1054,6 +1057,34 @@ class Exporter:
             console.print(f"[green]Re-downloaded {redownloaded}/{len(broken)} files[/]")
         if stats.errors:
             console.print(f"[red]{len(stats.errors)} files still have issues[/]")
+
+    async def _cleanup_orphaned_files(self, chat_id: int, chat_dir: Path):
+        """Remove media files on disk that have no record in DB.
+
+        These are typically partial downloads from interrupted exports.
+        Removing them ensures they will be re-downloaded properly.
+        """
+        from tg_export.media import MEDIA_SUBDIRS
+        if not chat_dir.exists():
+            return
+        known_paths = await self.state.get_known_paths(chat_id)
+        removed = 0
+        for subdir_name in MEDIA_SUBDIRS.values():
+            subdir = chat_dir / subdir_name
+            if not subdir.is_dir():
+                continue
+            for f in subdir.iterdir():
+                if not f.is_file():
+                    continue
+                # DB stores paths as str(local_path) from Telethon,
+                # which are relative to cwd
+                rel_path = str(f)
+                if rel_path not in known_paths:
+                    f.unlink()
+                    removed += 1
+                    logger.debug("removed orphaned file: %s", f)
+        if removed:
+            logger.info("removed %d orphaned files in %s", removed, chat_dir.name)
 
     def _handle_shutdown(self):
         now = time.monotonic()
