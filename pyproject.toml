@@ -4,10 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tg-export"
-version = "0.1.0"
+version = "1.0.0"
 description = "Flexible Telegram data export tool"
 license = "MIT"
 requires-python = ">=3.11"
+readme = "README.md"
+authors = [{name = "Vitaly Ostanin", email = "vitaly.ostanin@gmail.com"}]
 dependencies = [
     "telethon>=1.36",
     "pyyaml>=6.0",
@@ -16,6 +18,11 @@ dependencies = [
     "click>=8.0",
     "rich>=13.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/VitalyOstanin/tg-export"
+Repository = "https://github.com/VitalyOstanin/tg-export"
+Issues = "https://github.com/VitalyOstanin/tg-export/issues"
 
 [project.optional-dependencies]
 proxy = [

@@ -42,14 +42,22 @@
 
 ## Установка
 
+Из PyPI (экспериментально, не проверялось):
+
 ```bash
-uv pip install -e .
+pip install tg-export
 ```
 
 Для работы через прокси:
 
 ```bash
-uv pip install -e ".[proxy]"
+pip install tg-export[proxy]
+```
+
+Из исходников:
+
+```bash
+uv pip install -e .
 ```
 
 ## Быстрый старт
