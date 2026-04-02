@@ -25,8 +25,8 @@
 
 - [x] messages_count: использует top_message ID вместо unread_count
 
-- [x] CLI группа `tg` — прямые запросы к Telegram API
-  - [x] `tg messages <chat_id>` — последние сообщения чата
-  - [x] `tg info <chat_ids>` — информация о чатах
-  - [x] `tg send <recipients> --text --file` — отправка текста и файлов нескольким получателям
-  - [x] `tg download <chat_id> <msg_id>` — скачивание текста и всех файлов сообщения (включая альбомы)
+- [x] CLI группа `tg-export tg` — прямые запросы к Telegram API
+  - [x] `tg-export tg messages <chat_id>` — последние сообщения чата
+  - [x] `tg-export tg info <chat_ids>` — информация о чатах
+  - [x] `tg-export tg send <recipients> --text --file` — отправка текста и файлов нескольким получателям
+  - [x] `tg-export tg download <chat_id> <msg_id>` — скачивание текста и всех файлов сообщения (включая альбомы)

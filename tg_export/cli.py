@@ -374,7 +374,7 @@ async def _tg_messages(chat_id, account, limit):
                 action_type = msg.action.__class__.__name__.replace("MessageAction", "")
                 text = f"({action_type})"
 
-            click.echo(f"  {date_str}  {sender}: {text[:200]}")
+            click.echo(f"  {date_str}  [{msg.id}]  {sender}: {text[:200]}")
     finally:
         await api.disconnect()
 
@@ -1230,6 +1230,21 @@ def tg_download(account, output, chat_id, msg_id):
     asyncio.run(_tg_download(account, chat_id, msg_id, output))
 
 
+async def _download_if_new(client, msg, out: Path, downloaded: set) -> str | None:
+    """Download media, skip if same content already exists in out dir."""
+    path = await client.download_media(msg, file=str(out))
+    if not path:
+        return None
+    p = Path(path)
+    # Check if this is a duplicate (same size as existing file with similar name)
+    for existing in downloaded:
+        if existing.stat().st_size == p.stat().st_size and existing != p:
+            p.unlink()
+            return None
+    downloaded.add(p)
+    return path
+
+
 async def _tg_download(account_name, chat_id, msg_id, output_dir):
     api, _ = await _connect_tg(account_name)
     out = Path(output_dir)
@@ -1249,13 +1264,12 @@ async def _tg_download(account_name, chat_id, msg_id, output_dir):
             text_file.write_text(tl_msg.text, encoding="utf-8")
             click.echo(f"  text: {text_file}")
 
-        # Download media
+        # Download media (skip if file already exists)
+        downloaded = {f for f in out.iterdir() if f.is_file()}
         if tl_msg.media:
-            path = await api.client.download_media(tl_msg, file=str(out))
+            path = await _download_if_new(api.client, tl_msg, out, downloaded)
             if path:
                 click.echo(f"  media: {path}")
-            else:
-                click.echo("  media: download failed")
 
         # Check for grouped_id (album) — download all parts
         if tl_msg.grouped_id:
@@ -1265,7 +1279,7 @@ async def _tg_download(account_name, chat_id, msg_id, output_dir):
             ):
                 if grouped_msg.grouped_id == tl_msg.grouped_id and grouped_msg.id != msg_id:
                     if grouped_msg.media:
-                        path = await api.client.download_media(grouped_msg, file=str(out))
+                        path = await _download_if_new(api.client, grouped_msg, out, downloaded)
                         if path:
                             click.echo(f"  album media: {path}")
                             count += 1
