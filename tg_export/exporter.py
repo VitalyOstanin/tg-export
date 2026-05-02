@@ -3,40 +3,73 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import re
 import signal
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
-
-logger = logging.getLogger(__name__)
 
 from rich.console import Console
 from rich.live import Live
-from rich.text import Text
-from rich.table import Table
+from rich.markup import escape
 from rich.progress import (
-    Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn,
-    DownloadColumn, TransferSpeedColumn, TaskID,
+    BarColumn,
+    DownloadColumn,
+    Progress,
+    SpinnerColumn,
+    TaskID,
+    TaskProgressColumn,
+    TextColumn,
+    TransferSpeedColumn,
 )
+from rich.table import Table
+from rich.text import Text
 
 from tg_export.api import TgApi
-from tg_export.config import Config, ChatExportConfig
+from tg_export.config import ChatExportConfig, Config
 from tg_export.converter import convert_message
 from tg_export.html.renderer import HtmlRenderer
-from tg_export.media import MediaDownloader, DiskSpaceError
-from tg_export.models import Chat, Message, ForumTopic
+from tg_export.media import DiskSpaceError, MediaDownloader
+from tg_export.models import Chat, ForumTopic, Message
 from tg_export.state import ExportState
 
+logger = logging.getLogger(__name__)
 
 console = Console()
 
 
 def _log(msg: str):
     """Print with immediate flush (works in non-TTY / redirected output)."""
-    print(msg, flush=True)
+    console.print(msg, markup=False, highlight=False, soft_wrap=True)
+
+
+def chat_export_line(chat_name: str, chat_type: str, folder: str | None) -> str:
+    """Build the `export: <chat>` console line with markup-safe substitutions."""
+    folder_str = f" [{escape(folder)}]" if folder else ""
+    return f"  [green]export[/]: {escape(chat_name)} ({escape(chat_type)}){folder_str}"
+
+
+def chat_progress_description(chat_name: str) -> str:
+    """Build the per-chat description for the main Progress task."""
+    return f"[cyan]{escape(chat_name)}[/]"
+
+
+def chat_error_line(chat_name: str, error: BaseException) -> str:
+    """Build the `Error exporting <chat>: <e>` line, escaping both."""
+    return f"Error exporting {escape(chat_name)}: {escape(str(error))}"
+
+
+def disk_space_error_line(error: BaseException) -> str:
+    """Build the `Disk space error: <e>` line, escaping the error text."""
+    return f"Disk space error: {escape(str(error))}"
+
+
+def file_progress_description(filename: str) -> str:
+    """Build a Progress description for a file download (markup-safe)."""
+    return escape(filename)
 
 
 def _format_size(size_bytes: int) -> str:
@@ -48,11 +81,6 @@ def _format_size(size_bytes: int) -> str:
     if size_bytes < 1024**3:
         return f"{size_bytes / 1024**2:.1f} MB"
     return f"{size_bytes / 1024**3:.2f} GB"
-
-
-def _strip_markup(text: str) -> str:
-    """Remove Rich markup tags like [cyan], [/], [green] etc."""
-    return re.sub(r'\[/?[a-z_ ]*\]', '', text)
 
 
 def _format_speed(bytes_count: int, elapsed_s: float) -> str:
@@ -236,6 +264,61 @@ class Exporter:
         self._shutdown = False
         self._force_shutdown = False
         self._first_signal_time: float = 0
+        self._use_live: bool = False
+
+    def _build_status_table(
+        self,
+        progress: Progress,
+        main_task: TaskID,
+        file_progress: Progress,
+        file_tasks: dict[int, TaskID],
+        stats: ExportStats,
+        line1: str,
+        line2: str,
+    ) -> Table:
+        """Build the live status table.
+
+        Called from the Live refresh thread; reads ``active_downloads`` via a
+        snapshot to avoid ``RuntimeError: dictionary changed size during iteration``
+        when the event loop mutates it concurrently.
+        """
+        completed = stats.messages_in_db + stats.chat_messages_new
+        if stats.messages_total > 0:
+            progress.update(main_task, completed=completed,
+                            total=stats.messages_total)
+        else:
+            progress.update(main_task, completed=completed, total=None)
+
+        active = dict(self.downloader.active_downloads)
+        for msg_id in list(file_tasks):
+            if msg_id not in active:
+                file_progress.remove_task(file_tasks.pop(msg_id))
+        for msg_id, dl in active.items():
+            desc = file_progress_description(dl.filename)
+            if msg_id not in file_tasks:
+                file_tasks[msg_id] = file_progress.add_task(
+                    desc, total=dl.total or None, completed=dl.received,
+                )
+            else:
+                file_progress.update(
+                    file_tasks[msg_id],
+                    description=desc,
+                    completed=dl.received,
+                    total=dl.total or None,
+                )
+
+        table = Table.grid()
+        table.add_row(progress)
+        t1 = Text.from_markup(line1)
+        t1.no_wrap = True
+        t1.overflow = "ellipsis"
+        table.add_row(t1)
+        t2 = Text.from_markup(line2)
+        t2.no_wrap = True
+        t2.overflow = "ellipsis"
+        table.add_row(t2)
+        table.add_row(file_progress)
+        return table
 
     async def run(
         self,
@@ -358,143 +441,107 @@ class Exporter:
         def _status_lines() -> str:
             return f"{_status_line1()}\n{_status_line2()}"
 
-        def _make_status_table() -> Table:
-            # Sync progress bar: per-chat progress
-            completed = stats.messages_in_db + stats.chat_messages_new
-            if stats.messages_total > 0:
-                progress.update(main_task, completed=completed,
-                                total=stats.messages_total)
-            else:
-                progress.update(main_task, completed=completed,
-                                total=None)
-
-            # Sync file download sub-bars
-            active = self.downloader.active_downloads
-            # Remove finished tasks
-            for msg_id in list(file_tasks):
-                if msg_id not in active:
-                    file_progress.remove_task(file_tasks.pop(msg_id))
-            # Add/update active tasks
-            for msg_id, dl in active.items():
-                if msg_id not in file_tasks:
-                    tid = file_progress.add_task(
-                        dl.filename, total=dl.total or None,
-                        completed=dl.received,
-                    )
-                    file_tasks[msg_id] = tid
-                else:
-                    file_progress.update(
-                        file_tasks[msg_id],
-                        description=dl.filename,
-                        completed=dl.received,
-                        total=dl.total or None,
-                    )
-
-            table = Table.grid()
-            table.add_row(progress)
-            t1 = Text.from_markup(_status_line1())
-            t1.no_wrap = True
-            t1.overflow = "ellipsis"
-            table.add_row(t1)
-            t2 = Text.from_markup(_status_line2())
-            t2.no_wrap = True
-            t2.overflow = "ellipsis"
-            table.add_row(t2)
-            table.add_row(file_progress)
-            return table
+        def _build_status_table_local() -> Table:
+            return self._build_status_table(
+                progress=progress, main_task=main_task,
+                file_progress=file_progress, file_tasks=file_tasks,
+                stats=stats,
+                line1=_status_line1(), line2=_status_line2(),
+            )
 
         use_live = console.is_terminal
         self._use_live = use_live
 
-        live_ctx = Live(
-            console=console, refresh_per_second=2,
-            get_renderable=_make_status_table,
-        ) if use_live else None
-        if live_ctx:
-            live_ctx.__enter__()
+        live_cm: contextlib.AbstractContextManager[object] = (
+            Live(
+                console=console, refresh_per_second=2,
+                get_renderable=_build_status_table_local,
+            )
+            if use_live
+            else contextlib.nullcontext()
+        )
 
         try:
-            last_log_time = start_time
-            for chat, chat_config in included_chats:
-                if self._shutdown:
-                    console.log("[yellow]Shutdown requested, saving state...[/]")
-                    break
+            with live_cm:
+                last_log_time = start_time
+                for chat, chat_config in included_chats:
+                    if self._shutdown:
+                        console.print("[yellow]Shutdown requested, saving state...[/]")
+                        break
 
-                folder_str = f" [{chat.folder}]" if chat.folder else ""
+                    if dry_run:
+                        console.print(chat_export_line(
+                            chat_name=chat.name, chat_type=chat.type.value,
+                            folder=chat.folder,
+                        ))
+                        stats.chats_exported += 1
+                        continue
 
-                if dry_run:
-                    console.print(f"  [green]export[/]: {chat.name} ({chat.type.value}){folder_str}")
-                    stats.chats_exported += 1
-                    continue
+                    chat_dir = resolve_chat_dir(
+                        base=output_base,
+                        chat_name=chat.name,
+                        chat_id=chat.id,
+                        folder=chat.folder,
+                        is_left=chat.is_left,
+                        is_archived=chat.is_archived,
+                    )
 
-                chat_dir = resolve_chat_dir(
-                    base=output_base,
-                    chat_name=chat.name,
-                    chat_id=chat.id,
-                    folder=chat.folder,
-                    is_left=chat.is_left,
-                    is_archived=chat.is_archived,
-                )
+                    # Save chat metadata to DB for future renderers
+                    await self.state.cache_catalog(
+                        chat_id=chat.id, name=chat.name,
+                        chat_type=chat.type.value, folder=chat.folder,
+                        members_count=chat.members_count,
+                        messages_count=chat.messages_count or 0,
+                        last_message_date=chat.last_message_date,
+                        is_left=chat.is_left, is_archived=chat.is_archived,
+                        is_forum=chat.is_forum,
+                        is_monoforum=getattr(chat, 'is_monoforum', False),
+                    )
 
-                # Save chat metadata to DB for future renderers
-                await self.state.cache_catalog(
-                    chat_id=chat.id, name=chat.name,
-                    chat_type=chat.type.value, folder=chat.folder,
-                    members_count=chat.members_count,
-                    messages_count=chat.messages_count or 0,
-                    last_message_date=chat.last_message_date,
-                    is_left=chat.is_left, is_archived=chat.is_archived,
-                    is_forum=chat.is_forum,
-                    is_monoforum=getattr(chat, 'is_monoforum', False),
-                )
+                    try:
+                        progress.update(main_task,
+                                        description=chat_progress_description(chat.name))
+                        logger.debug("start chat %s (id=%d, type=%s, msgs~%d)",
+                                     chat.name, chat.id, chat.type.value, chat.messages_count or 0)
 
-                try:
-                    progress.update(main_task, description=f"[cyan]{chat.name}[/]")
-                    logger.debug("start chat %s (id=%d, type=%s, msgs~%d)",
-                                 chat.name, chat.id, chat.type.value, chat.messages_count or 0)
+                        # Remove orphaned files (on disk but not in DB)
+                        await self._cleanup_orphaned_files(chat.id, chat_dir)
 
-                    # Remove orphaned files (on disk but not in DB)
-                    await self._cleanup_orphaned_files(chat.id, chat_dir)
+                        # Load tdesktop index for this chat
+                        for idx in self.downloader.tdesktop_indexes:
+                            idx.load_chat_index(chat.name)
 
-                    # Load tdesktop index for this chat
-                    for idx in self.downloader.tdesktop_indexes:
-                        idx.load_chat_index(chat.name)
+                        chat_t0 = time.monotonic()
+                        msgs_before = stats.messages_exported
+                        await self.export_chat(chat, chat_config, chat_dir, stats)
+                        chat_msgs = stats.messages_exported - msgs_before
+                        logger.debug("done chat %s in %.1fs: %d msgs",
+                                     chat.name, time.monotonic() - chat_t0, chat_msgs)
+                        stats.chats_exported += 1
 
-                    chat_t0 = time.monotonic()
-                    msgs_before = stats.messages_exported
-                    await self.export_chat(chat, chat_config, chat_dir, stats)
-                    chat_msgs = stats.messages_exported - msgs_before
-                    logger.debug("done chat %s in %.1fs: %d msgs",
-                                 chat.name, time.monotonic() - chat_t0, chat_msgs)
-                    stats.chats_exported += 1
+                        # Unload tdesktop index to free memory
+                        for idx in self.downloader.tdesktop_indexes:
+                            idx.unload_chat_index()
 
-                    # Unload tdesktop index to free memory
-                    for idx in self.downloader.tdesktop_indexes:
-                        idx.unload_chat_index()
+                        # Log progress periodically for non-TTY
+                        now = time.monotonic()
+                        if not use_live and (now - last_log_time >= 10 or stats.chats_exported % 10 == 0):
+                            _log(Text.from_markup(_status_lines()).plain)
+                            last_log_time = now
 
-                    # Log progress periodically for non-TTY
-                    now = time.monotonic()
-                    if not use_live and (now - last_log_time >= 10 or stats.chats_exported % 10 == 0):
-                        _log(_strip_markup(_status_lines()))
-                        last_log_time = now
-
-                except DiskSpaceError as e:
-                    console.log(f"Disk space error: {e}")
-                    stats.errors.append(str(e))
-                    break
-                except asyncio.CancelledError:
-                    console.log("[yellow]Force shutdown during export...[/]")
-                    break
-                except Exception as e:
-                    console.log(f"Error exporting {chat.name}: {e}")
-                    stats.errors.append(f"{chat.name}: {e}")
+                    except DiskSpaceError as e:
+                        console.print(disk_space_error_line(e))
+                        stats.errors.append(str(e))
+                        break
+                    except asyncio.CancelledError:
+                        console.print("[yellow]Force shutdown during export...[/]")
+                        break
+                    except Exception as e:
+                        console.print(chat_error_line(chat.name, e))
+                        stats.errors.append(f"{chat.name}: {e}")
 
         except asyncio.CancelledError:
             self._force_shutdown = True
-
-        finally:
-            if live_ctx:
-                live_ctx.__exit__(None, None, None)
 
         # Export global data (personal info, contacts, sessions, etc.)
         if not dry_run and not self._force_shutdown and not self._shutdown:
@@ -528,7 +575,6 @@ class Exporter:
         BATCH_SIZE = 500
         LOG_INTERVAL = 3  # seconds between progress logs
         chat_start = time.monotonic()
-        msgs_before = stats.messages_exported
 
         # Date range filtering
         date_from = chat_config.date_from
@@ -573,7 +619,6 @@ class Exporter:
             return "  ".join(parts)
 
         # Build iter_messages kwargs for date filtering
-        from datetime import timedelta
         iter_kwargs: dict = {}
         if date_to:
             # Start from messages at date_to end-of-day

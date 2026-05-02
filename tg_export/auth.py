@@ -140,9 +140,9 @@ class AccountManager:
         if not await client.is_user_authorized():
             phone = input("Phone number (with +): ")
             sent = await client.send_code_request(phone)
-            print(f"Code type: {sent.type.__class__.__name__}")
-            print(f"Next type: {sent.next_type.__class__.__name__ if sent.next_type else 'none'}")
-            print(f"Timeout: {sent.timeout}s" if sent.timeout else "No timeout")
+            click.echo(f"Code type: {sent.type.__class__.__name__}")
+            click.echo(f"Next type: {sent.next_type.__class__.__name__ if sent.next_type else 'none'}")
+            click.echo(f"Timeout: {sent.timeout}s" if sent.timeout else "No timeout")
 
             code = input("Enter code: ")
             try:
@@ -159,9 +159,9 @@ class AccountManager:
                             if "PasswordHashInvalid" in type(e2).__name__:
                                 remaining = 2 - attempt
                                 if remaining > 0:
-                                    print(f"Wrong password. {remaining} attempts left.")
+                                    click.echo(f"Wrong password. {remaining} attempts left.")
                                 else:
-                                    print("Too many wrong attempts.")
+                                    click.echo("Too many wrong attempts.")
                                     await client.disconnect()
                                     raise
                             else:
@@ -170,5 +170,5 @@ class AccountManager:
                     raise
 
         me = await client.get_me()
-        print(f"Logged in as: {me.first_name} (id={me.id})")
+        click.echo(f"Logged in as: {me.first_name} (id={me.id})")
         await client.disconnect()

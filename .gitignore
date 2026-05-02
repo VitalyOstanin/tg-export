@@ -38,3 +38,6 @@ htmlcov/
 
 # Tools
 .playwright-mcp/
+
+# Local scratch (notes, drafts, reviews)
+/tmp/
