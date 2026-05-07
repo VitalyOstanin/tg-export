@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tg-export"
-version = "1.2.1"
+version = "1.2.2"
 description = "Flexible Telegram data export tool"
 license = "MIT"
 requires-python = ">=3.11"
@@ -26,9 +26,12 @@ Issues = "https://github.com/VitalyOstanin/tg-export/issues"
 
 [project.optional-dependencies]
 proxy = [
-    # Why PySocks, not python-socks: telethon imports `from socks import ...`
-    # (PySocks). They are different packages with different module names.
-    "PySocks>=1.7",
+    # Why python-socks: Telethon (1.43+) checks `python_socks` and silently
+    # ignores `proxy=` if it's missing (warns "proxy argument will be ignored
+    # because python-socks is not installed"). PySocks is a legacy fallback
+    # path in telethon and gated by the same check, so it never runs in
+    # practice. The `[asyncio]` extra is required by Telethon's async client.
+    "python-socks[asyncio]>=2.0",
 ]
 dev = [
     "pytest>=8.0",
