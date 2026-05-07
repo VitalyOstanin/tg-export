@@ -47,7 +47,24 @@ class TgApi:
         message would silently break this. Now we catch the explicit
         TakeoutInvalidError/TakeoutRequiredError types and let everything else
         propagate.
+
+        Why pre-clear stale takeout_id: Telethon's TakeoutClient.__aenter__
+        raises a plain ValueError ("Can't send a takeout request while
+        another takeout for the current session still not been finished
+        yet.") without ever contacting the server when session.takeout_id
+        is non-None. We finish such a stale takeout before initiating a new
+        one so the user does not have to run `takeout clear` manually.
         """
+        session = self.client.session
+        if session is not None and getattr(session, "takeout_id", None) is not None:
+            stale_id = session.takeout_id
+            logger.info("Finishing stale local takeout_id=%s before starting a new one.", stale_id)
+            try:
+                await self.client.end_takeout(success=False)
+            except Exception as e:
+                logger.debug("end_takeout for stale id=%s failed: %s; clearing locally.", stale_id, e)
+                session.takeout_id = None
+
         try:
             takeout_ctx = self.client.takeout(**kwargs)
             self.takeout = await takeout_ctx.__aenter__()

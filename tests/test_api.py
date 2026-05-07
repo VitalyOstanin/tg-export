@@ -24,6 +24,54 @@ async def test_start_takeout_creates_session():
 
 
 @pytest.mark.asyncio
+async def test_start_takeout_clears_stale_takeout_id_first():
+    """Stale session.takeout_id should be ended (or cleared) before new takeout.
+
+    Why: Telethon's TakeoutClient.__aenter__ raises ValueError ("Can't send a
+    takeout request while another takeout for the current session still not
+    been finished yet.") without contacting the server when takeout_id is
+    non-None. We must finish/clear it first.
+    """
+    api = TgApi.__new__(TgApi)
+    api.client = MagicMock()
+    api.takeout = None
+    api.client.session = MagicMock()
+    api.client.session.takeout_id = 12345
+    api.client.end_takeout = AsyncMock(return_value=True)
+    mock_takeout_ctx = MagicMock()
+    mock_takeout_client = AsyncMock()
+    mock_takeout_ctx.__aenter__ = AsyncMock(return_value=mock_takeout_client)
+    api.client.takeout.return_value = mock_takeout_ctx
+
+    await api.start_takeout()
+
+    api.client.end_takeout.assert_awaited_once_with(success=False)
+    api.client.takeout.assert_called_once()
+    assert api.takeout is mock_takeout_client
+
+
+@pytest.mark.asyncio
+async def test_start_takeout_clears_stale_id_locally_when_end_fails():
+    """If end_takeout raises (e.g. server already forgot the takeout), wipe
+    takeout_id locally and proceed."""
+    api = TgApi.__new__(TgApi)
+    api.client = MagicMock()
+    api.takeout = None
+    api.client.session = MagicMock()
+    api.client.session.takeout_id = 999
+    api.client.end_takeout = AsyncMock(side_effect=RuntimeError("server says no"))
+    mock_takeout_ctx = MagicMock()
+    mock_takeout_client = AsyncMock()
+    mock_takeout_ctx.__aenter__ = AsyncMock(return_value=mock_takeout_client)
+    api.client.takeout.return_value = mock_takeout_ctx
+
+    await api.start_takeout()
+
+    assert api.client.session.takeout_id is None
+    api.client.takeout.assert_called_once()
+
+
+@pytest.mark.asyncio
 async def test_start_takeout_handles_delay():
     """On TAKEOUT_INIT_DELAY should raise with wait time."""
     api = TgApi.__new__(TgApi)
