@@ -1,11 +1,10 @@
+from unittest.mock import AsyncMock
+
 import pytest
-from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
-from datetime import datetime
+
+from tg_export.config import Config, OutputConfig
 from tg_export.exporter import Exporter
 from tg_export.html.renderer import HtmlRenderer
-from tg_export.models import Message, TextPart, TextType, Chat, ChatType
-from tg_export.config import OutputConfig, Config
 
 
 @pytest.mark.asyncio
@@ -30,7 +29,7 @@ async def test_full_export_cycle(tmp_path, state):
     # Mock async generators to return empty iterators
     async def _empty_async_gen():
         return
-        yield  # noqa: unreachable — makes this an async generator
+        yield  # noqa: B901 — makes this an async generator
 
     api.iter_userpics = _empty_async_gen
     api.get_stories = AsyncMock(side_effect=Exception("not available"))
@@ -41,8 +40,12 @@ async def test_full_export_cycle(tmp_path, state):
     api.get_top_peers = AsyncMock(return_value=None)
 
     exporter = Exporter(
-        api=api, state=state, config=config,
-        renderer=renderer, downloader=downloader, account="test_account",
+        api=api,
+        state=state,
+        config=config,
+        renderer=renderer,
+        downloader=downloader,
+        account="test_account",
     )
 
     # Export with empty chat list — should succeed with 0 chats

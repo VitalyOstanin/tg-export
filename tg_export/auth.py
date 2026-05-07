@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
+import contextlib
+import logging
 import os
 from pathlib import Path
 
 import click
 import yaml
+
+logger = logging.getLogger(__name__)
+
+
+class CredentialsError(ValueError):
+    """Raised when api_credentials.yaml is missing required fields or has bad types."""
 
 
 class AccountManager:
@@ -14,6 +22,13 @@ class AccountManager:
         self.config_dir = config_dir or Path.home() / ".config" / "tg-export"
 
     def ensure_dirs(self):
+        self.config_dir.mkdir(parents=True, exist_ok=True)
+        # Why: api_credentials.yaml lives here; its directory should be 0o700
+        # so other local users cannot enumerate accounts/credentials.
+        try:
+            os.chmod(self.config_dir, 0o700)
+        except OSError as e:
+            logger.debug("ensure_dirs: cannot chmod %s: %s", self.config_dir, e)
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
         os.chmod(self.sessions_dir, 0o700)
 
@@ -36,10 +51,7 @@ class AccountManager:
     def list_accounts(self) -> list[str]:
         if not self.sessions_dir.exists():
             return []
-        return sorted(
-            p.stem for p in self.sessions_dir.iterdir()
-            if p.suffix == ".session"
-        )
+        return sorted(p.stem for p in self.sessions_dir.iterdir() if p.suffix == ".session")
 
     def remove_account(self, name: str):
         path = self.session_path(name)
@@ -69,8 +81,7 @@ class AccountManager:
         if default:
             return default
         raise click.UsageError(
-            "No --account specified and no default set. "
-            "Use 'tg-export auth default <name>' to set one."
+            "No --account specified and no default set. Use 'tg-export account default <name>' to set one."
         )
 
     def save_credentials(self, api_id: int, api_hash: str):
@@ -81,8 +92,37 @@ class AccountManager:
 
     def load_credentials(self) -> tuple[int, str]:
         cred_path = self.config_dir / "api_credentials.yaml"
-        data = yaml.safe_load(cred_path.read_text())
-        return data["api_id"], data["api_hash"]
+        if not cred_path.exists():
+            raise CredentialsError(
+                f"api_credentials.yaml not found at {cred_path}. "
+                f"Run 'tg-export auth credentials' to create it."
+            )
+        # Warn if permissions are too loose; does not block to keep CI fixtures simple.
+        try:
+            mode = cred_path.stat().st_mode & 0o077
+            if mode != 0:
+                logger.warning(
+                    "%s has too-permissive mode %o; tightening to 0o600",
+                    cred_path,
+                    mode,
+                )
+                with contextlib.suppress(OSError):
+                    os.chmod(cred_path, 0o600)
+        except OSError:
+            pass
+        try:
+            data = yaml.safe_load(cred_path.read_text())
+        except yaml.YAMLError as e:
+            raise CredentialsError(f"Cannot parse {cred_path}: {e}") from e
+        if not isinstance(data, dict):
+            raise CredentialsError(f"{cred_path} must contain a YAML mapping, got {type(data).__name__}")
+        api_id = data.get("api_id")
+        api_hash = data.get("api_hash")
+        if not isinstance(api_id, int):
+            raise CredentialsError(f"{cred_path}: api_id must be an integer, got {type(api_id).__name__}")
+        if not isinstance(api_hash, str) or not api_hash:
+            raise CredentialsError(f"{cred_path}: api_hash must be a non-empty string")
+        return api_id, api_hash
 
     def load_global_config(self) -> dict:
         """Load global config from config.yaml. Returns raw dict."""
@@ -113,6 +153,7 @@ class AccountManager:
     def load_min_free_space(self) -> int | None:
         """Load min_free_space from global config. Returns bytes or None."""
         from tg_export.config import parse_size
+
         data = self.load_global_config()
         val = data.get("min_free_space")
         if val is None:
@@ -138,20 +179,19 @@ class AccountManager:
         await client.connect()
 
         if not await client.is_user_authorized():
-            phone = input("Phone number (with +): ")
+            phone = click.prompt("Phone number (with +)", type=str)
             sent = await client.send_code_request(phone)
-            click.echo(f"Code type: {sent.type.__class__.__name__}")
+            click.echo(f"Code type: {type(sent.type).__name__}")
             click.echo(f"Next type: {sent.next_type.__class__.__name__ if sent.next_type else 'none'}")
             click.echo(f"Timeout: {sent.timeout}s" if sent.timeout else "No timeout")
 
-            code = input("Enter code: ")
+            code = click.prompt("Enter code", type=str)
             try:
                 await client.sign_in(phone, code)
             except Exception as e:
                 if "SessionPasswordNeeded" in type(e).__name__:
-                    import getpass
                     for attempt in range(3):
-                        password = getpass.getpass("2FA password: ")
+                        password = click.prompt("2FA password", hide_input=True, type=str)
                         try:
                             await client.sign_in(password=password)
                             break
@@ -162,7 +202,9 @@ class AccountManager:
                                     click.echo(f"Wrong password. {remaining} attempts left.")
                                 else:
                                     click.echo("Too many wrong attempts.")
-                                    await client.disconnect()
+                                    disc = client.disconnect()
+                                    if disc is not None:
+                                        await disc
                                     raise
                             else:
                                 raise
@@ -170,5 +212,7 @@ class AccountManager:
                     raise
 
         me = await client.get_me()
-        click.echo(f"Logged in as: {me.first_name} (id={me.id})")
-        await client.disconnect()
+        click.echo(f"Logged in as: {getattr(me, 'first_name', '?')} (id={getattr(me, 'id', '?')})")
+        disc = client.disconnect()
+        if disc is not None:
+            await disc

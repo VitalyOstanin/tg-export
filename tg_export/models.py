@@ -3,17 +3,17 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, asdict, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
-from enum import Enum
+from enum import Enum, StrEnum
 from typing import Any
-
 
 # ---------------------------------------------------------------------------
 # Enums
 # ---------------------------------------------------------------------------
 
-class ChatType(str, Enum):
+
+class ChatType(StrEnum):
     self = "self"
     replies = "replies"
     verify_codes = "verify_codes"
@@ -26,7 +26,7 @@ class ChatType(str, Enum):
     public_channel = "public_channel"
 
 
-class MediaType(str, Enum):
+class MediaType(StrEnum):
     photo = "photo"
     video = "video"
     document = "document"
@@ -46,7 +46,7 @@ class MediaType(str, Enum):
     unsupported = "unsupported"
 
 
-class TextType(str, Enum):
+class TextType(StrEnum):
     text = "text"
     unknown = "unknown"
     mention = "mention"
@@ -70,13 +70,13 @@ class TextType(str, Enum):
     custom_emoji = "custom_emoji"
 
 
-class ReactionType(str, Enum):
+class ReactionType(StrEnum):
     emoji = "emoji"
     custom_emoji = "custom_emoji"
     paid = "paid"
 
 
-class InlineButtonType(str, Enum):
+class InlineButtonType(StrEnum):
     default = "default"
     url = "url"
     callback = "callback"
@@ -99,6 +99,7 @@ class InlineButtonType(str, Enum):
 # ---------------------------------------------------------------------------
 # Helper dataclasses
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class FileInfo:
@@ -214,6 +215,7 @@ class SessionsList:
 # Chat
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class Chat:
     id: int
@@ -235,6 +237,7 @@ class Chat:
 # ---------------------------------------------------------------------------
 # Media hierarchy
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class Media:
@@ -358,9 +361,11 @@ _MEDIA_CLASSES: dict[str, type[Media]] = {
 # Service actions
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class ServiceAction:
     """Base class for service actions."""
+
     type: str
 
 
@@ -370,41 +375,51 @@ class ActionChatCreate(ServiceAction):
     title: str = ""
     users: list[str] = field(default_factory=list)
 
+
 @dataclass
 class ActionChatEditTitle(ServiceAction):
     title: str = ""
+
 
 @dataclass
 class ActionChatEditPhoto(ServiceAction):
     photo: FileInfo | None = None
 
+
 @dataclass
 class ActionChatDeletePhoto(ServiceAction):
     pass
+
 
 @dataclass
 class ActionChatAddUser(ServiceAction):
     users: list[str] = field(default_factory=list)
 
+
 @dataclass
 class ActionChatDeleteUser(ServiceAction):
     user: str = ""
+
 
 @dataclass
 class ActionChatJoinedByLink(ServiceAction):
     inviter: str = ""
 
+
 @dataclass
 class ActionChatJoinedByRequest(ServiceAction):
     pass
+
 
 @dataclass
 class ActionChannelCreate(ServiceAction):
     title: str = ""
 
+
 @dataclass
 class ActionChatMigrateTo(ServiceAction):
     channel_id: int = 0
+
 
 @dataclass
 class ActionChannelMigrateFrom(ServiceAction):
@@ -416,6 +431,7 @@ class ActionChannelMigrateFrom(ServiceAction):
 @dataclass
 class ActionPinMessage(ServiceAction):
     message_id: int = 0
+
 
 @dataclass
 class ActionHistoryClear(ServiceAction):
@@ -429,13 +445,16 @@ class ActionPhoneCall(ServiceAction):
     discard_reason: str | None = None
     is_video: bool = False
 
+
 @dataclass
 class ActionGroupCall(ServiceAction):
     duration: int | None = None
 
+
 @dataclass
 class ActionInviteToGroupCall(ServiceAction):
     users: list[str] = field(default_factory=list)
+
 
 @dataclass
 class ActionGroupCallScheduled(ServiceAction):
@@ -448,20 +467,24 @@ class ActionGameScore(ServiceAction):
     game: str = ""
     score: int = 0
 
+
 @dataclass
 class ActionPaymentSent(ServiceAction):
     currency: str = ""
     amount: int = 0
+
 
 @dataclass
 class ActionPaymentRefunded(ServiceAction):
     currency: str = ""
     amount: int = 0
 
+
 @dataclass
 class ActionPaidMessagesRefunded(ServiceAction):
     count: int = 0
     stars: int = 0
+
 
 @dataclass
 class ActionPaidMessagesPrice(ServiceAction):
@@ -473,9 +496,11 @@ class ActionPaidMessagesPrice(ServiceAction):
 class ActionScreenshotTaken(ServiceAction):
     pass
 
+
 @dataclass
 class ActionBotAllowed(ServiceAction):
     domain: str | None = None
+
 
 @dataclass
 class ActionSecureValuesSent(ServiceAction):
@@ -487,9 +512,11 @@ class ActionSecureValuesSent(ServiceAction):
 class ActionContactSignUp(ServiceAction):
     pass
 
+
 @dataclass
 class ActionPhoneNumberRequest(ServiceAction):
     pass
+
 
 @dataclass
 class ActionGeoProximityReached(ServiceAction):
@@ -504,19 +531,23 @@ class ActionTopicCreate(ServiceAction):
     title: str = ""
     icon_emoji: str | None = None
 
+
 @dataclass
 class ActionTopicEdit(ServiceAction):
     title: str | None = None
     icon_emoji: str | None = None
     is_closed: bool | None = None
 
+
 @dataclass
 class ActionSetChatTheme(ServiceAction):
     theme: str = ""
 
+
 @dataclass
 class ActionSetMessagesTTL(ServiceAction):
     period: int = 0
+
 
 @dataclass
 class ActionSetChatWallPaper(ServiceAction):
@@ -527,6 +558,7 @@ class ActionSetChatWallPaper(ServiceAction):
 @dataclass
 class ActionWebViewDataSent(ServiceAction):
     text: str = ""
+
 
 @dataclass
 class ActionRequestedPeer(ServiceAction):
@@ -540,15 +572,18 @@ class ActionGiftPremium(ServiceAction):
     currency: str = ""
     amount: int = 0
 
+
 @dataclass
 class ActionGiftCredits(ServiceAction):
     stars: int = 0
     currency: str = ""
     amount: int = 0
 
+
 @dataclass
 class ActionStarGift(ServiceAction):
     gift_id: int = 0
+
 
 @dataclass
 class ActionGiftCode(ServiceAction):
@@ -561,10 +596,12 @@ class ActionGiftCode(ServiceAction):
 class ActionGiveawayLaunch(ServiceAction):
     pass
 
+
 @dataclass
 class ActionGiveawayResults(ServiceAction):
     winners_count: int = 0
     unclaimed_count: int = 0
+
 
 @dataclass
 class ActionPrizeStars(ServiceAction):
@@ -576,9 +613,11 @@ class ActionPrizeStars(ServiceAction):
 class ActionSuggestedPostApproval(ServiceAction):
     pass
 
+
 @dataclass
 class ActionSuggestedPostSuccess(ServiceAction):
     pass
+
 
 @dataclass
 class ActionSuggestedPostRefund(ServiceAction):
@@ -590,38 +629,47 @@ class ActionSuggestedPostRefund(ServiceAction):
 class ActionCustomAction(ServiceAction):
     message: str = ""
 
+
 @dataclass
 class ActionSuggestProfilePhoto(ServiceAction):
     photo: FileInfo | None = None
+
 
 @dataclass
 class ActionBoostApply(ServiceAction):
     boosts: int = 0
 
+
 @dataclass
 class ActionNoForwardsToggle(ServiceAction):
     enabled: bool = False
+
 
 @dataclass
 class ActionNoForwardsRequest(ServiceAction):
     pass
 
+
 @dataclass
 class ActionNewCreatorPending(ServiceAction):
     pass
+
 
 @dataclass
 class ActionChangeCreator(ServiceAction):
     pass
 
+
 @dataclass
 class ActionSuggestBirthday(ServiceAction):
     pass
+
 
 @dataclass
 class ActionTodoCompletions(ServiceAction):
     completed_ids: list[int] = field(default_factory=list)
     incompleted_ids: list[int] = field(default_factory=list)
+
 
 @dataclass
 class ActionTodoAppendTasks(ServiceAction):
@@ -632,27 +680,61 @@ class ActionTodoAppendTasks(ServiceAction):
 _ACTION_CLASSES: dict[str, type[ServiceAction]] = {
     cls.__name__: cls
     for cls in [
-        ActionChatCreate, ActionChatEditTitle, ActionChatEditPhoto,
-        ActionChatDeletePhoto, ActionChatAddUser, ActionChatDeleteUser,
-        ActionChatJoinedByLink, ActionChatJoinedByRequest,
-        ActionChannelCreate, ActionChatMigrateTo, ActionChannelMigrateFrom,
-        ActionPinMessage, ActionHistoryClear,
-        ActionPhoneCall, ActionGroupCall, ActionInviteToGroupCall,
+        ActionChatCreate,
+        ActionChatEditTitle,
+        ActionChatEditPhoto,
+        ActionChatDeletePhoto,
+        ActionChatAddUser,
+        ActionChatDeleteUser,
+        ActionChatJoinedByLink,
+        ActionChatJoinedByRequest,
+        ActionChannelCreate,
+        ActionChatMigrateTo,
+        ActionChannelMigrateFrom,
+        ActionPinMessage,
+        ActionHistoryClear,
+        ActionPhoneCall,
+        ActionGroupCall,
+        ActionInviteToGroupCall,
         ActionGroupCallScheduled,
-        ActionGameScore, ActionPaymentSent, ActionPaymentRefunded,
-        ActionPaidMessagesRefunded, ActionPaidMessagesPrice,
-        ActionScreenshotTaken, ActionBotAllowed, ActionSecureValuesSent,
-        ActionContactSignUp, ActionPhoneNumberRequest, ActionGeoProximityReached,
-        ActionTopicCreate, ActionTopicEdit, ActionSetChatTheme,
-        ActionSetMessagesTTL, ActionSetChatWallPaper,
-        ActionWebViewDataSent, ActionRequestedPeer,
-        ActionGiftPremium, ActionGiftCredits, ActionStarGift, ActionGiftCode,
-        ActionGiveawayLaunch, ActionGiveawayResults, ActionPrizeStars,
-        ActionSuggestedPostApproval, ActionSuggestedPostSuccess, ActionSuggestedPostRefund,
-        ActionCustomAction, ActionSuggestProfilePhoto, ActionBoostApply,
-        ActionNoForwardsToggle, ActionNoForwardsRequest,
-        ActionNewCreatorPending, ActionChangeCreator, ActionSuggestBirthday,
-        ActionTodoCompletions, ActionTodoAppendTasks,
+        ActionGameScore,
+        ActionPaymentSent,
+        ActionPaymentRefunded,
+        ActionPaidMessagesRefunded,
+        ActionPaidMessagesPrice,
+        ActionScreenshotTaken,
+        ActionBotAllowed,
+        ActionSecureValuesSent,
+        ActionContactSignUp,
+        ActionPhoneNumberRequest,
+        ActionGeoProximityReached,
+        ActionTopicCreate,
+        ActionTopicEdit,
+        ActionSetChatTheme,
+        ActionSetMessagesTTL,
+        ActionSetChatWallPaper,
+        ActionWebViewDataSent,
+        ActionRequestedPeer,
+        ActionGiftPremium,
+        ActionGiftCredits,
+        ActionStarGift,
+        ActionGiftCode,
+        ActionGiveawayLaunch,
+        ActionGiveawayResults,
+        ActionPrizeStars,
+        ActionSuggestedPostApproval,
+        ActionSuggestedPostSuccess,
+        ActionSuggestedPostRefund,
+        ActionCustomAction,
+        ActionSuggestProfilePhoto,
+        ActionBoostApply,
+        ActionNoForwardsToggle,
+        ActionNoForwardsRequest,
+        ActionNewCreatorPending,
+        ActionChangeCreator,
+        ActionSuggestBirthday,
+        ActionTodoCompletions,
+        ActionTodoAppendTasks,
     ]
 }
 
@@ -660,6 +742,7 @@ _ACTION_CLASSES: dict[str, type[ServiceAction]] = {
 # ---------------------------------------------------------------------------
 # JSON serialization
 # ---------------------------------------------------------------------------
+
 
 def _encode_default(obj: Any) -> Any:
     if isinstance(obj, datetime):
@@ -671,7 +754,7 @@ def _encode_default(obj: Any) -> Any:
     raise TypeError(f"Cannot serialize {type(obj)}")
 
 
-def _decode_hook(d: dict) -> dict:
+def _decode_hook(d: dict) -> dict | datetime:
     if "__datetime__" in d:
         return datetime.fromisoformat(d["__datetime__"])
     return d
@@ -703,12 +786,20 @@ def _media_from_dict(d: dict) -> Media:
     if "file" in d and isinstance(d["file"], dict):
         d["file"] = FileInfo(**d["file"])
     if "question" in d and isinstance(d.get("question"), list):
-        d["question"] = [TextPart(type=TextType(p["type"]), **{k: v for k, v in p.items() if k != "type"}) for p in d["question"]]
+        d["question"] = [
+            TextPart(type=TextType(p["type"]), **{k: v for k, v in p.items() if k != "type"})
+            for p in d["question"]
+        ]
     if "answers" in d and isinstance(d.get("answers"), list):
         answers = []
         for a in d["answers"]:
-            text_parts = [TextPart(type=TextType(p["type"]), **{k: v for k, v in p.items() if k != "type"}) for p in a.get("text", [])]
-            answers.append(PollAnswer(text=text_parts, voters=a.get("voters", 0), chosen=a.get("chosen", False)))
+            text_parts = [
+                TextPart(type=TextType(p["type"]), **{k: v for k, v in p.items() if k != "type"})
+                for p in a.get("text", [])
+            ]
+            answers.append(
+                PollAnswer(text=text_parts, voters=a.get("voters", 0), chosen=a.get("chosen", False))
+            )
         d["answers"] = answers
     if "items" in d and isinstance(d.get("items"), list) and cls in (TodoListMedia,):
         d["items"] = [TodoItem(**item) for item in d["items"]]
@@ -739,6 +830,7 @@ def _action_from_dict(d: dict) -> ServiceAction:
 # ---------------------------------------------------------------------------
 # Message with JSON methods
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class Message:
@@ -775,7 +867,7 @@ class Message:
             elif k == "forwarded_from" and v is not None:
                 d[k] = asdict(v)
             elif k == "reactions":
-                d[k] = [asdict(r) for r in v]
+                d[k] = [asdict(r) for r in (v or [])]
             elif k == "inline_buttons" and v is not None:
                 d[k] = [[asdict(btn) for btn in row] for row in v]
             else:

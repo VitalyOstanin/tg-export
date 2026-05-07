@@ -43,6 +43,7 @@ def parse_size(s: str | int) -> int:
 # Config dataclasses
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class MediaConfig:
     types: list[str]
@@ -107,9 +108,11 @@ TYPE_CATEGORIES: dict[str, list[str]] = {
 
 @dataclass
 class DefaultsConfig:
-    media: MediaConfig = field(default_factory=lambda: MediaConfig(
-        types=["photo"], max_file_size_bytes=100 * 1024**2, concurrent_downloads=3
-    ))
+    media: MediaConfig = field(
+        default_factory=lambda: MediaConfig(
+            types=["photo"], max_file_size_bytes=100 * 1024**2, concurrent_downloads=3
+        )
+    )
     date_from: date | None = None
     date_to: date | None = None
     export_service_messages: bool = True
@@ -237,6 +240,7 @@ class Config:
 # Parsing helpers
 # ---------------------------------------------------------------------------
 
+
 def _parse_media_config(d: dict) -> MediaConfig:
     types = d.get("types", ["photo"])
     if types == "all":
@@ -294,6 +298,7 @@ def _parse_folder_rule(d: dict) -> FolderRule:
 # Main loader
 # ---------------------------------------------------------------------------
 
+
 def load_config(path: Path) -> Config:
     """Load and validate YAML config file."""
     with open(path) as f:
@@ -322,10 +327,12 @@ def load_config(path: Path) -> Config:
     # Import existing
     import_existing = []
     for entry in raw.get("import_existing", []):
-        import_existing.append(ImportExistingEntry(
-            path=entry["path"],
-            type=entry["type"],
-        ))
+        import_existing.append(
+            ImportExistingEntry(
+                path=entry["path"],
+                type=entry["type"],
+            )
+        )
 
     # Folders
     folders = {}

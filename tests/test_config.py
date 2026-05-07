@@ -1,6 +1,6 @@
-import pytest
 from pathlib import Path
-from tg_export.config import load_config, Config, ConfigError
+
+from tg_export.config import Config, load_config
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -23,6 +23,7 @@ def test_resolve_chat_config_priority():
     cfg = load_config(FIXTURES / "valid_config.yaml")
     # Чат из секции chats (высший приоритет)
     chat_cfg = cfg.resolve_chat_config(chat_id=9876543210, chat_name="Секретный чат", folder=None)
+    assert chat_cfg is not None
     assert chat_cfg.media.types == ["photo"]
     # Чат из defaults (нет правил)
     chat_cfg = cfg.resolve_chat_config(chat_id=9999999, chat_name="Unknown", folder=None)
@@ -37,7 +38,8 @@ def test_parse_size_units():
 
 def test_type_rules_exact_match():
     """type_rules по точному типу."""
-    from tg_export.config import Config, TypeRule, MediaConfig
+    from tg_export.config import TypeRule
+
     cfg = Config(
         type_rules={"bot": TypeRule(skip=True)},
         unmatched_action="export_with_defaults",
@@ -52,7 +54,8 @@ def test_type_rules_exact_match():
 
 def test_type_rules_category_match():
     """type_rules по категории-шорткату."""
-    from tg_export.config import Config, TypeRule, MediaConfig
+    from tg_export.config import MediaConfig, TypeRule
+
     media = MediaConfig(types=["photo"], max_file_size_bytes=10 * 1024**2)
     cfg = Config(
         type_rules={"public": TypeRule(media=media)},
@@ -71,7 +74,8 @@ def test_type_rules_category_match():
 
 def test_type_rules_exact_beats_category():
     """Точный тип приоритетнее категории."""
-    from tg_export.config import Config, TypeRule, MediaConfig
+    from tg_export.config import MediaConfig, TypeRule
+
     media_exact = MediaConfig(types=["document"], max_file_size_bytes=100 * 1024**2)
     cfg = Config(
         type_rules={
@@ -91,7 +95,8 @@ def test_type_rules_exact_beats_category():
 
 def test_type_rules_applies_inside_folder():
     """type_rules применяется внутри папки (бот в папке -> skip по type_rules)."""
-    from tg_export.config import Config, TypeRule, FolderRule, MediaConfig
+    from tg_export.config import FolderRule, MediaConfig, TypeRule
+
     folder_media = MediaConfig(types=["photo", "video"], max_file_size_bytes=50 * 1024**2)
     cfg = Config(
         folders={"work": FolderRule(media=folder_media)},
@@ -109,7 +114,8 @@ def test_type_rules_applies_inside_folder():
 
 def test_folder_chats_beats_type_rules():
     """Явное правило в folders.chats побеждает type_rules."""
-    from tg_export.config import Config, TypeRule, FolderRule, ChatRule, MediaConfig
+    from tg_export.config import ChatRule, FolderRule, MediaConfig, TypeRule
+
     bot_media = MediaConfig(types=["document"], max_file_size_bytes=10 * 1024**2)
     cfg = Config(
         folders={"work": FolderRule(chats=[ChatRule(id=1, media=bot_media)])},

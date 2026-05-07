@@ -1,9 +1,15 @@
-import json
 from datetime import datetime
+
 from tg_export.models import (
-    Message, TextPart, TextType, Media, MediaType,
-    PhotoMedia, FileInfo, Reaction, ReactionType,
-    ForwardInfo, ChatType, Chat,
+    ChatType,
+    FileInfo,
+    MediaType,
+    Message,
+    PhotoMedia,
+    Reaction,
+    ReactionType,
+    TextPart,
+    TextType,
 )
 
 
@@ -57,7 +63,9 @@ def test_message_with_photo_json_roundtrip():
         reply_to_msg_id=None,
         reply_to_peer_id=None,
         forwarded_from=None,
-        reactions=[Reaction(type=ReactionType.emoji, emoji="\U0001f44d", document_id=None, count=5, recent=None)],
+        reactions=[
+            Reaction(type=ReactionType.emoji, emoji="\U0001f44d", document_id=None, count=5, recent=None)
+        ],
         is_outgoing=True,
         signature=None,
         via_bot_id=None,
@@ -70,6 +78,7 @@ def test_message_with_photo_json_roundtrip():
     restored = Message.from_json(json_str)
     assert isinstance(restored.media, PhotoMedia)
     assert restored.media.width == 800
+    assert restored.media.file is not None
     assert restored.media.file.name == "photo.jpg"
     assert restored.reactions[0].emoji == "\U0001f44d"
 

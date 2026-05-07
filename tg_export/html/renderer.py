@@ -2,20 +2,32 @@
 
 from __future__ import annotations
 
+import contextlib
+import re
 import shutil
-from datetime import datetime, timedelta
+from collections.abc import Callable
+from datetime import datetime
 from html import escape
 from pathlib import Path
 
-from jinja2 import Environment, FileSystemLoader
+from jinja2 import Environment, FileSystemLoader, select_autoescape
+from markupsafe import Markup
 
-from tg_export.models import (
-    Message, TextPart, TextType, Media, MediaType,
-    PhotoMedia, DocumentMedia, ContactMedia, GeoMedia, VenueMedia,
-    PollMedia, Chat,
-)
 from tg_export.config import OutputConfig
-
+from tg_export.models import (
+    Chat,
+    ContactMedia,
+    DocumentMedia,
+    GeoMedia,
+    Media,
+    MediaType,
+    Message,
+    PhotoMedia,
+    PollMedia,
+    TextPart,
+    TextType,
+    VenueMedia,
+)
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 STATIC_DIR = Path(__file__).parent / "static"
@@ -29,11 +41,16 @@ class HtmlRenderer:
         self.config = config
         self.env = Environment(
             loader=FileSystemLoader(str(TEMPLATES_DIR)),
-            autoescape=False,
+            autoescape=select_autoescape(
+                enabled_extensions=("html", "html.j2"),
+                default_for_string=True,
+                default=True,
+            ),
         )
         # Register helpers for use in Jinja2 templates
         self.env.globals["render_text"] = render_text_parts
         self.env.globals["format_size"] = _format_size
+        self.env.filters["safe_href"] = _safe_href
 
     def setup(self):
         """Copy static resources to output directory."""
@@ -63,7 +80,9 @@ class HtmlRenderer:
 
         if not joined:
             time_str = msg.date.strftime("%H:%M") if msg.date else ""
-            parts.append(f'<div class="author">{escape(author)}<span class="timestamp">{time_str}</span></div>')
+            parts.append(
+                f'<div class="author">{escape(author)}<span class="timestamp">{time_str}</span></div>'
+            )
         else:
             time_str = msg.date.strftime("%H:%M") if msg.date else ""
             parts.append(f'<span class="timestamp">{time_str}</span>')
@@ -73,7 +92,9 @@ class HtmlRenderer:
 
         if msg.forwarded_from:
             fwd_name = msg.forwarded_from.from_name or "Unknown"
-            parts.append(f'<div class="forward-block"><span class="forward-from">Forwarded from {escape(fwd_name)}</span></div>')
+            parts.append(
+                f'<div class="forward-block"><span class="forward-from">Forwarded from {escape(fwd_name)}</span></div>'
+            )
 
         if msg.media:
             parts.append(self._render_media(msg.media))
@@ -87,7 +108,7 @@ class HtmlRenderer:
         if msg.inline_buttons:
             parts.append(self._render_buttons(msg))
 
-        parts.append('</div></div></div>')
+        parts.append("</div></div></div>")
         return "\n".join(parts)
 
     def render_album(self, msgs: list[Message]) -> str:
@@ -123,50 +144,20 @@ class HtmlRenderer:
             f'<div class="author">{escape(author)}<span class="timestamp">{time_str}</span></div>',
             '<div class="album">',
             "\n".join(media_html),
-            '</div>',
+            "</div>",
         ]
         if text_html:
             parts.append(f'<div class="text">{text_html}</div>')
         if reactions_html:
             parts.append(reactions_html)
-        parts.append('</div></div></div>')
+        parts.append("</div></div></div>")
         return "\n".join(parts)
 
-    def render_chat(self, chat: Chat, messages: list[Message], chat_dir: Path):
-        """Render chat split by month with TOC and prev/next navigation."""
-        chat_dir.mkdir(parents=True, exist_ok=True)
-
-        # Clean up old HTML files (from previous renders)
-        for old in chat_dir.glob("messages*.html"):
-            old.unlink()
-
-        # Fix media paths: make local_path relative to chat_dir
-        for msg in messages:
-            _fix_media_path(msg, chat_dir)
-
-        # Group albums
-        processed = _group_albums(messages)
-
-        # Split by month
-        monthly: dict[str, list] = {}  # "YYYY-MM" -> items
-        for entry in processed:
-            first_msg = entry[0] if isinstance(entry, list) else entry
-            if first_msg.date:
-                key = first_msg.date.strftime("%Y-%m")
-            else:
-                key = "0000-00"
-            monthly.setdefault(key, []).append(entry)
-
-        if not monthly:
-            monthly = {"0000-00": []}
-
-        month_keys = sorted(monthly.keys())
-
-        # Build page info: (month_key, filename, label)
+    @staticmethod
+    def _build_pages_info(month_keys: list[str]) -> list[dict]:
         pages_info = []
         for key in month_keys:
             filename = f"messages_{key}.html"
-            # Human-readable label
             if key == "0000-00":
                 label = "Unknown date"
             else:
@@ -176,58 +167,54 @@ class HtmlRenderer:
                 except ValueError:
                     label = key
             pages_info.append({"key": key, "filename": filename, "label": label})
+        return pages_info
 
-        # Relative path from chat_dir to output root for CSS/JS
-        rel = _relative_path(chat_dir, self.output_dir)
-
-        template = self.env.get_template("chat.html.j2")
-
-        for page_idx, pinfo in enumerate(pages_info):
-            page_items = monthly[pinfo["key"]]
-
-            # Build render items
-            items = []
-            prev_msg = None
-            prev_date = None
-
-            for entry in page_items:
-                if isinstance(entry, list):
-                    # Album
-                    first = entry[0]
-                    msg_date = first.date.date() if first.date else None
-                    if msg_date != prev_date:
-                        items.append({
+    @staticmethod
+    def _build_items(processed: list) -> list[dict]:
+        items: list[dict] = []
+        prev_msg = None
+        prev_date = None
+        for entry in processed:
+            if isinstance(entry, list):
+                first = entry[0]
+                msg_date = first.date.date() if first.date else None
+                if msg_date != prev_date:
+                    items.append(
+                        {
                             "type": "date_separator",
                             "date": first.date.strftime("%B %d, %Y") if first.date else "",
-                        })
-                        prev_date = msg_date
-                    items.append({
+                        }
+                    )
+                    prev_date = msg_date
+                items.append(
+                    {
                         "type": "album",
                         "msgs": entry,
                         "author": first.from_name or "Unknown",
                         "author_initial": (first.from_name or "?")[0].upper(),
                         "time": first.date.strftime("%H:%M") if first.date else "",
                         "full_date": first.date.strftime("%Y-%m-%d %H:%M:%S") if first.date else "",
-                    })
-                    prev_msg = entry[-1]
-                else:
-                    msg = entry
-                    msg_date = msg.date.date() if msg.date else None
-                    if msg_date != prev_date:
-                        items.append({
+                    }
+                )
+                prev_msg = entry[-1]
+            else:
+                msg = entry
+                msg_date = msg.date.date() if msg.date else None
+                if msg_date != prev_date:
+                    items.append(
+                        {
                             "type": "date_separator",
                             "date": msg.date.strftime("%B %d, %Y") if msg.date else "",
-                        })
-                        prev_date = msg_date
+                        }
+                    )
+                    prev_date = msg_date
 
-                    if msg.action:
-                        items.append({
-                            "type": "service",
-                            "msg": msg,
-                        })
-                    else:
-                        joined = is_joined(msg, prev_msg)
-                        items.append({
+                if msg.action:
+                    items.append({"type": "service", "msg": msg})
+                else:
+                    joined = is_joined(msg, prev_msg)
+                    items.append(
+                        {
                             "type": "message",
                             "msg": msg,
                             "joined": joined,
@@ -235,31 +222,132 @@ class HtmlRenderer:
                             "author_initial": (msg.from_name or "?")[0].upper(),
                             "time": msg.date.strftime("%H:%M") if msg.date else "",
                             "full_date": msg.date.strftime("%Y-%m-%d %H:%M:%S") if msg.date else "",
-                        })
-                    prev_msg = msg
+                        }
+                    )
+                prev_msg = msg
+        return items
 
-            prev_href = pages_info[page_idx - 1]["filename"] if page_idx > 0 else None
-            next_href = pages_info[page_idx + 1]["filename"] if page_idx < len(pages_info) - 1 else None
+    def _render_page(
+        self,
+        *,
+        chat: Chat,
+        chat_dir: Path,
+        items: list[dict],
+        pages_info: list[dict],
+        page_idx: int,
+        rel: str,
+        template,
+    ):
+        pinfo = pages_info[page_idx]
+        prev_href = pages_info[page_idx - 1]["filename"] if page_idx > 0 else None
+        next_href = pages_info[page_idx + 1]["filename"] if page_idx < len(pages_info) - 1 else None
+        html = template.render(
+            title=f"{chat.name} - {pinfo['label']} - tg-export",
+            css_path=f"{rel}/css/style.css",
+            js_path=f"{rel}/js/script.js",
+            chat_name=chat.name,
+            chat_type=chat.type.value,
+            chat_members=chat.members_count,
+            index_href=f"{rel}/index.html",
+            prev_href=prev_href,
+            next_href=next_href,
+            page_label=pinfo["label"],
+            pages_info=pages_info,
+            current_page=pinfo["filename"],
+            items=items,
+        )
+        (chat_dir / pinfo["filename"]).write_text(html, encoding="utf-8")
 
-            html = template.render(
-                title=f"{chat.name} - {pinfo['label']} - tg-export",
-                css_path=f"{rel}/css/style.css",
-                js_path=f"{rel}/js/script.js",
-                chat_name=chat.name,
-                chat_type=chat.type.value,
-                chat_members=chat.members_count,
-                index_href=f"{rel}/index.html",
-                prev_href=prev_href,
-                next_href=next_href,
-                page_label=pinfo["label"],
-                pages_info=pages_info,
-                current_page=pinfo["filename"],
+    def render_chat(self, chat: Chat, messages: list[Message], chat_dir: Path):
+        """Render chat split by month with TOC and prev/next navigation.
+
+        In-memory variant: requires the full message list.
+        Prefer render_chat_streaming for large chats.
+        """
+        chat_dir.mkdir(parents=True, exist_ok=True)
+
+        for old in chat_dir.glob("messages*.html"):
+            old.unlink()
+
+        for msg in messages:
+            _fix_media_path(msg, chat_dir)
+
+        processed = _group_albums(messages)
+
+        monthly: dict[str, list] = {}
+        for entry in processed:
+            first_msg = entry[0] if isinstance(entry, list) else entry
+            key = first_msg.date.strftime("%Y-%m") if first_msg.date else "0000-00"
+            monthly.setdefault(key, []).append(entry)
+
+        if not monthly:
+            monthly = {"0000-00": []}
+
+        month_keys = sorted(monthly.keys())
+        pages_info = self._build_pages_info(month_keys)
+        rel = _relative_path(chat_dir, self.output_dir)
+        template = self.env.get_template("chat.html.j2")
+
+        for page_idx, pinfo in enumerate(pages_info):
+            items = self._build_items(monthly[pinfo["key"]])
+            self._render_page(
+                chat=chat,
+                chat_dir=chat_dir,
                 items=items,
+                pages_info=pages_info,
+                page_idx=page_idx,
+                rel=rel,
+                template=template,
             )
 
-            (chat_dir / pinfo["filename"]).write_text(html, encoding="utf-8")
+        if pages_info:
+            redirect_html = f'<!DOCTYPE html><html><head><meta http-equiv="refresh" content="0;url={pages_info[0]["filename"]}"></head></html>'
+            (chat_dir / "messages.html").write_text(redirect_html, encoding="utf-8")
 
-        # Write messages.html as redirect to first month
+    def render_chat_streaming(
+        self,
+        chat: Chat,
+        month_keys: list[str],
+        load_month: Callable[[str], list[Message]],
+        chat_dir: Path,
+    ):
+        """Render chat month-by-month, loading each month on demand.
+
+        Why: large chats (100k+ messages) consume hundreds of MB if all messages
+        are materialised at once; streaming keeps peak memory proportional to
+        one month.
+
+        load_month(month_key) must return the message list for that month.
+        Albums spanning month boundaries are not supported (Telegram albums are
+        created within seconds, so this is a non-issue in practice).
+        """
+        chat_dir.mkdir(parents=True, exist_ok=True)
+
+        for old in chat_dir.glob("messages*.html"):
+            old.unlink()
+
+        if not month_keys:
+            month_keys = ["0000-00"]
+        pages_info = self._build_pages_info(sorted(month_keys))
+        rel = _relative_path(chat_dir, self.output_dir)
+        template = self.env.get_template("chat.html.j2")
+
+        for page_idx, pinfo in enumerate(pages_info):
+            messages = load_month(pinfo["key"])
+            for msg in messages:
+                _fix_media_path(msg, chat_dir)
+            processed = _group_albums(messages)
+            items = self._build_items(processed)
+            self._render_page(
+                chat=chat,
+                chat_dir=chat_dir,
+                items=items,
+                pages_info=pages_info,
+                page_idx=page_idx,
+                rel=rel,
+                template=template,
+            )
+
         if pages_info:
             redirect_html = f'<!DOCTYPE html><html><head><meta http-equiv="refresh" content="0;url={pages_info[0]["filename"]}"></head></html>'
             (chat_dir / "messages.html").write_text(redirect_html, encoding="utf-8")
@@ -284,6 +372,7 @@ class HtmlRenderer:
     def render_folder_index(self, folder_name: str, chats: list[dict]):
         """Render per-folder index page with chat list."""
         from tg_export.exporter import sanitize_name
+
         folder_dir = self.output_dir / "folders" / sanitize_name(folder_name)
         folder_dir.mkdir(parents=True, exist_ok=True)
         rel = _relative_path(folder_dir, self.output_dir)
@@ -410,7 +499,9 @@ class HtmlRenderer:
 
         if isinstance(media, PhotoMedia):
             if media.file and media.file.local_path:
-                return f'<div class="media-block"><img src="{escape(media.file.local_path)}" alt="photo"></div>'
+                return (
+                    f'<div class="media-block"><img src="{escape(media.file.local_path)}" alt="photo"></div>'
+                )
             return '<div class="media-block"><div class="file-block"><div class="file-icon">IMG</div><div class="file-info"><div class="file-name">Photo</div></div></div></div>'
 
         if isinstance(media, DocumentMedia):
@@ -451,8 +542,10 @@ class HtmlRenderer:
             parts.append(f'<div class="poll-question">{q}</div>')
             for ans in media.answers:
                 ans_text = render_text_parts(ans.text)
-                parts.append(f'<div class="poll-answer"><span>{ans_text}</span><span class="poll-votes">{ans.voters} votes</span></div>')
-            parts.append('</div></div>')
+                parts.append(
+                    f'<div class="poll-answer"><span>{ans_text}</span><span class="poll-votes">{ans.voters} votes</span></div>'
+                )
+            parts.append("</div></div>")
             return "\n".join(parts)
 
         return f'<div class="media-block"><div class="file-block"><div class="file-icon">?</div><div class="file-info"><div class="file-name">{media.type.value}</div></div></div></div>'
@@ -464,7 +557,7 @@ class HtmlRenderer:
         for r in msg.reactions:
             label = r.emoji or "star"
             parts.append(f'<span class="reaction">{label} <span class="count">{r.count}</span></span>')
-        parts.append('</div>')
+        parts.append("</div>")
         return "\n".join(parts)
 
     def _render_buttons(self, msg: Message) -> str:
@@ -479,14 +572,15 @@ class HtmlRenderer:
                     parts.append(f'<a class="btn" href="{escape(btn.data)}" target="_blank">{text}</a>')
                 else:
                     parts.append(f'<span class="btn">{text}</span>')
-            parts.append('</div>')
-        parts.append('</div>')
+            parts.append("</div>")
+        parts.append("</div>")
         return "\n".join(parts)
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def is_joined(msg: Message, prev_msg: Message | None) -> bool:
     """Check if message should be visually joined with previous."""
@@ -505,8 +599,36 @@ def is_joined(msg: Message, prev_msg: Message | None) -> bool:
     return True
 
 
-def render_text_parts(parts: list[TextPart]) -> str:
-    """Render TextPart list to HTML string."""
+_SAFE_URL_SCHEMES = ("http://", "https://", "mailto:", "tel:", "tg://")
+
+# Why: minimal RFC-5321 sanity check before building "mailto:". Reject anything
+# that looks like an injection vector (CR/LF, quotes, angle brackets, control
+# chars), not full RFC validation.
+_EMAIL_RE = re.compile(r"^[^\s@<>\"']+@[^\s@<>\"']+\.[^\s@<>\"']+$")
+_PHONE_RE = re.compile(r"^\+?[\d\s().-]+$")
+
+
+def _safe_href(url: str) -> str:
+    """Return URL if it uses a safe scheme, otherwise '#'.
+
+    Why: protect HTML output from javascript:/data:/vbscript: injections via
+    Telegram URL/text_url entities or inline-button URLs.
+    """
+    if not url:
+        return "#"
+    stripped = url.lstrip().lower()
+    if stripped.startswith(_SAFE_URL_SCHEMES):
+        return url
+    if stripped.startswith("/") or stripped.startswith("#") or stripped.startswith("?"):
+        return url
+    if "://" not in stripped and ":" not in stripped:
+        # likely relative URL like "photos/file.jpg"
+        return url
+    return "#"
+
+
+def render_text_parts(parts: list[TextPart]) -> Markup:
+    """Render TextPart list to HTML Markup (safe for autoescape templates)."""
     result = []
     for tp in parts:
         text = escape(tp.text)
@@ -529,20 +651,31 @@ def render_text_parts(parts: list[TextPart]) -> str:
         elif tp.type == TextType.spoiler:
             result.append(f'<span class="spoiler">{text}</span>')
         elif tp.type == TextType.url:
-            result.append(f'<a class="url" href="{text}" target="_blank">{text}</a>')
+            href = escape(_safe_href(tp.text))
+            result.append(
+                f'<a class="url" href="{href}" target="_blank" rel="noopener noreferrer">{text}</a>'
+            )
         elif tp.type == TextType.text_url:
-            href = escape(tp.href) if tp.href else "#"
-            result.append(f'<a class="text-url" href="{href}" target="_blank">{text}</a>')
-        elif tp.type == TextType.mention:
-            result.append(f'<span class="mention">{text}</span>')
-        elif tp.type == TextType.mention_name:
+            href = escape(_safe_href(tp.href or ""))
+            result.append(
+                f'<a class="text-url" href="{href}" target="_blank" rel="noopener noreferrer">{text}</a>'
+            )
+        elif tp.type == TextType.mention or tp.type == TextType.mention_name:
             result.append(f'<span class="mention">{text}</span>')
         elif tp.type == TextType.hashtag:
             result.append(f'<span class="hashtag">{text}</span>')
         elif tp.type == TextType.email:
-            result.append(f'<a href="mailto:{text}">{text}</a>')
+            if _EMAIL_RE.match(tp.text):
+                href = escape(_safe_href(f"mailto:{tp.text}"))
+                result.append(f'<a href="{href}">{text}</a>')
+            else:
+                result.append(text)
         elif tp.type == TextType.phone:
-            result.append(f'<a href="tel:{text}">{text}</a>')
+            if _PHONE_RE.match(tp.text):
+                href = escape(_safe_href(f"tel:{tp.text}"))
+                result.append(f'<a href="{href}">{text}</a>')
+            else:
+                result.append(text)
         elif tp.type == TextType.bot_command:
             result.append(f'<span class="bot-command">{text}</span>')
         elif tp.type == TextType.cashtag:
@@ -551,7 +684,7 @@ def render_text_parts(parts: list[TextPart]) -> str:
             result.append(text)
         else:
             result.append(text)
-    return "".join(result)
+    return Markup("".join(result))
 
 
 def _group_albums(messages: list[Message]) -> list[Message | list[Message]]:
@@ -583,22 +716,17 @@ def _group_albums(messages: list[Message]) -> list[Message | list[Message]]:
 
 
 def _relative_path(from_dir: Path, to_dir: Path) -> str:
-    """Compute relative path from from_dir to to_dir."""
+    """Compute relative path from from_dir to to_dir.
+
+    Why os.path.relpath: handles cross-drive paths on Windows by raising
+    ValueError, which we fall back to absolute. Manual parent-walk could
+    enter an infinite loop on Windows roots (C:\\ → C:\\).
+    """
+    import os
+
     try:
-        return str(to_dir.relative_to(from_dir))
+        return os.path.relpath(to_dir, start=from_dir).replace("\\", "/")
     except ValueError:
-        # Count levels up
-        parts = []
-        current = from_dir
-        while True:
-            try:
-                rel = to_dir.relative_to(current)
-                return "/".join(parts) + ("/" if parts else "") + str(rel)
-            except ValueError:
-                parts.append("..")
-                current = current.parent
-                if current == current.parent:
-                    break
         return str(to_dir)
 
 
@@ -612,10 +740,8 @@ def _fix_media_path(msg: Message, chat_dir: Path):
         return
     p = Path(file_obj.local_path)
     if p.is_absolute():
-        try:
+        with contextlib.suppress(ValueError):
             file_obj.local_path = str(p.relative_to(chat_dir))
-        except ValueError:
-            pass
     else:
         # Relative path like "export_output/account/unfiled/Chat_123/photos/file.jpg"
         # Try to find chat_dir suffix in the path
@@ -626,8 +752,15 @@ def _fix_media_path(msg: Message, chat_dir: Path):
             # Last resort: just keep the filename parts after the media subdir
             parts = p.parts
             for i, part in enumerate(parts):
-                if part in ("photos", "videos", "files", "voice_messages",
-                            "video_messages", "stickers", "gifs"):
+                if part in (
+                    "photos",
+                    "videos",
+                    "files",
+                    "voice_messages",
+                    "video_messages",
+                    "stickers",
+                    "gifs",
+                ):
                     file_obj.local_path = str(Path(*parts[i:]))
                     return
 

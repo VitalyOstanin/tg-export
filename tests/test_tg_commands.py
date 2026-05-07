@@ -8,7 +8,6 @@ import pytest
 
 from tg_export.cli import _download_if_new
 
-
 # ---------------------------------------------------------------------------
 # _download_if_new: deduplication logic
 # ---------------------------------------------------------------------------
@@ -122,6 +121,7 @@ class TestTgMessagesOutput:
     def test_msg_id_in_output(self):
         """tg messages output includes [msg_id] for each message."""
         from click.testing import CliRunner
+
         from tg_export.cli import main
 
         mock_entity = MagicMock()
@@ -147,8 +147,7 @@ class TestTgMessagesOutput:
         mock_api.connect = AsyncMock()
         mock_api.disconnect = AsyncMock()
 
-        with patch("tg_export.cli._mgr") as mock_mgr, \
-             patch("tg_export.api.TgApi", return_value=mock_api):
+        with patch("tg_export.cli._mgr") as mock_mgr, patch("tg_export.api.TgApi", return_value=mock_api):
             mgr = MagicMock()
             mgr.resolve_account.return_value = "test"
             mgr.load_credentials.return_value = ("id", "hash")

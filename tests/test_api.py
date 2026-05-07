@@ -1,6 +1,8 @@
-import pytest
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 from telethon.errors import TakeoutInitDelayError
+
 from tg_export.api import TgApi
 
 
@@ -40,10 +42,12 @@ async def test_iter_messages_passes_min_id():
     """iter_messages should pass min_id to Telethon."""
     api = TgApi.__new__(TgApi)
     api.takeout = AsyncMock()
-    api.takeout.iter_messages = MagicMock(return_value=AsyncMock(
-        __aiter__=lambda s: s,
-        __anext__=AsyncMock(side_effect=StopAsyncIteration),
-    ))
+    api.takeout.iter_messages = MagicMock(
+        return_value=AsyncMock(
+            __aiter__=lambda s: s,
+            __anext__=AsyncMock(side_effect=StopAsyncIteration),
+        )
+    )
 
     async for _ in api.iter_messages(chat_id=123, min_id=500):
         pass
@@ -57,10 +61,12 @@ async def test_fallback_to_client_when_no_takeout():
     api = TgApi.__new__(TgApi)
     api.takeout = None
     api.client = AsyncMock()
-    api.client.iter_messages = MagicMock(return_value=AsyncMock(
-        __aiter__=lambda s: s,
-        __anext__=AsyncMock(side_effect=StopAsyncIteration),
-    ))
+    api.client.iter_messages = MagicMock(
+        return_value=AsyncMock(
+            __aiter__=lambda s: s,
+            __anext__=AsyncMock(side_effect=StopAsyncIteration),
+        )
+    )
 
     async for _ in api.iter_messages(chat_id=123, min_id=0):
         pass

@@ -10,8 +10,8 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
-from tg_export.models import Media, MediaType
 from tg_export.config import MediaConfig
+from tg_export.models import Media, MediaType
 
 logger = logging.getLogger(__name__)
 
@@ -48,8 +48,12 @@ def check_disk_space(path: Path, min_free_bytes: int) -> bool:
 
 
 def _lookup_file_in_db(db_path: Path, file_id: int) -> str | None:
-    """Look up file_id in a sibling state DB (synchronous, read-only)."""
-    db = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    """Look up file_id in a sibling state DB (synchronous, read-only).
+
+    Why timeout: a busy writer in the sibling can hold a SHARED lock for
+    seconds during a batch commit; default 5s is short for big batches.
+    """
+    db = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=30.0)
     try:
         row = db.execute(
             "SELECT local_path FROM files WHERE file_id=? AND status='done' LIMIT 1",
@@ -60,12 +64,27 @@ def _lookup_file_in_db(db_path: Path, file_id: int) -> str | None:
         db.close()
 
 
+def _is_sibling_path_safe(local_path: Path, db_path: Path) -> bool:
+    """Validate that a sibling-DB local_path stays inside the sibling's tree.
+
+    Why: a tampered sibling DB could point to /etc/passwd or any file readable
+    by the user. We only accept paths under the sibling's parent directory.
+    """
+    try:
+        resolved = local_path.resolve()
+        sibling_root = db_path.parent.resolve()
+        return resolved.is_relative_to(sibling_root)
+    except OSError:
+        return False
+
+
 class DiskSpaceError(Exception):
     pass
 
 
 class _FileTooLargeError(Exception):
     """Raised inside progress callback when real file size exceeds limit."""
+
     def __init__(self, size: int):
         self.size = size
         super().__init__(f"File too large: {size} bytes")
@@ -74,15 +93,22 @@ class _FileTooLargeError(Exception):
 @dataclass
 class DownloadProgress:
     """Tracks progress of a single file download."""
+
     filename: str
     received: int = 0
     total: int = 0
 
 
 class MediaDownloader:
-    def __init__(self, api, state, config: MediaConfig, min_free_bytes: int,
-                 tdesktop_indexes: list | None = None,
-                 sibling_db_paths: list[Path] | None = None):
+    def __init__(
+        self,
+        api,
+        state,
+        config: MediaConfig,
+        min_free_bytes: int,
+        tdesktop_indexes: list | None = None,
+        sibling_db_paths: list[Path] | None = None,
+    ):
         self.api = api
         self.state = state
         self.config = config
@@ -92,9 +118,22 @@ class MediaDownloader:
         self.sibling_db_paths = sibling_db_paths or []
         self.active_downloads: dict[int, DownloadProgress] = {}  # msg_id -> progress
         self._next_dl_id = 0
+        # Why: two coroutines processing different messages with the same
+        # file_id (cross-chat duplicates) would otherwise both download the
+        # same content; per-file-id locks serialise them so the second one
+        # picks up the registered file via _try_link_intra_account.
+        self._file_id_locks: dict[int, asyncio.Lock] = {}
 
-    async def download(self, tl_message, media: Media, chat_dir: Path,
-                       chat_id: int = 0) -> tuple[Path | None, str]:
+    def _file_lock(self, file_id: int) -> asyncio.Lock:
+        lock = self._file_id_locks.get(file_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._file_id_locks[file_id] = lock
+        return lock
+
+    async def download(
+        self, tl_message, media: Media, chat_dir: Path, chat_id: int = 0
+    ) -> tuple[Path | None, str]:
         """Download media file if needed. Returns (local_path, status).
 
         chat_id: canonical chat ID (positive, as used in messages table).
@@ -103,8 +142,21 @@ class MediaDownloader:
         """
         skip = check_skip_reason(media, self.config)
         if skip:
+            # Why: previously skipped files left no DB trace, so verify/count
+            # could not distinguish "intentionally skipped" from "missing".
+            await self._register_skip(tl_message, media, chat_id, skip)
             return None, skip
 
+        if media.file is None or not media.file.id:
+            return await self._download_inner(tl_message, media, chat_dir, chat_id)
+
+        # Serialise concurrent downloads of the same file_id (across chats).
+        async with self._file_lock(media.file.id):
+            return await self._download_inner(tl_message, media, chat_dir, chat_id)
+
+    async def _download_inner(
+        self, tl_message, media: Media, chat_dir: Path, chat_id: int
+    ) -> tuple[Path | None, str]:
         # Already downloaded?
         if media.file:
             existing = await self.state.get_file(media.file.id, chat_id)
@@ -133,9 +185,7 @@ class MediaDownloader:
         # Disk space check
         chat_dir.mkdir(parents=True, exist_ok=True)
         if not check_disk_space(chat_dir, self.min_free_bytes):
-            raise DiskSpaceError(
-                f"Free space less than {self.min_free_bytes // 1024**3} GB"
-            )
+            raise DiskSpaceError(f"Free space less than {self.min_free_bytes // 1024**3} GB")
 
         # Download with semaphore
         subdir = media_subdir(media.type)
@@ -154,9 +204,14 @@ class MediaDownloader:
             await self._register(tl_message, media, local_path, chat_id)
             return local_path, "downloaded"
         except _FileTooLargeError as e:
-            logger.debug("file too large (real size %d > limit %d), msg %d",
-                         e.size, self.config.max_file_size_bytes, tl_message.id)
+            logger.debug(
+                "file too large (real size %d > limit %d), msg %d",
+                e.size,
+                self.config.max_file_size_bytes,
+                tl_message.id,
+            )
             self._cleanup_new_files(target_dir, existing_files)
+            await self._register_skip(tl_message, media, chat_id, "skipped_by_size")
             return None, "skipped_by_size"
         except (asyncio.CancelledError, Exception):
             self._cleanup_new_files(target_dir, existing_files)
@@ -170,8 +225,21 @@ class MediaDownloader:
                 f.unlink(missing_ok=True)
                 logger.debug("removed partial file: %s", f)
 
-    async def _register(self, tl_message, media: Media, local_path: Path,
-                        chat_id: int = 0):
+    async def _register_skip(self, tl_message, media: Media, chat_id: int, status: str):
+        """Record a skipped file in DB (no actual file on disk)."""
+        if media.file is None or not media.file.id:
+            return
+        await self.state.register_file(
+            file_id=media.file.id,
+            chat_id=chat_id,
+            msg_id=tl_message.id,
+            expected_size=media.file.size or 0,
+            actual_size=0,
+            local_path=f"<{status}>",
+            status=status,
+        )
+
+    async def _register(self, tl_message, media: Media, local_path: Path, chat_id: int = 0):
         """Register downloaded/imported file in state DB."""
         actual_size = local_path.stat().st_size if local_path.exists() else 0
         expected_size = media.file.size if media.file else 0
@@ -186,8 +254,7 @@ class MediaDownloader:
             status=status,
         )
 
-    async def _try_link_intra_account(self, media: Media, chat_dir: Path,
-                                          chat_id: int) -> Path | None:
+    async def _try_link_intra_account(self, media: Media, chat_dir: Path, chat_id: int) -> Path | None:
         """Try to hardlink file from another chat within the same account."""
         if not media.file or not media.file.id:
             return None
@@ -210,20 +277,23 @@ class MediaDownloader:
 
         try:
             os.link(src, dst)
-            logger.debug("hardlinked intra-account: file_id=%d %s -> %s",
-                         media.file.id, src, dst)
+            logger.debug("hardlinked intra-account: file_id=%d %s -> %s", media.file.id, src, dst)
             return dst
         except OSError:
             try:
                 shutil.copy2(src, dst)
-                logger.debug("copied intra-account: file_id=%d %s -> %s",
-                             media.file.id, src, dst)
+                logger.debug("copied intra-account: file_id=%d %s -> %s", media.file.id, src, dst)
                 return dst
             except OSError:
                 return None
 
     def _try_link_sibling(self, media: Media, chat_dir: Path) -> Path | None:
-        """Try to hardlink file from a sibling account's export by file_id."""
+        """Try to hardlink file from a sibling account's export by file_id.
+
+        Why size+path checks: sibling DBs are external input; we validate that
+        the referenced path is inside the sibling's directory tree and that
+        the file size matches what Telegram says.
+        """
         if not self.sibling_db_paths or not media.file:
             return None
 
@@ -231,16 +301,40 @@ class MediaDownloader:
         if not file_id:
             return None
 
+        expected_size = media.file.size or 0
+
         for db_path in self.sibling_db_paths:
             try:
                 src_path = _lookup_file_in_db(db_path, file_id)
-            except Exception:
+            except sqlite3.Error as e:
+                logger.debug("sibling DB lookup failed (%s): %s", db_path, e)
                 continue
             if src_path is None:
                 continue
 
             src = Path(src_path)
             if not src.exists():
+                continue
+
+            if not _is_sibling_path_safe(src, db_path):
+                logger.warning(
+                    "sibling DB %s points to a path outside its tree: %s -- skipping",
+                    db_path,
+                    src,
+                )
+                continue
+
+            try:
+                actual_size = src.stat().st_size
+            except OSError:
+                continue
+            if expected_size and actual_size != expected_size:
+                logger.debug(
+                    "sibling file size mismatch: file_id=%d expected=%d actual=%d -- skipping",
+                    file_id,
+                    expected_size,
+                    actual_size,
+                )
                 continue
 
             subdir = media_subdir(media.type)
@@ -291,29 +385,30 @@ class MediaDownloader:
                 continue
 
             import logging
-            logging.getLogger(__name__).debug(
-                "imported from tdesktop: msg %d -> %s", msg_id, dst)
+
+            logging.getLogger(__name__).debug("imported from tdesktop: msg %d -> %s", msg_id, dst)
             return dst
 
         return None
 
-    async def _download_with_retry(self, tl_message, target_dir: Path,
-                                    media: Media | None = None) -> str | None:
+    async def _download_with_retry(
+        self, tl_message, target_dir: Path, media: Media | None = None
+    ) -> str | None:
         msg_id = tl_message.id
         max_size = self.config.max_file_size_bytes
 
         # Determine filename for progress display
         filename = ""
-        if hasattr(tl_message, 'file') and tl_message.file:
-            filename = getattr(tl_message.file, 'name', '') or ''
+        if hasattr(tl_message, "file") and tl_message.file:
+            filename = getattr(tl_message.file, "name", "") or ""
         if not filename and media and media.file:
             # Use file name from our model, or type + extension
-            filename = media.file.name or ''
+            filename = media.file.name or ""
         if not filename:
             # Fallback: media type + msg_id
             ext = ""
-            if hasattr(tl_message, 'file') and tl_message.file:
-                ext = getattr(tl_message.file, 'ext', '') or ''
+            if hasattr(tl_message, "file") and tl_message.file:
+                ext = getattr(tl_message.file, "ext", "") or ""
             type_str = media.type.value if media else "file"
             filename = f"{type_str}_{msg_id}{ext}"
         # Truncate long filenames for progress display
@@ -333,15 +428,13 @@ class MediaDownloader:
         try:
             for attempt in range(3):
                 try:
-                    return await self.api.download_media(
-                        tl_message, target_dir, progress_cb=_progress_cb
-                    )
+                    return await self.api.download_media(tl_message, target_dir, progress_cb=_progress_cb)
                 except _FileTooLargeError:
                     raise
                 except (ConnectionError, TimeoutError, OSError):
                     if attempt == 2:
                         raise
-                    await asyncio.sleep(2 ** attempt)
+                    await asyncio.sleep(2**attempt)
             return None
         finally:
             self.active_downloads.pop(msg_id, None)

@@ -1,18 +1,28 @@
-import pytest
 from pathlib import Path
-from tg_export.media import MediaDownloader, check_skip_reason, media_subdir, check_disk_space
-from tg_export.models import MediaType, PhotoMedia, DocumentMedia, FileInfo
+
 from tg_export.config import MediaConfig
+from tg_export.media import check_disk_space, check_skip_reason, media_subdir
+from tg_export.models import DocumentMedia, FileInfo, MediaType, PhotoMedia
 
 
 def test_check_skip_allowed_type():
-    media = PhotoMedia(type=MediaType.photo, file=FileInfo(id=1, size=1000, name="photo.jpg", mime_type="image/jpeg", local_path=None), width=100, height=100)
+    media = PhotoMedia(
+        type=MediaType.photo,
+        file=FileInfo(id=1, size=1000, name="photo.jpg", mime_type="image/jpeg", local_path=None),
+        width=100,
+        height=100,
+    )
     cfg = MediaConfig(types=["photo", "video"], max_file_size_bytes=50 * 1024**2, concurrent_downloads=3)
     assert check_skip_reason(media, cfg) is None
 
 
 def test_check_skip_disallowed_type():
-    media = PhotoMedia(type=MediaType.photo, file=FileInfo(id=1, size=1000, name="photo.jpg", mime_type="image/jpeg", local_path=None), width=100, height=100)
+    media = PhotoMedia(
+        type=MediaType.photo,
+        file=FileInfo(id=1, size=1000, name="photo.jpg", mime_type="image/jpeg", local_path=None),
+        width=100,
+        height=100,
+    )
     cfg = MediaConfig(types=["document"], max_file_size_bytes=50 * 1024**2, concurrent_downloads=3)
     assert check_skip_reason(media, cfg) == "skipped_by_type"
 
@@ -21,14 +31,20 @@ def test_check_skip_file_too_large():
     media = DocumentMedia(
         type=MediaType.document,
         file=FileInfo(id=1, size=100 * 1024**2, name="big.zip", mime_type="application/zip", local_path=None),
-        name="big.zip", mime_type="application/zip",
+        name="big.zip",
+        mime_type="application/zip",
     )
     cfg = MediaConfig(types=["document"], max_file_size_bytes=50 * 1024**2, concurrent_downloads=3)
     assert check_skip_reason(media, cfg) == "skipped_by_size"
 
 
 def test_check_skip_all_types():
-    media = PhotoMedia(type=MediaType.photo, file=FileInfo(id=1, size=1000, name="p.jpg", mime_type="image/jpeg", local_path=None), width=100, height=100)
+    media = PhotoMedia(
+        type=MediaType.photo,
+        file=FileInfo(id=1, size=1000, name="p.jpg", mime_type="image/jpeg", local_path=None),
+        width=100,
+        height=100,
+    )
     cfg = MediaConfig(types=["all"], max_file_size_bytes=50 * 1024**2, concurrent_downloads=3)
     assert check_skip_reason(media, cfg) is None
 

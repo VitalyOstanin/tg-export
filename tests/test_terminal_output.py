@@ -4,6 +4,7 @@
 - markup-инъекция через имена чатов, имена файлов, текст исключений;
 - гонка чтения/мутации active_downloads между refresh-thread Live и event loop.
 """
+
 from __future__ import annotations
 
 import threading
@@ -11,7 +12,6 @@ import time
 
 import pytest
 from rich.text import Text
-
 
 # ----- Markup escaping -----
 
@@ -87,7 +87,7 @@ async def test_build_status_table_handles_concurrent_active_downloads_mutation()
 
     from rich.progress import Progress
 
-    from tg_export.exporter import ExportStats, Exporter
+    from tg_export.exporter import Exporter, ExportStats
     from tg_export.media import DownloadProgress
 
     api = AsyncMock()
@@ -98,8 +98,12 @@ async def test_build_status_table_handles_concurrent_active_downloads_mutation()
     downloader.active_downloads = {}
 
     exporter = Exporter(
-        api=api, state=state, config=config,
-        renderer=renderer, downloader=downloader, account="test",
+        api=api,
+        state=state,
+        config=config,
+        renderer=renderer,
+        downloader=downloader,
+        account="test",
     )
 
     from rich.progress import TaskID
@@ -132,9 +136,13 @@ async def test_build_status_table_handles_concurrent_active_downloads_mutation()
         for _ in range(2000):
             try:
                 exporter._build_status_table(
-                    progress=progress, main_task=main_task,
-                    file_progress=file_progress, file_tasks=file_tasks,
-                    stats=stats, line1="line1", line2="line2",
+                    progress=progress,
+                    main_task=main_task,
+                    file_progress=file_progress,
+                    file_tasks=file_tasks,
+                    stats=stats,
+                    line1="line1",
+                    line2="line2",
                 )
             except RuntimeError as e:
                 errors.append(e)
@@ -150,7 +158,7 @@ async def test_build_status_table_handles_concurrent_active_downloads_mutation()
 
 
 @pytest.mark.asyncio
-async def test_exporter_dry_run_with_markup_in_chat_name_does_not_corrupt_output(monkeypatch):
+async def test_exporter_dry_run_with_markup_in_chat_name_does_not_corrupt_output(monkeypatch, tmp_path):
     """Полный путь: dry-run с именем чата, содержащим markup -- литерал должен дойти до вывода."""
     from io import StringIO
     from unittest.mock import AsyncMock, MagicMock
@@ -162,14 +170,17 @@ async def test_exporter_dry_run_with_markup_in_chat_name_does_not_corrupt_output
     from tg_export.models import Chat, ChatType
 
     test_console = Console(
-        file=StringIO(), force_terminal=False, width=200, record=True,
+        file=StringIO(),
+        force_terminal=False,
+        width=200,
+        record=True,
     )
     monkeypatch.setattr(exporter_mod, "console", test_console)
 
     api = AsyncMock()
     state = AsyncMock()
     config = MagicMock()
-    config.output.path = "/tmp/test"
+    config.output.path = str(tmp_path / "out")
     config.left_channels_action = "include"
     config.archived_action = "include"
     config.defaults.date_from = None
@@ -180,20 +191,31 @@ async def test_exporter_dry_run_with_markup_in_chat_name_does_not_corrupt_output
     downloader.active_downloads = {}
 
     exporter = Exporter(
-        api=api, state=state, config=config,
-        renderer=renderer, downloader=downloader, account="test",
+        api=api,
+        state=state,
+        config=config,
+        renderer=renderer,
+        downloader=downloader,
+        account="test",
     )
 
     chat = Chat(
-        id=1, name="[bold red]EVIL[/] chat", type=ChatType.private_group,
-        username=None, folder=None, members_count=None,
-        last_message_date=None, messages_count=0,
-        is_left=False, is_archived=False, is_forum=False,
-        migrated_to_id=None, migrated_from_id=None, is_monoforum=False,
+        id=1,
+        name="[bold red]EVIL[/] chat",
+        type=ChatType.private_group,
+        username=None,
+        folder=None,
+        members_count=None,
+        last_message_date=None,
+        messages_count=0,
+        is_left=False,
+        is_archived=False,
+        is_forum=False,
+        migrated_to_id=None,
+        migrated_from_id=None,
+        is_monoforum=False,
     )
     await exporter.run(dry_run=True, chat_list=[chat])
 
     output = test_console.export_text()
-    assert "[bold red]EVIL[/] chat" in output, (
-        f"имя чата с markup исчезло из вывода dry-run: {output!r}"
-    )
+    assert "[bold red]EVIL[/] chat" in output, f"имя чата с markup исчезло из вывода dry-run: {output!r}"

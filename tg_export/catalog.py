@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
 from datetime import datetime
 
 import yaml
 
 from tg_export.models import Chat, ChatType
+
+logger = logging.getLogger(__name__)
 
 # Map Telegram folder flags to ChatType values
 _FLAG_TO_TYPES: dict[str, set[ChatType]] = {
@@ -110,6 +113,7 @@ def format_catalog_yaml(chats: list[Chat]) -> str:
 def format_catalog_json(chats: list[Chat]) -> str:
     """Format chat catalog as JSON."""
     import json
+
     data = [_chat_to_dict(c) for c in chats]
     return json.dumps(data, ensure_ascii=False, indent=2)
 
@@ -171,7 +175,7 @@ def generate_config_template(chats: list[Chat], account: str | None = None) -> s
     # Add commented-out chat entries
     for chat in chats:
         lines.append(f"#   - id: {chat.id}")
-        lines.append(f"#     name: \"{chat.name}\"")
+        lines.append(f'#     name: "{chat.name}"')
         lines.append(f"#     # type: {chat.type.value}, messages: {chat.messages_count}")
 
     lines.append("")
@@ -181,6 +185,7 @@ def generate_config_template(chats: list[Chat], account: str | None = None) -> s
 async def fetch_catalog(api, include_left: bool = False) -> list[Chat]:
     """Fetch all chats from Telegram API and map to models.Chat."""
     import logging
+
     log = logging.getLogger(__name__)
 
     from tg_export.converter import convert_chat
@@ -252,15 +257,16 @@ async def fetch_catalog(api, include_left: bool = False) -> list[Chat]:
                     is_monoforum=False,
                 )
                 chats.append(chat)
-        except Exception:
-            pass  # Left channels may not be available
+        except Exception as e:
+            # Left channels endpoint may not be available for all account types.
+            logger.debug("get_left_channels: %s", e)
 
     return chats
 
 
-def _classify_left_channel(entity) -> str:
+def _classify_left_channel(entity) -> ChatType:
     """Classify left channel/group type."""
-    from tg_export.models import ChatType
+
     if getattr(entity, "megagroup", False):
         if getattr(entity, "username", None):
             return ChatType.public_supergroup

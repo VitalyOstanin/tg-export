@@ -1,9 +1,15 @@
 import asyncio
+import contextlib
+import logging
 from pathlib import Path
 
+import aiosqlite
 import click
+import yaml
 
 from tg_export.auth import AccountManager
+
+logger = logging.getLogger(__name__)
 
 
 def _mgr() -> AccountManager:
@@ -12,17 +18,18 @@ def _mgr() -> AccountManager:
     return mgr
 
 
-
-
 @click.group()
 @click.option("--debug", is_flag=True, default=False, help="Enable debug logging")
 @click.pass_context
 def main(ctx, debug):
     """tg-export: Flexible Telegram data export tool."""
     import logging
+
     from rich.logging import RichHandler
+
     level = logging.DEBUG if debug else logging.WARNING
     from tg_export.exporter import console as export_console
+
     logging.basicConfig(
         level=level,
         format="%(name)s %(message)s",
@@ -58,7 +65,7 @@ def auth_add(name):
     cred_path = mgr.config_dir / "api_credentials.yaml"
     if not cred_path.exists():
         click.echo("No API credentials found. Run 'tg-export auth credentials' first.")
-        raise SystemExit(1)
+        raise click.exceptions.Exit(1)
     asyncio.run(mgr.add_account(name))
     click.echo(f"Account '{name}' added successfully.")
 
@@ -91,7 +98,10 @@ async def _auth_check(name):
             await api.connect()
             if await api.client.is_user_authorized():
                 me = await api.client.get_me()
-                click.echo(f"  {acc}: OK - {me.first_name} {me.last_name or ''} (id={me.id})")
+                first = getattr(me, "first_name", "")
+                last = getattr(me, "last_name", None) or ""
+                me_id = getattr(me, "id", "?")
+                click.echo(f"  {acc}: OK - {first} {last} (id={me_id})")
             else:
                 click.echo(f"  {acc}: not authorized")
         except Exception as e:
@@ -128,7 +138,7 @@ def account_default(name):
     if name:
         if name not in mgr.list_accounts():
             click.echo(f"Account '{name}' not found.")
-            raise SystemExit(1)
+            raise click.exceptions.Exit(1)
         mgr.set_default_account(name)
         click.echo(f"Default account set to '{name}'.")
     else:
@@ -155,7 +165,6 @@ def account_remove(name):
 @click.option("--verbose", "-v", is_flag=True, help="Verbose: show per-account filters")
 def show_config(verbose):
     """Show current configuration (global + per-account)."""
-    import yaml as _yaml
     mgr = _mgr()
 
     # Global config
@@ -171,26 +180,28 @@ def show_config(verbose):
             auth_str = ""
             if p.get("username"):
                 auth_str = f" auth={p['username']}:***"
-            click.echo(f"  proxy: {p.get('type', 'socks5')}://{p.get('host')}:{p.get('port')}"
-                       f" rdns={p.get('rdns', True)}{auth_str}")
+            click.echo(
+                f"  proxy: {p.get('type', 'socks5')}://{p.get('host')}:{p.get('port')}"
+                f" rdns={p.get('rdns', True)}{auth_str}"
+            )
         else:
             click.echo("  proxy: none")
         import shutil
+
         mfs = data.get("min_free_space", "20GB")
         # Check free space on the output partition, not cwd
         disk_check_path = Path.cwd()
         default_name = mgr.get_default_account()
         if default_name:
             try:
-                import yaml as _y
                 cfg_path = mgr.config_path(default_name)
                 if cfg_path.exists():
-                    acc_cfg = _y.safe_load(cfg_path.read_text()) or {}
+                    acc_cfg = yaml.safe_load(cfg_path.read_text()) or {}
                     output_path = Path(acc_cfg.get("output", {}).get("path", "."))
                     if output_path.exists():
                         disk_check_path = output_path
-            except Exception:
-                pass
+            except (OSError, yaml.YAMLError) as e:
+                logger.debug("show config: cannot read account config %s: %s", default_name, e)
         usage = shutil.disk_usage(disk_check_path)
         free_gb = usage.free / 1024**3
         click.echo(f"  min_free_space: {mfs}  # available: {free_gb:.1f} GB (on {disk_check_path})")
@@ -199,9 +210,9 @@ def show_config(verbose):
 
     click.echo(f"\n# Credentials: {cred_path}")
     if cred_path.exists():
-        creds = _yaml.safe_load(cred_path.read_text())
+        creds = yaml.safe_load(cred_path.read_text())
         click.echo(f"  api_id: {creds.get('api_id')}")
-        click.echo(f"  api_hash: {creds.get('api_hash', '')[:8]}...")
+        click.echo(f"  api_hash: {creds.get('api_hash', '')[:4]}...")
     else:
         click.echo("  (not found)")
 
@@ -234,6 +245,7 @@ def show_config(verbose):
 def _show_account_config(config_path):
     """Show per-account config details (verbose mode)."""
     from tg_export.config import load_config
+
     cfg = load_config(config_path)
 
     click.echo(f"    output.path: {cfg.output.path}")
@@ -246,7 +258,7 @@ def _show_account_config(config_path):
         click.echo(f"    defaults.date_range: {d.date_from or '...'} — {d.date_to or '...'}")
 
     if cfg.type_rules:
-        click.echo(f"    type_rules:")
+        click.echo("    type_rules:")
         for key, rule in cfg.type_rules.items():
             if rule.skip:
                 click.echo(f"      {key}: skip")
@@ -259,7 +271,7 @@ def _show_account_config(config_path):
                 click.echo(f"      {key}: {', '.join(parts) or 'defaults'}")
 
     if cfg.folders:
-        click.echo(f"    folders:")
+        click.echo("    folders:")
         for name, fr in cfg.folders.items():
             if fr.skip:
                 click.echo(f"      {name}: skip")
@@ -290,6 +302,7 @@ def _show_account_config(config_path):
 # Takeout management
 # ---------------------------------------------------------------------------
 
+
 @main.group()
 def takeout():
     """Manage Telegram Takeout sessions."""
@@ -313,12 +326,16 @@ async def _takeout_clear(name):
     api = TgApi(mgr.session_path(account), api_id, api_hash, proxy=proxy)
     await api.connect()
     try:
-        old_id = api.client.session.takeout_id
+        session = api.client.session
+        if session is None:
+            click.echo(f"  {account}: no session available")
+            return
+        old_id = session.takeout_id
         if old_id is None:
             click.echo(f"  {account}: no active takeout session")
             return
-        api.client.session.takeout_id = None
-        api.client.session.save()
+        session.takeout_id = None
+        session.save()
         click.echo(f"  {account}: takeout session cleared (was id={old_id})")
     finally:
         await api.disconnect()
@@ -327,6 +344,7 @@ async def _takeout_clear(name):
 # ---------------------------------------------------------------------------
 # tg: direct Telegram API commands
 # ---------------------------------------------------------------------------
+
 
 @main.group()
 def tg():
@@ -358,7 +376,7 @@ async def _tg_messages(chat_id, account, limit):
         title = getattr(entity, "title", None) or _entity_name(entity)
         click.echo(f"# {title} (id={chat_id})\n")
 
-        async for msg in api.client.iter_messages(entity, limit=limit):
+        async for msg in api.client.iter_messages(entity, limit=limit):  # pyright: ignore[reportArgumentType]
             date_str = msg.date.strftime("%Y-%m-%d %H:%M") if msg.date else "?"
             sender = ""
             if msg.sender:
@@ -388,7 +406,12 @@ def _entity_name(entity) -> str:
 @tg.command("info")
 @click.argument("chat_ids", type=int, nargs=-1)
 @click.option("--account", default=None, help="Account alias")
-@click.option("--from-catalog", "catalog_file", type=click.Path(exists=True), help="JSON catalog file (from tg-export list --format json)")
+@click.option(
+    "--from-catalog",
+    "catalog_file",
+    type=click.Path(exists=True),
+    help="JSON catalog file (from tg-export list --format json)",
+)
 @click.option("--type", "chat_type", default=None, help="Filter by chat type (with --from-catalog)")
 @click.option("--last", "last_n", type=int, default=0, help="Show last N messages per chat")
 @click.option("--output", "output_file", type=click.Path(), default=None, help="Save results to JSON file")
@@ -402,8 +425,10 @@ def tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_file):
 
 async def _tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_file):
     import json
-    from tg_export.api import TgApi
+
     from telethon.tl.functions.messages import GetHistoryRequest
+
+    from tg_export.api import TgApi
 
     # Collect IDs
     ids = list(chat_ids)
@@ -434,10 +459,18 @@ async def _tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_fi
                 entity = await api.client.get_entity(cid)
                 title = getattr(entity, "title", None) or _entity_name(entity)
                 limit = max(last_n, 1)
-                result = await api.client(GetHistoryRequest(
-                    peer=entity, offset_id=0, offset_date=None, add_offset=0,
-                    limit=limit, max_id=0, min_id=0, hash=0,
-                ))
+                result = await api.client(
+                    GetHistoryRequest(
+                        peer=entity,  # pyright: ignore[reportArgumentType]
+                        offset_id=0,
+                        offset_date=None,
+                        add_offset=0,
+                        limit=limit,
+                        max_id=0,
+                        min_id=0,
+                        hash=0,
+                    )
+                )
                 count = getattr(result, "count", len(result.messages))
                 last_date = None
                 messages = []
@@ -499,7 +532,7 @@ def list_chats(account, output, fmt, include_left):
 
 async def _list_chats(account, output, fmt, include_left):
     from tg_export.api import TgApi
-    from tg_export.catalog import fetch_catalog, format_catalog_yaml, format_catalog_json
+    from tg_export.catalog import fetch_catalog, format_catalog_json, format_catalog_yaml
 
     mgr = _mgr()
     account = mgr.resolve_account(account)
@@ -510,10 +543,7 @@ async def _list_chats(account, output, fmt, include_left):
 
     try:
         chats = await fetch_catalog(api, include_left=include_left)
-        if fmt == "json":
-            result = format_catalog_json(chats)
-        else:
-            result = format_catalog_yaml(chats)
+        result = format_catalog_json(chats) if fmt == "json" else format_catalog_yaml(chats)
 
         if output:
             Path(output).write_text(result, encoding="utf-8")
@@ -542,14 +572,16 @@ async def _init_config(account, from_catalog, output):
 
     if from_catalog:
         import yaml
+
         with open(from_catalog) as f:
-            catalog = yaml.safe_load(f)
+            yaml.safe_load(f)
         # Simple passthrough — generate template
         click.echo(f"Generating config from catalog: {from_catalog}")
     else:
         # Fetch from API
         from tg_export.api import TgApi
         from tg_export.catalog import fetch_catalog
+
         api_id, api_hash = mgr.load_credentials()
         proxy = mgr.load_proxy()
         api = TgApi(mgr.session_path(account), api_id, api_hash, proxy=proxy)
@@ -567,17 +599,24 @@ async def _init_config(account, from_catalog, output):
 
 
 def _get_dir_size(path: Path) -> int | None:
-    """Get directory size using du -sb."""
+    """Get directory size using du -sb (Linux) or du -sk fallback (BSD/macOS)."""
     import subprocess
-    try:
-        result = subprocess.run(
-            ["du", "-sb", str(path)],
-            capture_output=True, text=True, timeout=60,
-        )
-        if result.returncode == 0:
-            return int(result.stdout.split()[0])
-    except (FileNotFoundError, subprocess.TimeoutExpired, ValueError):
-        pass
+
+    # Why "--": prevents paths starting with "-" from being parsed as flags.
+    # Why fallback: BSD du has no -b; -sk returns KiB.
+    for cmd in (["du", "-sb", "--", str(path)], ["du", "-sk", "--", str(path)]):
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            if result.returncode == 0:
+                value = int(result.stdout.split()[0])
+                return value * 1024 if cmd[1] == "-sk" else value
+        except (FileNotFoundError, subprocess.TimeoutExpired, ValueError):
+            continue
     return None
 
 
@@ -607,7 +646,7 @@ async def _run_export(account, config_override, output_override, verify, dry_run
     if not config_path.exists():
         click.echo(f"Config not found: {config_path}")
         click.echo(f"Create it with: tg-export init --account {account}")
-        raise SystemExit(1)
+        raise click.exceptions.Exit(1)
 
     cfg = load_config(config_path)
     output_base = Path(output_override) if output_override else Path(cfg.output.path)
@@ -631,6 +670,7 @@ async def _run_export(account, config_override, output_override, verify, dry_run
     try:
         # Start takeout if possible
         from telethon.errors import TakeoutInitDelayError
+
         try:
             await api.start_takeout(
                 contacts=cfg.contacts,
@@ -659,6 +699,7 @@ async def _run_export(account, config_override, output_override, verify, dry_run
 
         # Setup tdesktop import indexes
         from tg_export.importer import build_tdesktop_indexes
+
         tdesktop_indexes = build_tdesktop_indexes(cfg.import_existing)
         if tdesktop_indexes:
             for idx in tdesktop_indexes:
@@ -666,6 +707,7 @@ async def _run_export(account, config_override, output_override, verify, dry_run
 
         # Auto-discover sibling account state DBs for file deduplication
         import logging
+
         logger = logging.getLogger(__name__)
         sibling_dbs = []
         for sibling in output_base.parent.iterdir():
@@ -682,7 +724,8 @@ async def _run_export(account, config_override, output_override, verify, dry_run
         # Setup downloader
         min_free = mgr.load_min_free_space() or 20 * 1024**3  # default 20GB
         downloader = MediaDownloader(
-            api=api, state=state,
+            api=api,
+            state=state,
             config=cfg.defaults.media,
             min_free_bytes=min_free,
             tdesktop_indexes=tdesktop_indexes,
@@ -694,8 +737,12 @@ async def _run_export(account, config_override, output_override, verify, dry_run
 
         # Create exporter and run
         exporter = Exporter(
-            api=api, state=state, config=cfg,
-            renderer=renderer, downloader=downloader, account=account,
+            api=api,
+            state=state,
+            config=cfg,
+            renderer=renderer,
+            downloader=downloader,
+            account=account,
         )
         stats = await exporter.run(dry_run=dry_run, verify=verify, chat_list=chats)
 
@@ -708,8 +755,11 @@ async def _run_export(account, config_override, output_override, verify, dry_run
 
             # Summary
             from tg_export.exporter import _format_size
-            click.echo(f"\nExport complete:")
-            click.echo(f"  Chats: {stats.chats_exported}/{stats.chats_included} (skipped {stats.chats_skipped})")
+
+            click.echo("\nExport complete:")
+            click.echo(
+                f"  Chats: {stats.chats_exported}/{stats.chats_included} (skipped {stats.chats_skipped})"
+            )
             click.echo(f"  Messages: {stats.messages_exported}")
             click.echo(f"  Files downloaded: {stats.files_downloaded}")
             if stats.files_existing:
@@ -728,12 +778,15 @@ async def _run_export(account, config_override, output_override, verify, dry_run
                 click.echo(f"  Downloaded: {_format_size(stats.data_size)}")
             # File counts from DB
             file_counts = await state.count_files()
-            click.echo(f"  Files: {file_counts['files_downloaded']}/{file_counts['expected_files']} (media messages: {file_counts['media_messages']})")
+            click.echo(
+                f"  Files: {file_counts['files_downloaded']}/{file_counts['expected_files']} (media messages: {file_counts['media_messages']})"
+            )
             # DB size
             db_size = state.db_path.stat().st_size if state.db_path.exists() else 0
             click.echo(f"  DB size: {_format_size(db_size)}")
-            # Total export size on disk (excluding DB)
-            total_disk = _get_dir_size(output_base)
+            # Total export size on disk (excluding DB).
+            # Why to_thread: du can take seconds on a large export; don't block the loop.
+            total_disk = await asyncio.to_thread(_get_dir_size, output_base)
             if total_disk is not None:
                 click.echo(f"  Export size on disk: {_format_size(total_disk)}")
             if stats.errors:
@@ -743,24 +796,20 @@ async def _run_export(account, config_override, output_override, verify, dry_run
         click.echo("\nForce shutdown — saving state...")
     finally:
         if api.takeout:
-            try:
+            with contextlib.suppress(Exception, asyncio.CancelledError):
                 await api.stop_takeout(success=True)
-            except (Exception, asyncio.CancelledError):
-                pass
-        try:
+        with contextlib.suppress(Exception, asyncio.CancelledError):
             await api.disconnect()
-        except (Exception, asyncio.CancelledError):
-            pass
-        try:
+        with contextlib.suppress(Exception, asyncio.CancelledError):
             await state.close()
-        except (Exception, asyncio.CancelledError):
-            pass
 
 
 async def _render_index(renderer, chats, cfg, state):
     """Build and render the main index page."""
     from collections import defaultdict
+
     from tg_export.exporter import sanitize_name
+
     folders = defaultdict(list)
     unfiled = []
 
@@ -779,8 +828,8 @@ async def _render_index(renderer, chats, cfg, state):
                 msgs = await state.count_messages(chat.id)
                 if msgs > 0:
                     msg_count = msgs
-            except Exception:
-                pass
+            except aiosqlite.Error as e:
+                logger.debug("_render_index: count_messages failed for %s: %s", chat.id, e)
 
         dir_name = f"{sanitize_name(chat.name)}_{chat.id}"
         entry = {
@@ -796,27 +845,53 @@ async def _render_index(renderer, chats, cfg, state):
 
     sections = []
     if cfg.personal_info:
-        sections.append({"title": "Personal Info", "entries": [{"name": "Personal Information", "href": "personal_info.html", "meta": ""}]})
+        sections.append(
+            {
+                "title": "Personal Info",
+                "entries": [{"name": "Personal Information", "href": "personal_info.html", "meta": ""}],
+            }
+        )
     if cfg.contacts:
-        sections.append({"title": "Contacts", "entries": [{"name": "Contacts", "href": "contacts.html", "meta": ""}]})
+        sections.append(
+            {"title": "Contacts", "entries": [{"name": "Contacts", "href": "contacts.html", "meta": ""}]}
+        )
     if cfg.sessions:
-        sections.append({"title": "Sessions", "entries": [{"name": "Active Sessions", "href": "sessions.html", "meta": ""}]})
+        sections.append(
+            {
+                "title": "Sessions",
+                "entries": [{"name": "Active Sessions", "href": "sessions.html", "meta": ""}],
+            }
+        )
     if cfg.userpics:
-        sections.append({"title": "Profile Photos", "entries": [{"name": "Profile Photos", "href": "userpics.html", "meta": ""}]})
+        sections.append(
+            {
+                "title": "Profile Photos",
+                "entries": [{"name": "Profile Photos", "href": "userpics.html", "meta": ""}],
+            }
+        )
     if cfg.stories:
-        sections.append({"title": "Stories", "entries": [{"name": "Stories", "href": "stories.html", "meta": ""}]})
+        sections.append(
+            {"title": "Stories", "entries": [{"name": "Stories", "href": "stories.html", "meta": ""}]}
+        )
     if cfg.other_data or cfg.profile_music:
-        sections.append({"title": "Other Data", "entries": [{"name": "Other Data", "href": "other_data.html", "meta": ""}]})
+        sections.append(
+            {
+                "title": "Other Data",
+                "entries": [{"name": "Other Data", "href": "other_data.html", "meta": ""}],
+            }
+        )
 
     # Build folders_list with hrefs for folder index pages
     folders_list = []
     for folder_name, folder_chats in folders.items():
         folder_dir_name = sanitize_name(folder_name)
-        folders_list.append({
-            "name": folder_name,
-            "href": f"folders/{folder_dir_name}/index.html",
-            "chats": folder_chats,
-        })
+        folders_list.append(
+            {
+                "name": folder_name,
+                "href": f"folders/{folder_dir_name}/index.html",
+                "chats": folder_chats,
+            }
+        )
 
     renderer.render_index(folders_list=folders_list, unfiled=unfiled, sections=sections)
 
@@ -825,12 +900,14 @@ async def _render_index(renderer, chats, cfg, state):
         adjusted = []
         for entry in folder_info["chats"]:
             dir_name = entry["href"].split("/")[-2]  # Chat_123 from folders/Folder/Chat_123/messages.html
-            adjusted.append({
-                "name": entry["name"],
-                "type": entry["type"],
-                "messages": entry["messages"],
-                "href": f"{dir_name}/messages.html",
-            })
+            adjusted.append(
+                {
+                    "name": entry["name"],
+                    "type": entry["type"],
+                    "messages": entry["messages"],
+                    "href": f"{dir_name}/messages.html",
+                }
+            )
         renderer.render_folder_index(folder_info["name"], adjusted)
 
 
@@ -850,7 +927,7 @@ def _open_state(account, config_override, output_override):
     config_path = mgr.resolve_config(account, config_override)
     if not config_path.exists():
         click.echo(f"Config not found: {config_path}")
-        raise SystemExit(1)
+        raise click.exceptions.Exit(1)
 
     cfg = load_config(config_path)
     output_base = Path(output_override) if output_override else Path(cfg.output.path)
@@ -858,7 +935,7 @@ def _open_state(account, config_override, output_override):
 
     if not state_path.exists():
         click.echo("No state database found.")
-        raise SystemExit(1)
+        raise click.exceptions.Exit(1)
 
     return ExportState(state_path), output_base, account
 
@@ -898,12 +975,16 @@ async def _state_show(account, config_override, output_override, chat_id):
             if not rows:
                 click.echo("No export state records.")
                 return
-            click.echo(f"{'chat_id':>15}  {'msgs':>6}  {'last_id':>8}  {'oldest_id':>9}  {'full':>4}  updated_at")
+            click.echo(
+                f"{'chat_id':>15}  {'msgs':>6}  {'last_id':>8}  {'oldest_id':>9}  {'full':>4}  updated_at"
+            )
             click.echo("-" * 80)
             for r in rows:
                 r = dict(r)
                 full = "yes" if r["full_history"] else "no"
-                click.echo(f"{r['chat_id']:>15}  {r['msg_count']:>6}  {r['last_msg_id']:>8}  {r['oldest_msg_id']:>9}  {full:>4}  {r['updated_at']}")
+                click.echo(
+                    f"{r['chat_id']:>15}  {r['msg_count']:>6}  {r['last_msg_id']:>8}  {r['oldest_msg_id']:>9}  {full:>4}  {r['updated_at']}"
+                )
     finally:
         await st.close()
 
@@ -919,7 +1000,7 @@ def state_reset(account, config, output, reset_all, delete_messages, chat_id):
     """Reset export state to force re-download. Specify chat_id or --all."""
     if not chat_id and not reset_all:
         click.echo("Specify chat_id or --all")
-        raise SystemExit(1)
+        raise click.exceptions.Exit(1)
     asyncio.run(_state_reset(account, config, output, reset_all, delete_messages, chat_id))
 
 
@@ -971,6 +1052,7 @@ def purge_chat(chat, account, config, output, yes):
 
 async def _purge_chat(chat_arg, account, config_override, output_override, skip_confirm):
     import shutil
+
     from tg_export.config import load_config
     from tg_export.state import ExportState
 
@@ -979,7 +1061,7 @@ async def _purge_chat(chat_arg, account, config_override, output_override, skip_
     config_path = mgr.resolve_config(account, config_override)
     if not config_path.exists():
         click.echo(f"Config not found: {config_path}")
-        raise SystemExit(1)
+        raise click.exceptions.Exit(1)
 
     cfg = load_config(config_path)
     output_base = Path(output_override) if output_override else Path(cfg.output.path)
@@ -987,7 +1069,7 @@ async def _purge_chat(chat_arg, account, config_override, output_override, skip_
 
     if not state_path.exists():
         click.echo("No state database found.")
-        raise SystemExit(1)
+        raise click.exceptions.Exit(1)
 
     state = ExportState(state_path)
     await state.open()
@@ -996,51 +1078,82 @@ async def _purge_chat(chat_arg, account, config_override, output_override, skip_
         # Resolve chat: by ID or by name search
         try:
             chat_id = int(chat_arg)
-            matches = await state.find_chat_by_name("")
-            chat_name = next((c["name"] for c in matches if c["chat_id"] == chat_id), f"id={chat_id}")
+            entry = await state.get_catalog_entry(chat_id)
+            chat_name = entry["name"] if entry else f"id={chat_id}"
         except ValueError:
             matches = await state.find_chat_by_name(chat_arg)
             if not matches:
                 click.echo(f"No chats found matching '{chat_arg}'")
-                raise SystemExit(1)
+                raise click.exceptions.Exit(1) from None
             if len(matches) > 1:
                 click.echo(f"Multiple chats match '{chat_arg}':")
                 for m in matches:
                     click.echo(f"  {m['chat_id']}  {m['name']}  ({m['type']})")
                 click.echo("Specify exact chat ID.")
-                raise SystemExit(1)
+                raise click.exceptions.Exit(1) from None
             chat_id = matches[0]["chat_id"]
             chat_name = matches[0]["name"]
 
         # Show what will be deleted
         counts = {}
         for table in ("messages", "files", "export_state", "catalog_cache"):
-            async with state.db.execute(
-                f"SELECT COUNT(*) FROM {table} WHERE chat_id=?", (chat_id,)
-            ) as cur:
+            async with state.db.execute(f"SELECT COUNT(*) FROM {table} WHERE chat_id=?", (chat_id,)) as cur:
                 row = await cur.fetchone()
                 counts[table] = row[0] if row else 0
 
-        # Find chat directory on disk
+        # Find chat directory on disk: scan known prefixes only, never rglob
+        # the whole output tree (would also follow into sibling/back-up trees).
         from tg_export.exporter import sanitize_name
+
         dir_suffix = f"{sanitize_name(chat_name)}_{chat_id}"
-        chat_dirs = list(output_base.rglob(dir_suffix))
+        output_resolved = output_base.resolve()
+        candidate_dirs: list[Path] = []
+        # Direct prefixes: unfiled/, left/, archived/
+        for prefix in ("unfiled", "left", "archived"):
+            p = output_base / prefix / dir_suffix
+            if p.exists():
+                candidate_dirs.append(p)
+        # folders/<*>/<dir_suffix>
+        folders_root = output_base / "folders"
+        if folders_root.is_dir():
+            for folder_dir in folders_root.iterdir():
+                if not folder_dir.is_dir():
+                    continue
+                p = folder_dir / dir_suffix
+                if p.exists():
+                    candidate_dirs.append(p)
+        # Filter out paths that escape output_base (symlinks, .., etc.)
+        chat_dirs: list[Path] = []
+        for d in candidate_dirs:
+            if d.is_symlink():
+                click.echo(f"  SKIP (symlink): {d}")
+                continue
+            try:
+                d_resolved = d.resolve()
+            except OSError:
+                continue
+            if not d_resolved.is_relative_to(output_resolved):
+                click.echo(f"  SKIP (outside output): {d}")
+                continue
+            chat_dirs.append(d)
 
         click.echo(f"Chat: {chat_name} (id={chat_id})")
-        click.echo(f"  DB: messages={counts['messages']}, files={counts['files']}, "
-                    f"export_state={counts['export_state']}, catalog_cache={counts['catalog_cache']}")
+        click.echo(
+            f"  DB: messages={counts['messages']}, files={counts['files']}, "
+            f"export_state={counts['export_state']}, catalog_cache={counts['catalog_cache']}"
+        )
         if chat_dirs:
             for d in chat_dirs:
                 size = sum(f.stat().st_size for f in d.rglob("*") if f.is_file())
                 from tg_export.exporter import _format_size
+
                 click.echo(f"  Dir: {d} ({_format_size(size)})")
         else:
             click.echo("  Dir: not found")
 
-        if not skip_confirm:
-            if not click.confirm("Delete all data for this chat?"):
-                click.echo("Cancelled.")
-                return
+        if not skip_confirm and not click.confirm("Delete all data for this chat?"):
+            click.echo("Cancelled.")
+            return
 
         # Purge from DB
         deleted = await state.purge_chat(chat_id)
@@ -1075,7 +1188,7 @@ async def _verify_files(account, config_override, output_override):
     config_path = mgr.resolve_config(account, config_override)
     if not config_path.exists():
         click.echo(f"Config not found: {config_path}")
-        raise SystemExit(1)
+        raise click.exceptions.Exit(1)
 
     cfg = load_config(config_path)
     output_base = Path(output_override) if output_override else Path(cfg.output.path)
@@ -1096,11 +1209,14 @@ async def _verify_files(account, config_override, output_override):
 
         click.echo(f"Found {len(broken)} files with issues:")
         for f in broken:
-            click.echo(f"  {f['local_path']} - status: {f['status']}, "
-                       f"expected: {f['expected_size']}, actual: {f['actual_size']}")
+            click.echo(
+                f"  {f['local_path']} - status: {f['status']}, "
+                f"expected: {f['expected_size']}, actual: {f['actual_size']}"
+            )
 
         # Connect to Telegram and re-download
         from tg_export.api import TgApi
+
         api_id, api_hash = mgr.load_credentials()
         proxy = mgr.load_proxy()
         api = TgApi(mgr.session_path(account), api_id, api_hash, proxy=proxy)
@@ -1114,7 +1230,11 @@ async def _verify_files(account, config_override, output_override):
                 local_path = Path(f["local_path"])
                 try:
                     tl_messages = await api.client.get_messages(chat_id, ids=msg_id)
-                    tl_msg = tl_messages if not isinstance(tl_messages, list) else (tl_messages[0] if tl_messages else None)
+                    tl_msg = (
+                        tl_messages
+                        if not isinstance(tl_messages, list)
+                        else (tl_messages[0] if tl_messages else None)
+                    )
                     if tl_msg is None or tl_msg.media is None:
                         click.echo(f"  [skip] msg {msg_id}: not found or no media")
                         continue
@@ -1126,11 +1246,15 @@ async def _verify_files(account, config_override, output_override):
                     target_dir.mkdir(parents=True, exist_ok=True)
                     path = await api.download_media(tl_msg, target_dir)
                     if path:
-                        actual_size = Path(path).stat().st_size
+                        actual_size = Path(str(path)).stat().st_size
                         await state.register_file(
-                            file_id=f["file_id"], chat_id=chat_id, msg_id=msg_id,
-                            expected_size=f["expected_size"], actual_size=actual_size,
-                            local_path=str(path), status="done",
+                            file_id=f["file_id"],
+                            chat_id=chat_id,
+                            msg_id=msg_id,
+                            expected_size=f["expected_size"],
+                            actual_size=actual_size,
+                            local_path=str(path),
+                            status="done",
                         )
                         await state.commit()
                         redownloaded += 1
@@ -1151,10 +1275,12 @@ async def _verify_files(account, config_override, output_override):
 # tg send / tg download — additional direct Telegram API commands
 # ---------------------------------------------------------------------------
 
+
 async def _connect_tg(account_name):
     """Helper: connect to Telegram API and return (api, account_name).
     Caller must call api.disconnect() when done."""
     from tg_export.api import TgApi
+
     mgr = _mgr()
     acc = mgr.resolve_account(account_name)
     api_id, api_hash = mgr.load_credentials()
@@ -1166,8 +1292,14 @@ async def _connect_tg(account_name):
 
 @tg.command("send")
 @click.option("--account", default=None, help="Account alias")
-@click.option("--file", "-f", "files", multiple=True, type=click.Path(exists=True),
-              help="File(s) to attach (can be specified multiple times)")
+@click.option(
+    "--file",
+    "-f",
+    "files",
+    multiple=True,
+    type=click.Path(exists=True),
+    help="File(s) to attach (can be specified multiple times)",
+)
 @click.option("--text", "-t", default=None, help="Message text")
 @click.argument("recipients", nargs=-1, required=True)
 def tg_send(account, files, text, recipients):
@@ -1176,10 +1308,14 @@ def tg_send(account, files, text, recipients):
     RECIPIENTS: chat IDs or usernames (multiple allowed).
     Use --text for message text and --file for attachments.
     At least --text or --file must be specified.
+
+    Note: delivery is best-effort and not idempotent. If sending fails for some
+    recipients (network/RPC error), re-running this command will resend to all
+    recipients, including those who already received the message.
     """
     if not text and not files:
         click.echo("Error: specify --text and/or --file")
-        raise SystemExit(1)
+        raise click.exceptions.Exit(1)
 
     parsed = []
     for r in recipients:
@@ -1195,24 +1331,40 @@ async def _tg_send(account_name, recipients, text, files):
     api, _ = await _connect_tg(account_name)
     try:
         file_paths = [Path(f) for f in files] if files else None
+        sent_count = 0
+        failed: list[tuple[object, str]] = []
+        total = len(recipients)
 
         for recipient in recipients:
             try:
                 if file_paths:
                     if len(file_paths) == 1:
                         await api.client.send_file(
-                            recipient, file_paths[0], caption=text or "",
+                            recipient,
+                            str(file_paths[0]),
+                            caption=text or "",
                         )
                     else:
                         await api.client.send_file(
-                            recipient, file_paths, caption=text or "",
+                            recipient,
+                            [str(p) for p in file_paths],
+                            caption=text or "",
                         )
                 elif text:
                     await api.client.send_message(recipient, text)
 
                 click.echo(f"  sent to {recipient}")
+                sent_count += 1
             except Exception as e:
                 click.echo(f"  error sending to {recipient}: {e}")
+                failed.append((recipient, str(e)))
+
+        if failed:
+            click.echo(
+                f"\nDelivered to {sent_count}/{total} recipients. "
+                f"{len(failed)} failed. Re-running this command will resend "
+                f"to ALL {total} recipients (no idempotency)."
+            )
     finally:
         await api.disconnect()
 
@@ -1230,15 +1382,47 @@ def tg_download(account, output, chat_id, msg_id):
     asyncio.run(_tg_download(account, chat_id, msg_id, output))
 
 
+def _file_head_sha256(path: Path, n_bytes: int = 64 * 1024) -> str:
+    """SHA-256 of the first n_bytes of a file (cheap content fingerprint)."""
+    import hashlib
+
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        chunk = f.read(n_bytes)
+        h.update(chunk)
+    return h.hexdigest()
+
+
 async def _download_if_new(client, msg, out: Path, downloaded: set) -> str | None:
-    """Download media, skip if same content already exists in out dir."""
+    """Download media, skip only if EXACTLY the same content was already saved.
+
+    Why: previous version compared just file size, which would silently delete
+    legitimately distinct files of the same size (two photos in an album, two
+    PDFs of the same length). Now we compare both size and a head-SHA256
+    fingerprint.
+    """
     path = await client.download_media(msg, file=str(out))
     if not path:
         return None
     p = Path(path)
-    # Check if this is a duplicate (same size as existing file with similar name)
+    p_size = p.stat().st_size
+    p_hash: str | None = None
     for existing in downloaded:
-        if existing.stat().st_size == p.stat().st_size and existing != p:
+        if existing == p:
+            continue
+        try:
+            existing_size = existing.stat().st_size
+        except OSError:
+            continue
+        if existing_size != p_size:
+            continue
+        if p_hash is None:
+            p_hash = _file_head_sha256(p)
+        try:
+            existing_hash = _file_head_sha256(existing)
+        except OSError:
+            continue
+        if existing_hash == p_hash:
             p.unlink()
             return None
     downloaded.add(p)
@@ -1259,9 +1443,10 @@ async def _tg_download(account_name, chat_id, msg_id, output_dir):
             return
 
         # Save text
-        if tl_msg.text:
+        msg_text = getattr(tl_msg, "text", None)
+        if msg_text:
             text_file = out / f"{msg_id}.txt"
-            text_file.write_text(tl_msg.text, encoding="utf-8")
+            text_file.write_text(msg_text, encoding="utf-8")
             click.echo(f"  text: {text_file}")
 
         # Download media (skip if file already exists)
@@ -1275,18 +1460,23 @@ async def _tg_download(account_name, chat_id, msg_id, output_dir):
         if tl_msg.grouped_id:
             count = 0
             async for grouped_msg in api.client.iter_messages(
-                chat_id, min_id=msg_id - 10, max_id=msg_id + 10,
+                chat_id,
+                min_id=msg_id - 10,
+                max_id=msg_id + 10,
             ):
-                if grouped_msg.grouped_id == tl_msg.grouped_id and grouped_msg.id != msg_id:
-                    if grouped_msg.media:
-                        path = await _download_if_new(api.client, grouped_msg, out, downloaded)
-                        if path:
-                            click.echo(f"  album media: {path}")
-                            count += 1
+                if (
+                    grouped_msg.grouped_id == tl_msg.grouped_id
+                    and grouped_msg.id != msg_id
+                    and grouped_msg.media
+                ):
+                    path = await _download_if_new(api.client, grouped_msg, out, downloaded)
+                    if path:
+                        click.echo(f"  album media: {path}")
+                        count += 1
             if count:
                 click.echo(f"  ({count} additional album files)")
 
-        if not tl_msg.text and not tl_msg.media:
+        if not msg_text and not tl_msg.media:
             click.echo("  (empty message, no text or media)")
     finally:
         await api.disconnect()

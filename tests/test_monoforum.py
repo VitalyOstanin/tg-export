@@ -1,15 +1,24 @@
-from tg_export.models import Chat, ChatType
-from tg_export.exporter import resolve_monoforum_dir
 from pathlib import Path
+
+from tg_export.exporter import resolve_monoforum_dir
+from tg_export.models import Chat, ChatType
 
 
 def test_monoforum_detected():
     chat = Chat(
-        id=100, name="Channel DMs", type=ChatType.private_supergroup,
-        username=None, folder=None, members_count=None,
-        last_message_date=None, messages_count=50,
-        is_left=False, is_archived=False, is_forum=False,
-        migrated_to_id=None, migrated_from_id=None,
+        id=100,
+        name="Channel DMs",
+        type=ChatType.private_supergroup,
+        username=None,
+        folder=None,
+        members_count=None,
+        last_message_date=None,
+        messages_count=50,
+        is_left=False,
+        is_archived=False,
+        is_forum=False,
+        migrated_to_id=None,
+        migrated_from_id=None,
         is_monoforum=True,
     )
     assert chat.is_monoforum is True

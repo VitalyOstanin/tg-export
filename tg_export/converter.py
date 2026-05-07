@@ -6,20 +6,56 @@ from datetime import datetime
 from typing import Any
 
 from tg_export.models import (
-    Message, TextPart, TextType, Media, MediaType,
-    PhotoMedia, DocumentMedia, ContactMedia, GeoMedia, VenueMedia,
-    PollMedia, GameMedia, InvoiceMedia, UnsupportedMedia,
-    FileInfo, Reaction, ReactionType, ForwardInfo,
-    InlineButton, InlineButtonType, PollAnswer, Chat, ChatType,
-    ServiceAction, ActionChatCreate, ActionChatEditTitle, ActionChatEditPhoto,
-    ActionChatDeletePhoto, ActionChatAddUser, ActionChatDeleteUser,
-    ActionChatJoinedByLink, ActionChannelCreate, ActionChatMigrateTo,
-    ActionChannelMigrateFrom, ActionPinMessage, ActionHistoryClear,
-    ActionPhoneCall, ActionGroupCall, ActionScreenshotTaken,
-    ActionContactSignUp, ActionCustomAction, ActionGameScore,
-    ActionPaymentSent, ActionSetChatTheme, ActionSetMessagesTTL,
-    ActionTopicCreate, ActionTopicEdit, ActionGiftPremium,
-    ActionBotAllowed, ActionSecureValuesSent,
+    ActionBotAllowed,
+    ActionChannelCreate,
+    ActionChannelMigrateFrom,
+    ActionChatAddUser,
+    ActionChatCreate,
+    ActionChatDeletePhoto,
+    ActionChatDeleteUser,
+    ActionChatEditPhoto,
+    ActionChatEditTitle,
+    ActionChatJoinedByLink,
+    ActionChatMigrateTo,
+    ActionContactSignUp,
+    ActionCustomAction,
+    ActionGameScore,
+    ActionGiftPremium,
+    ActionGroupCall,
+    ActionHistoryClear,
+    ActionPaymentSent,
+    ActionPhoneCall,
+    ActionPinMessage,
+    ActionScreenshotTaken,
+    ActionSecureValuesSent,
+    ActionSetChatTheme,
+    ActionSetMessagesTTL,
+    ActionTopicCreate,
+    ActionTopicEdit,
+    Chat,
+    ChatType,
+    ContactMedia,
+    DocumentMedia,
+    FileInfo,
+    ForwardInfo,
+    GameMedia,
+    GeoMedia,
+    InlineButton,
+    InlineButtonType,
+    InvoiceMedia,
+    Media,
+    MediaType,
+    Message,
+    PhotoMedia,
+    PollAnswer,
+    PollMedia,
+    Reaction,
+    ReactionType,
+    ServiceAction,
+    TextPart,
+    TextType,
+    UnsupportedMedia,
+    VenueMedia,
 )
 
 
@@ -63,6 +99,7 @@ ENTITY_MAP = {
 # Entity parsing
 # ---------------------------------------------------------------------------
 
+
 def convert_entities(text: str, entities: list | None) -> list[TextPart]:
     """Parse Telethon entities into list[TextPart]."""
     if not text:
@@ -86,7 +123,7 @@ def convert_entities(text: str, entities: list | None) -> list[TextPart]:
         if ent_offset > offset:
             parts.append(TextPart(type=TextType.text, text=text[offset:ent_offset]))
 
-        ent_text = text[ent_offset:ent_offset + ent_length]
+        ent_text = text[ent_offset : ent_offset + ent_length]
         href = getattr(entity, "url", None)
         user_id = getattr(entity, "user_id", None)
         parts.append(TextPart(type=ent_type, text=ent_text, href=href, user_id=user_id))
@@ -103,6 +140,7 @@ def convert_entities(text: str, entities: list | None) -> list[TextPart]:
 # ---------------------------------------------------------------------------
 # Media conversion
 # ---------------------------------------------------------------------------
+
 
 def convert_media(tl_media: Any) -> Media | None:
     """Convert Telethon media to models.Media subclass."""
@@ -133,10 +171,14 @@ def convert_media(tl_media: Any) -> Media | None:
         return PhotoMedia(
             type=MediaType.photo,
             file=FileInfo(
-                id=photo.id, size=file_size, name=None,
-                mime_type="image/jpeg", local_path=None,
+                id=photo.id,
+                size=file_size,
+                name=None,
+                mime_type="image/jpeg",
+                local_path=None,
             ),
-            width=w, height=h,
+            width=w,
+            height=h,
             spoilered=getattr(tl_media, "spoiler", False),
         )
 
@@ -149,11 +191,17 @@ def convert_media(tl_media: Any) -> Media | None:
         return DocumentMedia(
             type=media_type,
             file=FileInfo(
-                id=doc.id, size=doc.size or 0,
-                name=name, mime_type=doc.mime_type, local_path=None,
+                id=doc.id,
+                size=doc.size or 0,
+                name=name,
+                mime_type=doc.mime_type,
+                local_path=None,
             ),
-            name=name, mime_type=doc.mime_type,
-            duration=duration, width=w, height=h,
+            name=name,
+            mime_type=doc.mime_type,
+            duration=duration,
+            width=w,
+            height=h,
             performer=getattr(attrs.get("DocumentAttributeAudio"), "performer", None),
             song_title=getattr(attrs.get("DocumentAttributeAudio"), "title", None),
             sticker_emoji=getattr(attrs.get("DocumentAttributeSticker"), "alt", None),
@@ -162,7 +210,8 @@ def convert_media(tl_media: Any) -> Media | None:
 
     if cls_name == "MessageMediaContact":
         return ContactMedia(
-            type=MediaType.contact, file=None,
+            type=MediaType.contact,
+            file=None,
             phone=tl_media.phone_number or "",
             first_name=tl_media.first_name or "",
             last_name=tl_media.last_name or "",
@@ -172,33 +221,43 @@ def convert_media(tl_media: Any) -> Media | None:
     if cls_name == "MessageMediaGeo":
         geo = tl_media.geo
         return GeoMedia(
-            type=MediaType.geo, file=None,
-            latitude=geo.lat, longitude=geo.long,
+            type=MediaType.geo,
+            file=None,
+            latitude=geo.lat,
+            longitude=geo.long,
         )
 
     if cls_name == "MessageMediaVenue":
         geo = tl_media.geo
         return VenueMedia(
-            type=MediaType.venue, file=None,
-            latitude=geo.lat, longitude=geo.long,
-            title=tl_media.title or "", address=tl_media.address or "",
+            type=MediaType.venue,
+            file=None,
+            latitude=geo.lat,
+            longitude=geo.long,
+            title=tl_media.title or "",
+            address=tl_media.address or "",
         )
 
     if cls_name == "MessageMediaPoll":
         poll = tl_media.poll
         results = tl_media.results
         answers = []
-        for ans in (poll.answers or []):
-            ans_text = [TextPart(type=TextType.text, text=ans.text.text if hasattr(ans.text, 'text') else str(ans.text))]
+        for ans in poll.answers or []:
+            ans_text = [
+                TextPart(
+                    type=TextType.text, text=ans.text.text if hasattr(ans.text, "text") else str(ans.text)
+                )
+            ]
             voters = 0
             if results and results.results:
                 for r in results.results:
                     if r.option == ans.option:
                         voters = r.voters or 0
             answers.append(PollAnswer(text=ans_text, voters=voters))
-        question_text = poll.question.text if hasattr(poll.question, 'text') else str(poll.question)
+        question_text = poll.question.text if hasattr(poll.question, "text") else str(poll.question)
         return PollMedia(
-            type=MediaType.poll, file=None,
+            type=MediaType.poll,
+            file=None,
             question=[TextPart(type=TextType.text, text=question_text)],
             answers=answers,
             total_votes=results.total_voters if results else 0,
@@ -208,14 +267,17 @@ def convert_media(tl_media: Any) -> Media | None:
     if cls_name == "MessageMediaGame":
         game = tl_media.game
         return GameMedia(
-            type=MediaType.game, file=None,
-            title=game.title or "", description=game.description or "",
+            type=MediaType.game,
+            file=None,
+            title=game.title or "",
+            description=game.description or "",
             short_name=game.short_name or "",
         )
 
     if cls_name == "MessageMediaInvoice":
         return InvoiceMedia(
-            type=MediaType.invoice, file=None,
+            type=MediaType.invoice,
+            file=None,
             title=tl_media.title or "",
             description=tl_media.description or "",
             currency=tl_media.currency or "",
@@ -264,6 +326,7 @@ def _classify_document(attrs: dict, mime_type: str | None) -> tuple:
 # Action conversion
 # ---------------------------------------------------------------------------
 
+
 def convert_action(tl_action: Any) -> ServiceAction | None:
     """Convert Telethon action to ServiceAction subclass."""
     if tl_action is None:
@@ -292,7 +355,8 @@ def convert_action(tl_action: Any) -> ServiceAction | None:
     if cls_name == "MessageActionChannelMigrateFrom":
         return ActionChannelMigrateFrom(
             type="ActionChannelMigrateFrom",
-            title=tl_action.title or "", chat_id=tl_action.chat_id,
+            title=tl_action.title or "",
+            chat_id=tl_action.chat_id,
         )
     if cls_name == "MessageActionPinMessage":
         return ActionPinMessage(type="ActionPinMessage")
@@ -364,12 +428,17 @@ def convert_action(tl_action: Any) -> ServiceAction | None:
             message=getattr(tl_action, "message", ""),
         )
 
-    return ServiceAction(type=cls_name)
+    # Normalise to "ActionXxx" so renderer's elif-chain matches consistently.
+    normalised = (
+        cls_name.replace("MessageAction", "Action", 1) if cls_name.startswith("MessageAction") else cls_name
+    )
+    return ServiceAction(type=normalised)
 
 
 # ---------------------------------------------------------------------------
 # Reactions
 # ---------------------------------------------------------------------------
+
 
 def convert_reactions(tl_reactions: Any) -> list[Reaction]:
     """Convert Telethon reactions to list[Reaction]."""
@@ -383,32 +452,39 @@ def convert_reactions(tl_reactions: Any) -> list[Reaction]:
         reaction = r.reaction
         cls_name = reaction.__class__.__name__
         if cls_name == "ReactionEmoji":
-            reactions.append(Reaction(
-                type=ReactionType.emoji,
-                emoji=reaction.emoticon,
-                document_id=None,
-                count=r.count,
-            ))
+            reactions.append(
+                Reaction(
+                    type=ReactionType.emoji,
+                    emoji=reaction.emoticon,
+                    document_id=None,
+                    count=r.count,
+                )
+            )
         elif cls_name == "ReactionCustomEmoji":
-            reactions.append(Reaction(
-                type=ReactionType.custom_emoji,
-                emoji=None,
-                document_id=reaction.document_id,
-                count=r.count,
-            ))
+            reactions.append(
+                Reaction(
+                    type=ReactionType.custom_emoji,
+                    emoji=None,
+                    document_id=reaction.document_id,
+                    count=r.count,
+                )
+            )
         elif cls_name == "ReactionPaid":
-            reactions.append(Reaction(
-                type=ReactionType.paid,
-                emoji=None,
-                document_id=None,
-                count=r.count,
-            ))
+            reactions.append(
+                Reaction(
+                    type=ReactionType.paid,
+                    emoji=None,
+                    document_id=None,
+                    count=r.count,
+                )
+            )
     return reactions
 
 
 # ---------------------------------------------------------------------------
 # Message conversion
 # ---------------------------------------------------------------------------
+
 
 def convert_message(tl_msg: Any, chat_id: int) -> Message:
     """Convert Telethon Message to models.Message."""
@@ -442,12 +518,13 @@ def convert_message(tl_msg: Any, chat_id: int) -> Message:
     if tl_msg.reply_to:
         reply_to_msg_id = getattr(tl_msg.reply_to, "reply_to_msg_id", None)
         reply_to_peer_id = getattr(tl_msg.reply_to, "reply_to_peer_id", None)
-        if hasattr(reply_to_peer_id, "channel_id"):
-            reply_to_peer_id = reply_to_peer_id.channel_id
-        elif hasattr(reply_to_peer_id, "chat_id"):
-            reply_to_peer_id = reply_to_peer_id.chat_id
-        elif hasattr(reply_to_peer_id, "user_id"):
-            reply_to_peer_id = reply_to_peer_id.user_id
+        if reply_to_peer_id is not None:
+            if hasattr(reply_to_peer_id, "channel_id"):
+                reply_to_peer_id = reply_to_peer_id.channel_id
+            elif hasattr(reply_to_peer_id, "chat_id"):
+                reply_to_peer_id = reply_to_peer_id.chat_id
+            elif hasattr(reply_to_peer_id, "user_id"):
+                reply_to_peer_id = reply_to_peer_id.user_id
         if getattr(tl_msg.reply_to, "forum_topic", False):
             topic_id = reply_to_msg_id
 
@@ -479,11 +556,13 @@ def convert_message(tl_msg: Any, chat_id: int) -> Message:
             btn_row = []
             for btn in row.buttons:
                 btn_type = _classify_button(btn)
-                btn_row.append(InlineButton(
-                    type=btn_type,
-                    text=btn.text or "",
-                    data=_to_str(getattr(btn, "url", None) or getattr(btn, "data", None)),
-                ))
+                btn_row.append(
+                    InlineButton(
+                        type=btn_type,
+                        text=btn.text or "",
+                        data=_to_str(getattr(btn, "url", None) or getattr(btn, "data", None)),
+                    )
+                )
             inline_buttons.append(btn_row)
 
     return Message(
@@ -534,10 +613,10 @@ def _classify_button(btn: Any) -> InlineButtonType:
 # Chat conversion
 # ---------------------------------------------------------------------------
 
+
 def convert_chat(tl_dialog: Any, folder: str | None = None) -> Chat:
     """Convert Telethon Dialog to models.Chat."""
     entity = tl_dialog.entity
-    cls_name = entity.__class__.__name__
 
     chat_type = _classify_chat(entity, tl_dialog)
 

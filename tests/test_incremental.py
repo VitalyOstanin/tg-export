@@ -1,6 +1,5 @@
 import pytest
-from pathlib import Path
-from datetime import datetime
+
 from tg_export.importer import TdesktopIndex
 
 
@@ -14,9 +13,13 @@ async def test_incremental_uses_last_msg_id(state):
 @pytest.mark.asyncio
 async def test_file_verification_detects_partial(state):
     await state.register_file(
-        file_id=1, chat_id=123, msg_id=1,
-        expected_size=10000, actual_size=5000,
-        local_path="photos/photo.jpg", status="partial",
+        file_id=1,
+        chat_id=123,
+        msg_id=1,
+        expected_size=10000,
+        actual_size=5000,
+        local_path="photos/photo.jpg",
+        status="partial",
     )
     broken = await state.get_files_to_verify()
     assert len(broken) == 1
@@ -31,7 +34,7 @@ def test_tdesktop_index(tmp_path):
     (photos_dir / "photo_2@01-01-2024_10-05-00.jpg").write_bytes(b"x" * 2000)
 
     # Create messages.html with chat name and media links
-    html = '''<div class="page_header"><div class="text bold">
+    html = """<div class="page_header"><div class="text bold">
 Test Chat
 </div></div>
 <div class="message default clearfix" id="message100">
@@ -41,7 +44,7 @@ Test Chat
 <div class="message default clearfix" id="message200">
 <div class="media_wrap clearfix">
 <a class="photo_wrap clearfix pull_left" href="../../chats/chat_001/photos/photo_2@01-01-2024_10-05-00.jpg">
-</a></div></div>'''
+</a></div></div>"""
     (chat_dir / "messages.html").write_text(html)
 
     idx = TdesktopIndex(tmp_path)

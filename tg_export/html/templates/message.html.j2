@@ -28,9 +28,9 @@
   <div class="btn-row">
   {% for btn in row %}
     {% if btn.data and btn.type.value == "url" %}
-    <a class="btn" href="{{ btn.data|e }}" target="_blank">{{ btn.text|e }}</a>
+    <a class="btn" href="{{ btn.data|safe_href }}" target="_blank" rel="noopener noreferrer">{{ btn.text }}</a>
     {% else %}
-    <span class="btn">{{ btn.text|e }}</span>
+    <span class="btn">{{ btn.text }}</span>
     {% endif %}
   {% endfor %}
   </div>

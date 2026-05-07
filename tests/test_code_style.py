@@ -3,6 +3,7 @@
 Покрывают замечания из code review, для которых поведенческого теста недостаточно
 (см. tmp/code-review-2026-05-02.md).
 """
+
 from __future__ import annotations
 
 import re
@@ -31,7 +32,8 @@ def test_log_function_uses_rich_console_not_bare_print():
     src = _read("exporter.py")
     m = re.search(
         r"^def _log\([^)]*\)[^\n]*:\n(?:\s+\".*?\"\"\"\n)?(?P<body>(?:    [^\n]*\n)+)",
-        src, flags=re.MULTILINE | re.DOTALL,
+        src,
+        flags=re.MULTILINE | re.DOTALL,
     )
     if m:
         body = m.group("body")
@@ -70,21 +72,16 @@ def test_logger_declared_after_all_module_imports():
     lines = src.splitlines()
 
     logger_idx = next(
-        (i for i, ln in enumerate(lines)
-         if re.match(r"^logger\s*=\s*logging\.getLogger", ln)),
+        (i for i, ln in enumerate(lines) if re.match(r"^logger\s*=\s*logging\.getLogger", ln)),
         None,
     )
     assert logger_idx is not None, "logger не объявлен"
 
-    after = lines[logger_idx + 1:]
+    after = lines[logger_idx + 1 :]
     bad_imports = [
-        (logger_idx + 1 + i, ln)
-        for i, ln in enumerate(after)
-        if re.match(r"^(import|from)\s+\w", ln)
+        (logger_idx + 1 + i, ln) for i, ln in enumerate(after) if re.match(r"^(import|from)\s+\w", ln)
     ]
-    assert not bad_imports, (
-        f"после logger=... идут module-level импорты (PEP 8): {bad_imports!r}"
-    )
+    assert not bad_imports, f"после logger=... идут module-level импорты (PEP 8): {bad_imports!r}"
 
 
 def test_timedelta_imported_at_module_level_in_exporter():
@@ -92,11 +89,10 @@ def test_timedelta_imported_at_module_level_in_exporter():
     src = _read("exporter.py")
     inside_func = re.findall(
         r"^[ \t]+from datetime import timedelta",
-        src, flags=re.MULTILINE,
+        src,
+        flags=re.MULTILINE,
     )
-    assert not inside_func, (
-        "from datetime import timedelta должен быть на уровне модуля, не внутри функции"
-    )
+    assert not inside_func, "from datetime import timedelta должен быть на уровне модуля, не внутри функции"
 
 
 def test_exporter_imports_rich_escape():

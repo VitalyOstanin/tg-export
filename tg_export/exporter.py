@@ -46,9 +46,22 @@ def _log(msg: str):
     console.print(msg, markup=False, highlight=False, soft_wrap=True)
 
 
-def chat_export_line(chat_name: str, chat_type: str, folder: str | None) -> str:
+def chat_export_line(
+    chat_name: str,
+    chat_type: str,
+    folder: str | None,
+    is_left: bool = False,
+    is_archived: bool = False,
+) -> str:
     """Build the `export: <chat>` console line with markup-safe substitutions."""
-    folder_str = f" [{escape(folder)}]" if folder else ""
+    if is_left:
+        folder_str = " [left]"
+    elif is_archived:
+        folder_str = " [archived]"
+    elif folder:
+        folder_str = f" [{escape(folder)}]"
+    else:
+        folder_str = ""
     return f"  [green]export[/]: {escape(chat_name)} ({escape(chat_type)}){folder_str}"
 
 
@@ -117,13 +130,13 @@ class ExportStats:
     chats_skipped: int = 0
     chats_exported: int = 0
     messages_exported: int = 0
-    messages_total: int = 0     # total messages in current chat (0 = unknown)
-    messages_in_db: int = 0     # messages already in DB before this run
+    messages_total: int = 0  # total messages in current chat (0 = unknown)
+    messages_in_db: int = 0  # messages already in DB before this run
     files_downloaded: int = 0
-    files_existing: int = 0       # already downloaded in previous runs
-    files_reused_chat: int = 0    # reused from another chat (same account)
+    files_existing: int = 0  # already downloaded in previous runs
+    files_reused_chat: int = 0  # reused from another chat (same account)
     files_reused_tdesktop: int = 0  # reused from tdesktop export
-    files_reused_sibling: int = 0   # reused from sibling account
+    files_reused_sibling: int = 0  # reused from sibling account
     files_skipped_by_size: int = 0  # exceeded max_file_size
     files_skipped_by_type: int = 0  # media type not in config
     data_size: int = 0  # bytes downloaded
@@ -184,11 +197,57 @@ class ExportStats:
         return self.data_size - self._chat_snapshot.get("data_size", 0)
 
 
+_BIDI_CONTROL_CHARS = "".join(
+    chr(c)
+    for c in (
+        0x200B,
+        0x200C,
+        0x200D,
+        0x200E,
+        0x200F,
+        0x202A,
+        0x202B,
+        0x202C,
+        0x202D,
+        0x202E,
+        0x2066,
+        0x2067,
+        0x2068,
+        0x2069,
+        0xFEFF,
+    )
+)
+_BIDI_REMOVE_RE = re.compile("[" + re.escape(_BIDI_CONTROL_CHARS) + "]")
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+
 def sanitize_name(name: str) -> str:
-    """Replace special characters with _ and strip."""
+    """Make a Telegram-controlled string safe to use as a path component.
+
+    Why: chat/folder names come from Telegram and may contain "..", control
+    characters, RTL/bidi overrides, or be empty. Each of these can produce
+    unintended paths or visually mislead the user.
+    """
+    import unicodedata
+
+    name = unicodedata.normalize("NFKC", name)
+    name = _BIDI_REMOVE_RE.sub("", name)
+    name = _CONTROL_CHARS_RE.sub("_", name)
     name = name.strip()
-    name = re.sub(r'[/\\:*?"<>|]', '_', name)
-    name = name.replace(' ', '_')
+    name = re.sub(r'[/\\:*?"<>|]', "_", name)
+    name = name.replace(" ", "_")
+    if name in ("", ".", ".."):
+        return "_"
+    # Limit length so result fits ext4/HFS+ limit (255 bytes); reserve some
+    # bytes for the appended _<chat_id>.
+    encoded = name.encode("utf-8")
+    if len(encoded) > 200:
+        encoded = encoded[:200]
+        # Avoid splitting a multi-byte UTF-8 sequence
+        try:
+            name = encoded.decode("utf-8")
+        except UnicodeDecodeError:
+            name = encoded.decode("utf-8", errors="ignore")
     return name
 
 
@@ -284,8 +343,7 @@ class Exporter:
         """
         completed = stats.messages_in_db + stats.chat_messages_new
         if stats.messages_total > 0:
-            progress.update(main_task, completed=completed,
-                            total=stats.messages_total)
+            progress.update(main_task, completed=completed, total=stats.messages_total)
         else:
             progress.update(main_task, completed=completed, total=None)
 
@@ -297,7 +355,9 @@ class Exporter:
             desc = file_progress_description(dl.filename)
             if msg_id not in file_tasks:
                 file_tasks[msg_id] = file_progress.add_task(
-                    desc, total=dl.total or None, completed=dl.received,
+                    desc,
+                    total=dl.total or None,
+                    completed=dl.received,
                 )
             else:
                 file_progress.update(
@@ -350,7 +410,9 @@ class Exporter:
                 continue
 
             chat_config = self.config.resolve_chat_config(
-                chat_id=chat.id, chat_name=chat.name, folder=chat.folder,
+                chat_id=chat.id,
+                chat_name=chat.name,
+                folder=chat.folder,
                 chat_type=chat.type.value,
             )
             if chat_config is None:
@@ -443,10 +505,13 @@ class Exporter:
 
         def _build_status_table_local() -> Table:
             return self._build_status_table(
-                progress=progress, main_task=main_task,
-                file_progress=file_progress, file_tasks=file_tasks,
+                progress=progress,
+                main_task=main_task,
+                file_progress=file_progress,
+                file_tasks=file_tasks,
                 stats=stats,
-                line1=_status_line1(), line2=_status_line2(),
+                line1=_status_line1(),
+                line2=_status_line2(),
             )
 
         use_live = console.is_terminal
@@ -454,7 +519,8 @@ class Exporter:
 
         live_cm: contextlib.AbstractContextManager[object] = (
             Live(
-                console=console, refresh_per_second=2,
+                console=console,
+                refresh_per_second=2,
                 get_renderable=_build_status_table_local,
             )
             if use_live
@@ -470,10 +536,15 @@ class Exporter:
                         break
 
                     if dry_run:
-                        console.print(chat_export_line(
-                            chat_name=chat.name, chat_type=chat.type.value,
-                            folder=chat.folder,
-                        ))
+                        console.print(
+                            chat_export_line(
+                                chat_name=chat.name,
+                                chat_type=chat.type.value,
+                                folder=chat.folder,
+                                is_left=chat.is_left,
+                                is_archived=chat.is_archived,
+                            )
+                        )
                         stats.chats_exported += 1
                         continue
 
@@ -488,35 +559,43 @@ class Exporter:
 
                     # Save chat metadata to DB for future renderers
                     await self.state.cache_catalog(
-                        chat_id=chat.id, name=chat.name,
-                        chat_type=chat.type.value, folder=chat.folder,
+                        chat_id=chat.id,
+                        name=chat.name,
+                        chat_type=chat.type.value,
+                        folder=chat.folder,
                         members_count=chat.members_count,
                         messages_count=chat.messages_count or 0,
                         last_message_date=chat.last_message_date,
-                        is_left=chat.is_left, is_archived=chat.is_archived,
+                        is_left=chat.is_left,
+                        is_archived=chat.is_archived,
                         is_forum=chat.is_forum,
-                        is_monoforum=getattr(chat, 'is_monoforum', False),
+                        is_monoforum=getattr(chat, "is_monoforum", False),
                     )
 
                     try:
-                        progress.update(main_task,
-                                        description=chat_progress_description(chat.name))
-                        logger.debug("start chat %s (id=%d, type=%s, msgs~%d)",
-                                     chat.name, chat.id, chat.type.value, chat.messages_count or 0)
+                        progress.update(main_task, description=chat_progress_description(chat.name))
+                        logger.debug(
+                            "start chat %s (id=%d, type=%s, msgs~%d)",
+                            chat.name,
+                            chat.id,
+                            chat.type.value,
+                            chat.messages_count or 0,
+                        )
 
                         # Remove orphaned files (on disk but not in DB)
                         await self._cleanup_orphaned_files(chat.id, chat_dir)
 
-                        # Load tdesktop index for this chat
+                        # Load tdesktop index for this chat (off the loop -- regex/HTML parsing).
                         for idx in self.downloader.tdesktop_indexes:
-                            idx.load_chat_index(chat.name)
+                            await asyncio.to_thread(idx.load_chat_index, chat.name)
 
                         chat_t0 = time.monotonic()
                         msgs_before = stats.messages_exported
                         await self.export_chat(chat, chat_config, chat_dir, stats)
                         chat_msgs = stats.messages_exported - msgs_before
-                        logger.debug("done chat %s in %.1fs: %d msgs",
-                                     chat.name, time.monotonic() - chat_t0, chat_msgs)
+                        logger.debug(
+                            "done chat %s in %.1fs: %d msgs", chat.name, time.monotonic() - chat_t0, chat_msgs
+                        )
                         stats.chats_exported += 1
 
                         # Unload tdesktop index to free memory
@@ -589,7 +668,7 @@ class Exporter:
                 chat_total = 0  # unknown — API can't count by date range
             else:
                 result = await self.api.client.get_messages(chat.id, limit=0)
-                chat_total = getattr(result, 'total', 0) or 0
+                chat_total = getattr(result, "total", 0) or 0
         except Exception:
             chat_total = chat.messages_count or 0
 
@@ -622,9 +701,7 @@ class Exporter:
         iter_kwargs: dict = {}
         if date_to:
             # Start from messages at date_to end-of-day
-            iter_kwargs["offset_date"] = datetime.combine(
-                date_to + timedelta(days=1), datetime.min.time()
-            )
+            iter_kwargs["offset_date"] = datetime.combine(date_to + timedelta(days=1), datetime.min.time())
 
         def _before_date_from(msg_date) -> bool:
             """True if message is before date_from (should stop)."""
@@ -670,6 +747,7 @@ class Exporter:
         if not full_history and not self._shutdown:
             batch = []
             current_oldest = oldest_msg_id
+            phase2_max_id = last_msg_id
             p2_kwargs = dict(iter_kwargs)  # includes offset_date if set
             if oldest_msg_id > 0:
                 p2_kwargs["offset_id"] = oldest_msg_id
@@ -691,13 +769,14 @@ class Exporter:
                 batch.append(msg)
                 if current_oldest == 0 or msg.id < current_oldest:
                     current_oldest = msg.id
-                if last_msg_id == 0 and msg.id > last_msg_id:
-                    last_msg_id = msg.id
+                if msg.id > phase2_max_id:
+                    phase2_max_id = msg.id
                 stats.messages_exported += 1
                 if len(batch) >= BATCH_SIZE:
                     await self.state.store_messages_batch(batch)
-                    logger.debug("  %s: %d msgs stored (oldest=%d)",
-                                 chat.name, stats.messages_exported, current_oldest)
+                    logger.debug(
+                        "  %s: %d msgs stored (oldest=%d)", chat.name, stats.messages_exported, current_oldest
+                    )
                     batch.clear()
                 now = time.monotonic()
                 if not self._use_live and now - last_progress_time >= LOG_INTERVAL:
@@ -711,32 +790,46 @@ class Exporter:
                 await self.state.store_messages_batch(batch)
                 batch.clear()
 
-            if last_msg_id > 0:
-                await self.state.set_last_msg_id(chat.id, last_msg_id)
+            if phase2_max_id > last_msg_id:
+                await self.state.set_last_msg_id(chat.id, phase2_max_id)
+                last_msg_id = phase2_max_id
             if current_oldest > 0:
                 await self.state.set_oldest_msg_id(chat.id, current_oldest)
 
-            if not self._shutdown:
-                if reached_date_from or iterator_exhausted:
-                    await self.state.set_full_history(chat.id)
-                    logger.debug("  %s: full history complete", chat.name)
+            if not self._shutdown and (reached_date_from or iterator_exhausted):
+                await self.state.set_full_history(chat.id)
+                logger.debug("  %s: full history complete", chat.name)
 
         # Update messages_count in export_state
         msg_count = await self.state.count_messages(chat.id)
         if msg_count > 0:
             await self.state.update_messages_count(chat.id, msg_count)
 
-        # Render HTML from ALL messages in SQLite
-        all_messages = await self.state.load_messages(chat.id)
-        if all_messages:
-            self.renderer.render_chat(chat, all_messages, chat_dir)
+        # Render HTML streaming month-by-month from SQLite to avoid loading
+        # the full message list into memory.
+        month_keys = await self.state.list_message_months(chat.id)
+        if month_keys:
+            # Why: Jinja2 render is CPU-bound and blocks the event loop;
+            # _load_month_sync uses a sync sqlite connection inside the worker
+            # thread to avoid mixing aiosqlite with to_thread.
+            db_path = self.state.db_path
+            chat_id = chat.id
+
+            def _render():
+                from tg_export.state import _load_messages_for_month_sync
+
+                load_month = lambda key: _load_messages_for_month_sync(db_path, chat_id, key)  # noqa: E731
+                self.renderer.render_chat_streaming(chat, month_keys, load_month, chat_dir)
+
+            await asyncio.to_thread(_render)
         else:
             logger.debug("  %s: no messages in DB, skipping render", chat.name)
 
         return stats
 
-    async def _process_media(self, msg: Message, tl_msg, chat_dir: Path, stats: ExportStats,
-                             chat_id: int = 0):
+    async def _process_media(
+        self, msg: Message, tl_msg, chat_dir: Path, stats: ExportStats, chat_id: int = 0
+    ):
         """Download media for a message, updating stats."""
         if not msg.media or not self.downloader:
             return
@@ -819,7 +912,8 @@ class Exporter:
             photos_dir.mkdir(parents=True, exist_ok=True)
             try:
                 path = await self.api.client.download_profile_photo(
-                    "me", file=str(photos_dir / "current"),
+                    "me",
+                    file=str(photos_dir / "current"),
                 )
                 if path:
                     photo_path = f"profile_photos/{Path(path).name}"
@@ -848,12 +942,16 @@ class Exporter:
         for c in getattr(result, "contacts", []):
             user = users_by_id.get(c.user_id)
             if user:
-                name = f"{getattr(user, 'first_name', '') or ''} {getattr(user, 'last_name', '') or ''}".strip()
-                contacts.append({
-                    "name": name or str(c.user_id),
-                    "username": getattr(user, "username", "") or "",
-                    "phone": getattr(user, "phone", "") or "",
-                })
+                name = (
+                    f"{getattr(user, 'first_name', '') or ''} {getattr(user, 'last_name', '') or ''}".strip()
+                )
+                contacts.append(
+                    {
+                        "name": name or str(c.user_id),
+                        "username": getattr(user, "username", "") or "",
+                        "phone": getattr(user, "phone", "") or "",
+                    }
+                )
 
         frequent = []
         top_result = await self.api.get_top_peers()
@@ -871,10 +969,12 @@ class Exporter:
                     name = ""
                     if user:
                         name = f"{getattr(user, 'first_name', '') or ''} {getattr(user, 'last_name', '') or ''}".strip()
-                    frequent.append({
-                        "name": name or str(peer_id),
-                        "rating": f"{tp.rating:.2f}",
-                    })
+                    frequent.append(
+                        {
+                            "name": name or str(peer_id),
+                            "rating": f"{tp.rating:.2f}",
+                        }
+                    )
 
         self.renderer.render_contacts(contacts, frequent)
         console.print(f"  [green]exported[/]: {len(contacts)} contacts, {len(frequent)} frequent")
@@ -892,17 +992,19 @@ class Exporter:
                 date_str = datetime.fromtimestamp(da).strftime("%Y-%m-%d %H:%M")
             else:
                 date_str = ""
-            app_sessions.append({
-                "app_name": getattr(auth, "app_name", ""),
-                "app_version": getattr(auth, "app_version", ""),
-                "device_model": getattr(auth, "device_model", ""),
-                "platform": getattr(auth, "platform", ""),
-                "system_version": getattr(auth, "system_version", ""),
-                "ip": getattr(auth, "ip", ""),
-                "country": getattr(auth, "country", ""),
-                "date_active": date_str,
-                "current": bool(getattr(auth, "current", False)),
-            })
+            app_sessions.append(
+                {
+                    "app_name": getattr(auth, "app_name", ""),
+                    "app_version": getattr(auth, "app_version", ""),
+                    "device_model": getattr(auth, "device_model", ""),
+                    "platform": getattr(auth, "platform", ""),
+                    "system_version": getattr(auth, "system_version", ""),
+                    "ip": getattr(auth, "ip", ""),
+                    "country": getattr(auth, "country", ""),
+                    "date_active": date_str,
+                    "current": bool(getattr(auth, "current", False)),
+                }
+            )
 
         web_sessions = []
         for wa in getattr(web_result, "authorizations", []):
@@ -913,17 +1015,21 @@ class Exporter:
                 date_str = datetime.fromtimestamp(da).strftime("%Y-%m-%d %H:%M")
             else:
                 date_str = ""
-            web_sessions.append({
-                "domain": getattr(wa, "domain", ""),
-                "browser": getattr(wa, "browser", ""),
-                "platform": getattr(wa, "platform", ""),
-                "ip": getattr(wa, "ip", ""),
-                "region": getattr(wa, "region", ""),
-                "date_active": date_str,
-            })
+            web_sessions.append(
+                {
+                    "domain": getattr(wa, "domain", ""),
+                    "browser": getattr(wa, "browser", ""),
+                    "platform": getattr(wa, "platform", ""),
+                    "ip": getattr(wa, "ip", ""),
+                    "region": getattr(wa, "region", ""),
+                    "date_active": date_str,
+                }
+            )
 
         self.renderer.render_sessions(app_sessions, web_sessions)
-        console.print(f"  [green]exported[/]: {len(app_sessions)} app sessions, {len(web_sessions)} web sessions")
+        console.print(
+            f"  [green]exported[/]: {len(app_sessions)} app sessions, {len(web_sessions)} web sessions"
+        )
 
     async def _export_userpics(self):
         """Fetch and render profile photos."""
@@ -935,16 +1041,19 @@ class Exporter:
         async for photo in self.api.iter_userpics():
             try:
                 path = await self.api.client.download_media(
-                    photo, file=str(photos_dir / f"photo_{idx}"),
+                    photo,
+                    file=str(photos_dir / f"photo_{idx}"),
                 )
                 if path:
                     date_str = ""
                     if hasattr(photo, "date") and photo.date:
                         date_str = photo.date.strftime("%Y-%m-%d %H:%M")
-                    photos.append({
-                        "path": f"profile_photos/{Path(path).name}",
-                        "date": date_str,
-                    })
+                    photos.append(
+                        {
+                            "path": f"profile_photos/{Path(str(path)).name}",
+                            "date": date_str,
+                        }
+                    )
                     idx += 1
             except Exception as e:
                 logger.debug("Failed to download userpic %d: %s", idx, e)
@@ -986,11 +1095,13 @@ class Exporter:
             if media:
                 try:
                     path = await self.api.client.download_media(
-                        media, file=str(stories_dir / f"story_{idx}"),
+                        media,
+                        file=str(stories_dir / f"story_{idx}"),
                     )
                     if path:
-                        rel = f"stories/{Path(path).name}"
-                        if any(Path(path).suffix.lower() in ext for ext in [".mp4", ".mov", ".avi"]):
+                        path_obj = Path(str(path))
+                        rel = f"stories/{path_obj.name}"
+                        if any(path_obj.suffix.lower() in ext for ext in [".mp4", ".mov", ".avi"]):
                             video_path = rel
                         else:
                             photo_path = rel
@@ -1001,12 +1112,14 @@ class Exporter:
             if hasattr(item, "date") and item.date:
                 date_str = item.date.strftime("%Y-%m-%d %H:%M")
 
-            stories.append({
-                "photo_path": photo_path,
-                "video_path": video_path,
-                "caption": caption,
-                "date": date_str,
-            })
+            stories.append(
+                {
+                    "photo_path": photo_path,
+                    "video_path": video_path,
+                    "caption": caption,
+                    "date": date_str,
+                }
+            )
 
         self.renderer.render_stories(stories)
         console.print(f"  [green]exported[/]: {len(stories)} stories")
@@ -1018,9 +1131,10 @@ class Exporter:
 
         try:
             result = await self.api.get_ringtones()
-            if hasattr(result, "ringtones"):
+            doc_list = list(getattr(result, "ringtones", []) or [])
+            if doc_list:
                 ringtones_dir.mkdir(parents=True, exist_ok=True)
-                for idx, doc in enumerate(result.ringtones):
+                for idx, doc in enumerate(doc_list):
                     name = f"ringtone_{idx}"
                     for attr in getattr(doc, "attributes", []):
                         if hasattr(attr, "file_name") and attr.file_name:
@@ -1030,7 +1144,8 @@ class Exporter:
                     path = None
                     try:
                         path = await self.api.client.download_media(
-                            doc, file=str(ringtones_dir / f"ringtone_{idx}"),
+                            doc,
+                            file=str(ringtones_dir / f"ringtone_{idx}"),
                         )
                     except Exception as e:
                         logger.debug("Failed to download ringtone %d: %s", idx, e)
@@ -1039,11 +1154,13 @@ class Exporter:
                     if hasattr(doc, "size") and doc.size:
                         size_str = _format_size(doc.size)
 
-                    ringtones.append({
-                        "name": name,
-                        "path": f"ringtones/{Path(path).name}" if path else None,
-                        "size": size_str,
-                    })
+                    ringtones.append(
+                        {
+                            "name": name,
+                            "path": f"ringtones/{Path(str(path)).name}" if path else None,
+                            "size": size_str,
+                        }
+                    )
         except Exception as e:
             logger.warning("Failed to fetch ringtones: %s", e)
 
@@ -1068,7 +1185,11 @@ class Exporter:
             try:
                 # Get original message from Telegram
                 tl_messages = await self.api.client.get_messages(chat_id, ids=msg_id)
-                tl_msg = tl_messages if not isinstance(tl_messages, list) else (tl_messages[0] if tl_messages else None)
+                tl_msg = (
+                    tl_messages
+                    if not isinstance(tl_messages, list)
+                    else (tl_messages[0] if tl_messages else None)
+                )
                 if tl_msg is None or tl_msg.media is None:
                     stats.errors.append(f"Cannot re-download: msg {msg_id} not found or no media")
                     continue
@@ -1082,11 +1203,15 @@ class Exporter:
                 target_dir.mkdir(parents=True, exist_ok=True)
                 path = await self.api.download_media(tl_msg, target_dir)
                 if path:
-                    actual_size = Path(path).stat().st_size
+                    actual_size = Path(str(path)).stat().st_size
                     await self.state.register_file(
-                        file_id=f["file_id"], chat_id=chat_id, msg_id=msg_id,
-                        expected_size=f["expected_size"], actual_size=actual_size,
-                        local_path=str(path), status="done",
+                        file_id=f["file_id"],
+                        chat_id=chat_id,
+                        msg_id=msg_id,
+                        expected_size=f["expected_size"],
+                        actual_size=actual_size,
+                        local_path=str(path),
+                        status="done",
                     )
                     redownloaded += 1
                     logger.debug("re-downloaded: %s", path)
@@ -1105,24 +1230,78 @@ class Exporter:
         """Remove media files on disk that have no record in DB.
 
         These are typically partial downloads from interrupted exports.
-        Removing them ensures they will be re-downloaded properly.
+        Why: previously path comparison was string-equal between Telethon's
+        cwd-relative local_path and Path.iterdir() output; running tg-export
+        from a different cwd between sessions made every legitimate file look
+        orphaned. Now both sides are resolved to absolute Paths before the
+        set-membership test, and the iterdir loop runs in a worker thread to
+        avoid blocking the event loop on chats with thousands of media files.
         """
         from tg_export.media import MEDIA_SUBDIRS
+
         if not chat_dir.exists():
             return
-        known_paths = await self.state.get_known_paths(chat_id)
+        known_paths_raw = await self.state.get_known_paths(chat_id)
+        await asyncio.to_thread(
+            self._cleanup_orphaned_files_sync,
+            list(MEDIA_SUBDIRS.values()),
+            chat_dir,
+            known_paths_raw,
+        )
+        return  # noqa: B012  - placeholder to keep async signature stable
+
+    @staticmethod
+    def _cleanup_orphaned_files_sync(
+        subdir_names: list,
+        chat_dir: Path,
+        known_paths_raw: set[str],
+    ):
+        # Normalise DB paths: Telethon stores cwd-relative paths; resolve to
+        # absolute against the original cwd or chat_dir as a fallback.
+        known_resolved: set[Path] = set()
+        cwd = Path.cwd()
+        chat_dir_resolved = chat_dir.resolve()
+        for raw in known_paths_raw:
+            if raw.startswith("<") and raw.endswith(">"):
+                continue  # synthetic markers like "<skipped_by_size>"
+            p = Path(raw)
+            if p.is_absolute():
+                try:
+                    known_resolved.add(p.resolve())
+                except OSError:
+                    known_resolved.add(p)
+                continue
+            for base in (cwd, chat_dir):
+                candidate = base / p
+                try:
+                    resolved = candidate.resolve()
+                except OSError:
+                    continue
+                if resolved.exists():
+                    known_resolved.add(resolved)
+                    break
+            else:
+                # Fallback: store both possible resolutions to avoid false
+                # orphan-deletion when neither base maps to an existing file.
+                known_resolved.add((cwd / p).resolve())
+                known_resolved.add((chat_dir / p).resolve())
+
         removed = 0
-        for subdir_name in MEDIA_SUBDIRS.values():
+        for subdir_name in subdir_names:
             subdir = chat_dir / subdir_name
             if not subdir.is_dir():
                 continue
             for f in subdir.iterdir():
                 if not f.is_file():
                     continue
-                # DB stores paths as str(local_path) from Telethon,
-                # which are relative to cwd
-                rel_path = str(f)
-                if rel_path not in known_paths:
+                try:
+                    f_resolved = f.resolve()
+                except OSError:
+                    continue
+                # Safety: only delete files actually under chat_dir
+                if not f_resolved.is_relative_to(chat_dir_resolved):
+                    continue
+                if f_resolved not in known_resolved:
                     f.unlink()
                     removed += 1
                     logger.debug("removed orphaned file: %s", f)

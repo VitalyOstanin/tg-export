@@ -9,12 +9,11 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 # Media subdirs in tdesktop HTML export
-_MEDIA_SUBDIRS = {"photos", "files", "video_files", "voice_messages",
-                  "video_messages", "stickers", "gifs"}
+_MEDIA_SUBDIRS = {"photos", "files", "video_files", "voice_messages", "video_messages", "stickers", "gifs"}
 
 # Regex patterns for tdesktop HTML parsing
 _MSG_ID_RE = re.compile(r'id="message(\d+)"')
-_HREF_RE = re.compile(r'href="[^"]*?/chats/[^"]*?/(' + '|'.join(_MEDIA_SUBDIRS) + r')/([^"]+)"')
+_HREF_RE = re.compile(r'href="[^"]*?/chats/[^"]*?/(' + "|".join(_MEDIA_SUBDIRS) + r')/([^"]+)"')
 
 
 class TdesktopIndex:
@@ -57,11 +56,13 @@ class TdesktopIndex:
     def find_chat_dir(self, chat_name: str) -> Path | None:
         """Find tdesktop chat directory by chat name."""
         self._ensure_chat_map()
+        assert self._chat_map is not None
         return self._chat_map.get(chat_name)
 
     def get_chat_names(self) -> list[str]:
         """Return list of indexed chat names."""
         self._ensure_chat_map()
+        assert self._chat_map is not None
         return list(self._chat_map.keys())
 
     def load_chat_index(self, chat_name: str) -> bool:
@@ -80,8 +81,7 @@ class TdesktopIndex:
 
         self._current_chat_dir = chat_dir
         self._current_index = _parse_chat_media(chat_dir)
-        logger.info("tdesktop index for '%s': %d messages with media",
-                     chat_name, len(self._current_index))
+        logger.info("tdesktop index for '%s': %d messages with media", chat_name, len(self._current_index))
         return True
 
     def unload_chat_index(self):
@@ -128,7 +128,7 @@ def _extract_chat_name(msg_html: Path) -> str | None:
                     name_line = next(f, "").strip()
                     if name_line:
                         return name_line
-    except (OSError, StopIteration):
+    except OSError:
         pass
     return None
 
@@ -149,6 +149,7 @@ def _parse_chat_media(chat_dir: Path) -> dict[int, list[Path]]:
             break
         html_files.append(f)
 
+    chat_dir_resolved = chat_dir.resolve()
     for html_file in html_files:
         current_msg_id = None
         try:
@@ -169,12 +170,26 @@ def _parse_chat_media(chat_dir: Path) -> dict[int, list[Path]]:
                             if "_thumb" in filename:
                                 continue
                             file_path = chat_dir / subdir / filename
+                            # Why: tdesktop HTML is external input; reject paths
+                            # that resolve outside chat_dir (../, symlinks).
+                            try:
+                                resolved = file_path.resolve()
+                            except OSError:
+                                continue
+                            if not resolved.is_relative_to(chat_dir_resolved):
+                                logger.warning(
+                                    "tdesktop import: skipping path outside chat dir: %s",
+                                    file_path,
+                                )
+                                continue
                             if current_msg_id not in index:
                                 index[current_msg_id] = []
                             index[current_msg_id].append(file_path)
         except OSError as e:
             logger.warning("Error reading %s: %s", html_file, e)
 
+    if html_files and not index:
+        logger.info("tdesktop: no media references found in %s", chat_dir)
     return index
 
 

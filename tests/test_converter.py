@@ -1,11 +1,11 @@
-import pytest
-from unittest.mock import MagicMock
 from datetime import datetime
-from tg_export.converter import convert_message, convert_chat
-from tg_export.models import TextType, MediaType, ChatType
+from unittest.mock import MagicMock
+
+from tg_export.converter import convert_chat, convert_message
+from tg_export.models import TextType
 
 
-def _make_mock_message(text="Hello", date=None, media=None, action=None):
+def _make_mock_message(text: str | None = "Hello", date=None, media=None, action=None):
     msg = MagicMock()
     msg.id = 1
     msg.date = date or datetime(2024, 1, 1)

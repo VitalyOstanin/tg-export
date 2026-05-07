@@ -1,21 +1,24 @@
-import pytest
-from unittest.mock import AsyncMock, MagicMock
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
 from tg_export.exporter import Exporter, resolve_chat_dir, sanitize_name
 
 
 @pytest.mark.asyncio
-async def test_exporter_dry_run_no_downloads():
+async def test_exporter_dry_run_no_downloads(tmp_path):
     api = AsyncMock()
     state = AsyncMock()
     config = MagicMock()
-    config.output.path = "/tmp/test"
+    config.output.path = str(tmp_path / "out")
     renderer = MagicMock()
     downloader = AsyncMock()
 
-    exporter = Exporter(api=api, state=state, config=config,
-                        renderer=renderer, downloader=downloader, account="test")
-    stats = await exporter.run(dry_run=True, chat_list=[])
+    exporter = Exporter(
+        api=api, state=state, config=config, renderer=renderer, downloader=downloader, account="test"
+    )
+    await exporter.run(dry_run=True, chat_list=[])
     downloader.download.assert_not_called()
 
 
@@ -68,3 +71,19 @@ def test_sanitize_name():
     assert sanitize_name("Рабочий чат") == "Рабочий_чат"
     assert sanitize_name("file/with:special<chars>") == "file_with_special_chars_"
     assert sanitize_name("  spaces  ") == "spaces"
+
+
+def test_sanitize_name_handles_path_traversal_and_unsafe_chars():
+    assert sanitize_name("..") == "_"
+    assert sanitize_name(".") == "_"
+    assert sanitize_name("") == "_"
+    # Управляющие символы заменяются на _
+    assert "\x00" not in sanitize_name("foo\x00bar")
+    assert "\n" not in sanitize_name("a\nb")
+    # RTL override (U+202E) удаляется
+    assert "‮" not in sanitize_name("file‮gpj.txt")
+    # NFKC нормализация: "ﬁle" (U+FB01) -> "file"
+    assert sanitize_name("ﬁle") == "file"
+    # Длина ограничена 200 байтами
+    long_name = "a" * 500
+    assert len(sanitize_name(long_name).encode("utf-8")) <= 200
