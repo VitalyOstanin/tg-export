@@ -1,5 +1,9 @@
 # tg-export
 
+[![CI](https://github.com/VitalyOstanin/tg-export/actions/workflows/ci.yml/badge.svg)](https://github.com/VitalyOstanin/tg-export/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/VitalyOstanin/tg-export/graph/badge.svg?branch=master)](https://codecov.io/gh/VitalyOstanin/tg-export)
+[![PyPI version](https://img.shields.io/pypi/v/tg-export.svg)](https://pypi.org/project/tg-export/)
+
 Экспорт данных из Telegram на локальный диск с гибкой настройкой.
 
 ## Содержание
