@@ -26,7 +26,9 @@ Issues = "https://github.com/VitalyOstanin/tg-export/issues"
 
 [project.optional-dependencies]
 proxy = [
-    "python-socks[asyncio]>=2.0",
+    # Why PySocks, not python-socks: telethon imports `from socks import ...`
+    # (PySocks). They are different packages with different module names.
+    "PySocks>=1.7",
 ]
 dev = [
     "pytest>=8.0",
