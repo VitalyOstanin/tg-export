@@ -5,12 +5,19 @@
 
 ## Содержание
 
+- [\[1.2.4\] -- 2026-05-07](#124----2026-05-07)
 - [\[1.2.3\] -- 2026-05-07](#123----2026-05-07)
 - [\[1.2.2\] -- 2026-05-07](#122----2026-05-07)
 - [\[1.2.1\] -- 2026-05-07](#121----2026-05-07)
 - [\[1.2.0\] -- 2026-05-07](#120----2026-05-07)
 - [\[1.1.0\] -- 2026-05-02](#110----2026-05-02)
 - [\[1.0.0\] -- 2026-03-28](#100----2026-03-28)
+
+## [1.2.4] -- 2026-05-07
+
+### Исправлено
+
+- Workaround для асимметричного бага Telethon `SQLiteSession` 1.43+ ([commit 5a3a94eb](https://github.com/LonamiWebs/Telethon/commit/5a3a94eb)): `_update_session_table` пишет в порядке `(..., auth_key, takeout_id, tmp_auth_key)`, а `__init__` читает `select *` и распаковывает как `(..., key, tmp_key, takeout_id)` -- 5-й и 6-й столбцы переставлены местами. Пока обе колонки `NULL`, `AuthKey(data=None)` срабатывает по early-return и баг не виден; как только Takeout-экспорт сохраняет `takeout_id`, при следующем старте этот int попадает в `tmp_key`, и Telethon крашится с `TypeError: object supporting the buffer API required` из `sha1(int)`. Перестановка колонок не помогает -- read/write симметрично сломаны. `TgApi.__init__` теперь обнуляет `tmp_auth_key` и `takeout_id` через `_sanitize_session_file` перед открытием `TelegramClient`. `auth_key` (256 байт) сохраняется, перелогин не нужен; наш `start_takeout` всё равно начинает свежий takeout. Правильный фикс через monkey-patch `SQLiteSession` записан в [TODO.md](TODO.md).
 
 ## [1.2.3] -- 2026-05-07
 

@@ -1,9 +1,57 @@
+import sqlite3
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from telethon.errors import TakeoutInitDelayError
 
-from tg_export.api import TgApi
+from tg_export.api import TgApi, _sanitize_session_file
+
+
+def _make_session(path, takeout_id=None, tmp_auth_value=None):
+    """Create a sessions table mimicking Telethon's v8 ALTER TABLE layout."""
+    conn = sqlite3.connect(str(path))
+    conn.execute(
+        "CREATE TABLE sessions (dc_id integer primary key, server_address text,"
+        " port integer, auth_key blob, takeout_id integer, tmp_auth_key blob)"
+    )
+    conn.execute(
+        "INSERT INTO sessions (dc_id, server_address, port, auth_key, takeout_id, tmp_auth_key)"
+        " VALUES (?, ?, ?, ?, ?, ?)",
+        (2, "localhost", 443, b"x" * 256, takeout_id, tmp_auth_value),
+    )
+    conn.commit()
+    conn.close()
+
+
+def test_sanitize_clears_takeout_id_and_tmp_auth_key(tmp_path):
+    """Both fields must be NULL after sanitize. Why: the upstream Telethon
+    SQLiteSession reads/writes those fields in different column orders, so
+    on the next start a saved takeout_id lands in `tmp_key`, and AuthKey
+    crashes with `sha1(int)`. Clearing both avoids the crash; auth_key is
+    preserved so re-login is not needed."""
+    sp = tmp_path / "x.session"
+    _make_session(sp, takeout_id=12345, tmp_auth_value=b"garbage")
+    _sanitize_session_file(sp)
+    conn = sqlite3.connect(str(sp))
+    row = conn.execute("SELECT auth_key, takeout_id, tmp_auth_key FROM sessions").fetchone()
+    conn.close()
+    assert row[0] == b"x" * 256
+    assert row[1] is None
+    assert row[2] is None
+
+
+def test_sanitize_noop_when_already_clean(tmp_path):
+    sp = tmp_path / "x.session"
+    _make_session(sp, takeout_id=None, tmp_auth_value=None)
+    _sanitize_session_file(sp)
+    conn = sqlite3.connect(str(sp))
+    row = conn.execute("SELECT auth_key, takeout_id, tmp_auth_key FROM sessions").fetchone()
+    conn.close()
+    assert row == (b"x" * 256, None, None)
+
+
+def test_sanitize_session_file_handles_missing_file(tmp_path):
+    _sanitize_session_file(tmp_path / "nope.session")
 
 
 @pytest.mark.asyncio

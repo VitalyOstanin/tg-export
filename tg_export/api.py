@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import sqlite3
 from pathlib import Path
 
 from telethon import TelegramClient
@@ -21,12 +22,61 @@ from telethon.tl.types import InputPeerSelf, InputUserSelf
 logger = logging.getLogger(__name__)
 
 
+def _sanitize_session_file(session_path: Path) -> None:
+    """Workaround Telethon SQLiteSession bug: tmp_auth_key/takeout_id swap.
+
+    Why: Telethon (1.43+) reads and writes sessions in *different* column
+    orders. _update_session_table writes `(auth_key, takeout_id, tmp_auth_key)`
+    (matching the v8 ALTER TABLE order), while __init__ unpacks
+    `(..., key, tmp_key, takeout_id)`. So after a successful Takeout run,
+    Telethon stores a non-None takeout_id; on the next start it loads that
+    integer into `tmp_key`, calls `AuthKey(data=int)`, and crashes with
+    `TypeError: object supporting the buffer API required` from `sha1(int)`.
+    Reordering columns can't help -- the read/write paths are symmetric.
+
+    We avoid the crash by clearing both fields before every TgApi
+    instantiation. auth_key (256 bytes) is preserved, so no re-login. Our
+    own `start_takeout` reissues a fresh Takeout request anyway, so losing
+    the saved takeout_id has no functional impact for tg-export.
+    """
+    if not session_path.exists():
+        return
+    try:
+        conn = sqlite3.connect(str(session_path), timeout=5)
+        try:
+            info = conn.execute("PRAGMA table_info(sessions)").fetchall()
+            cols = {row[1] for row in info}
+            if not cols.issuperset({"tmp_auth_key", "takeout_id"}):
+                return
+            cur = conn.execute("SELECT tmp_auth_key, takeout_id FROM sessions")
+            row = cur.fetchone()
+            if row is None:
+                return
+            if row[0] is None and row[1] is None:
+                return
+            logger.info(
+                "Resetting Telethon tmp_auth_key/takeout_id in %s (workaround for upstream column-order bug)",
+                session_path,
+            )
+            conn.execute("UPDATE sessions SET tmp_auth_key = NULL, takeout_id = NULL")
+            conn.commit()
+        finally:
+            conn.close()
+    except sqlite3.Error as e:
+        logger.debug("session sanitize skipped (%s): %s", session_path, e)
+
+
 class TgApi:
     def __init__(self, session_path: str | Path, api_id: int, api_hash: str, proxy: tuple | None = None):
         kwargs = {}
         if proxy:
             kwargs["proxy"] = proxy
-        self.client = TelegramClient(str(session_path), api_id, api_hash, **kwargs)
+        sp_str = str(session_path)
+        # Telethon accepts the path with or without ".session"; normalise so
+        # the sanitiser opens the actual SQLite file in either case.
+        actual = Path(sp_str if sp_str.endswith(".session") else sp_str + ".session")
+        _sanitize_session_file(actual)
+        self.client = TelegramClient(sp_str, api_id, api_hash, **kwargs)
         self.takeout = None
 
     async def connect(self):
