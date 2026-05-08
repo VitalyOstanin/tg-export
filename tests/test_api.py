@@ -4,16 +4,32 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from telethon.errors import TakeoutInitDelayError
 
-from tg_export.api import TgApi, _sanitize_session_file
+from tg_export.api import TgApi
+from tg_export.session import FixedSQLiteSession
 
 
-def _make_session(path, takeout_id=None, tmp_auth_value=None):
-    """Create a sessions table mimicking Telethon's v8 ALTER TABLE layout."""
+def _make_session_v8(path, takeout_id=None, tmp_auth_value=None, *, with_version=True):
+    """Create a v8-shaped sessions table that matches Telethon's runtime layout.
+
+    Telethon's `_update_session_table` writes columns in physical order
+    `(dc_id, server_address, port, auth_key, takeout_id, tmp_auth_key)`, so we
+    mirror that here (and add the version row, which Telethon's SQLiteSession
+    expects to find on open).
+    """
     conn = sqlite3.connect(str(path))
-    conn.execute(
+    conn.executescript(
         "CREATE TABLE sessions (dc_id integer primary key, server_address text,"
-        " port integer, auth_key blob, takeout_id integer, tmp_auth_key blob)"
+        " port integer, auth_key blob, takeout_id integer, tmp_auth_key blob);"
+        "CREATE TABLE entities (id integer primary key, hash integer not null,"
+        " username text, phone integer, name text, date integer);"
+        "CREATE TABLE sent_files (md5_digest blob, file_size integer, type integer,"
+        " id integer, hash integer, primary key(md5_digest, file_size, type));"
+        "CREATE TABLE update_state (id integer primary key, pts integer, qts integer,"
+        " date integer, seq integer);"
     )
+    if with_version:
+        conn.execute("CREATE TABLE version (version integer primary key)")
+        conn.execute("INSERT INTO version VALUES (8)")
     conn.execute(
         "INSERT INTO sessions (dc_id, server_address, port, auth_key, takeout_id, tmp_auth_key)"
         " VALUES (?, ?, ?, ?, ?, ?)",
@@ -23,35 +39,54 @@ def _make_session(path, takeout_id=None, tmp_auth_value=None):
     conn.close()
 
 
-def test_sanitize_clears_takeout_id_and_tmp_auth_key(tmp_path):
-    """Both fields must be NULL after sanitize. Why: the upstream Telethon
-    SQLiteSession reads/writes those fields in different column orders, so
-    on the next start a saved takeout_id lands in `tmp_key`, and AuthKey
-    crashes with `sha1(int)`. Clearing both avoids the crash; auth_key is
-    preserved so re-login is not needed."""
-    sp = tmp_path / "x.session"
-    _make_session(sp, takeout_id=12345, tmp_auth_value=b"garbage")
-    _sanitize_session_file(sp)
+def test_fixed_sqlite_session_restores_takeout_id_and_survives_open(tmp_path):
+    """The whole point of FixedSQLiteSession.
+
+    Without the workaround, Telethon's __init__ unpacks the takeout_id (int)
+    into `tmp_key` and crashes via `AuthKey(data=int)` -> `sha1(int)`. We
+    must (a) not crash, (b) end up with `session.takeout_id == 12345`, and
+    (c) leave `auth_key` intact (no re-login required).
+    """
+    sp = tmp_path / "acc.session"
+    _make_session_v8(sp, takeout_id=12345, tmp_auth_value=None)
+
+    sess = FixedSQLiteSession(str(sp))
+    try:
+        assert sess.takeout_id == 12345
+        assert sess.auth_key is not None and sess.auth_key.key == b"x" * 256
+    finally:
+        sess.close()
+
+    # And after close the value is persisted in the physical takeout_id column,
+    # not somewhere else.
     conn = sqlite3.connect(str(sp))
     row = conn.execute("SELECT auth_key, takeout_id, tmp_auth_key FROM sessions").fetchone()
     conn.close()
     assert row[0] == b"x" * 256
-    assert row[1] is None
-    assert row[2] is None
+    assert row[1] == 12345
 
 
-def test_sanitize_noop_when_already_clean(tmp_path):
-    sp = tmp_path / "x.session"
-    _make_session(sp, takeout_id=None, tmp_auth_value=None)
-    _sanitize_session_file(sp)
-    conn = sqlite3.connect(str(sp))
-    row = conn.execute("SELECT auth_key, takeout_id, tmp_auth_key FROM sessions").fetchone()
-    conn.close()
-    assert row == (b"x" * 256, None, None)
+def test_fixed_sqlite_session_noop_on_clean_v8(tmp_path):
+    sp = tmp_path / "clean.session"
+    _make_session_v8(sp, takeout_id=None, tmp_auth_value=None)
+
+    sess = FixedSQLiteSession(str(sp))
+    try:
+        assert sess.takeout_id is None
+        assert sess.auth_key is not None and sess.auth_key.key == b"x" * 256
+    finally:
+        sess.close()
 
 
-def test_sanitize_session_file_handles_missing_file(tmp_path):
-    _sanitize_session_file(tmp_path / "nope.session")
+def test_fixed_sqlite_session_handles_missing_file(tmp_path):
+    """Fresh session, file does not exist yet -- super().__init__ creates it."""
+    sp = tmp_path / "fresh.session"
+    sess = FixedSQLiteSession(str(sp))
+    try:
+        assert sess.takeout_id is None
+    finally:
+        sess.close()
+    assert sp.exists()
 
 
 @pytest.mark.asyncio
