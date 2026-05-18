@@ -41,6 +41,9 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra dev
 
+      - name: Verify uv.lock is in sync with pyproject.toml
+        run: uv lock --check
+
       - name: Lint (ruff)
         run: uv run ruff check .
 
