@@ -10,7 +10,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      contents: read
+      # contents: write нужен для gh release create
+      contents: write
       id-token: write
 
     steps:
@@ -30,3 +31,27 @@ jobs:
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # v1.14.0
+
+      - name: Extract release notes from CHANGELOG
+        # Why awk: вырезаем секцию между "## [X.Y.Z] -- DATE" и следующим "## [".
+        # Why prefix: формат release body согласован с предыдущими ручными релизами.
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          DATE=$(awk -v V="$VERSION" '$0 ~ "^## \\["V"\\]"{print; exit}' CHANGELOG.md | sed -E 's/.*-- ([0-9-]+).*/\1/')
+          {
+            echo "## tg-export v${VERSION} -- ${DATE}"
+            echo
+            awk -v V="$VERSION" 'BEGIN{re="^## \\["V"\\]"} $0 ~ re {flag=1; next} /^## \[/{flag=0} flag' CHANGELOG.md
+          } > release_notes.md
+          test -s release_notes.md
+          wc -l release_notes.md
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file release_notes.md \
+            --latest
