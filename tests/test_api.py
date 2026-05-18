@@ -89,6 +89,55 @@ def test_fixed_sqlite_session_handles_missing_file(tmp_path):
     assert sp.exists()
 
 
+def test_fixed_sqlite_session_clears_non_int_takeout_id(tmp_path):
+    # Регрессия на 'struct.error: required argument is not an integer'.
+    # Если в позицию takeout_id попало BLOB-значение (например, b'' от swap-бага
+    # Telethon), FixedSQLiteSession должна очистить его, а не передать дальше
+    # в InvokeWithTakeoutRequest.
+    sp = tmp_path / "bad_takeout.session"
+    _make_session_v8(sp, takeout_id=b"", tmp_auth_value=None)
+
+    sess = FixedSQLiteSession(str(sp))
+    try:
+        assert sess.takeout_id is None
+    finally:
+        sess.close()
+
+
+def test_fixed_sqlite_session_clears_empty_bytes_tmp_auth_key(tmp_path):
+    # Регрессия №2 на struct.error: Telethon _update_session_table при
+    # store_tmp_auth_key_on_disk=False пишет b'' в physical position 5
+    # (tmp_auth_key column). На следующем чтении swap-баг делает
+    # session._takeout_id = b'' (вместо None), и api.start_takeout уходит
+    # в end_takeout(takeout_id=b'') -> InvokeWithTakeoutRequest(b'') ->
+    # struct.error: required argument is not an integer.
+    sp = tmp_path / "empty_tmp.session"
+    _make_session_v8(sp, takeout_id=None, tmp_auth_value=b"")
+
+    sess = FixedSQLiteSession(str(sp))
+    try:
+        # ключевая проверка: session._takeout_id должен быть None, не b''
+        assert sess._takeout_id is None
+    finally:
+        sess.close()
+
+
+def test_fixed_sqlite_session_clears_non_bytes_tmp_auth_key(tmp_path):
+    # Симметрия: int в позиции tmp_auth_key — тоже аномалия, AuthKey(data=int)
+    # упал бы дальше. Чистим. Проверяем приватное поле _tmp_auth_key, потому
+    # что в Telethon MemorySession property tmp_auth_key.getter из-за бага
+    # декораторов возвращает _auth_key, а не _tmp_auth_key.
+    sp = tmp_path / "bad_tmp.session"
+    _make_session_v8(sp, takeout_id=None, tmp_auth_value=12345)
+
+    sess = FixedSQLiteSession(str(sp))
+    try:
+        # AuthKey(data=None) — falsy; bool(AuthKey) == bool(AuthKey._key)
+        assert not sess._tmp_auth_key
+    finally:
+        sess.close()
+
+
 @pytest.mark.asyncio
 async def test_start_takeout_creates_session():
     """start_takeout should call client.takeout() and store result."""
