@@ -5,6 +5,7 @@
 
 ## Содержание
 
+- [\[1.2.6\] -- 2026-05-18](#126----2026-05-18)
 - [\[1.2.5\] -- 2026-05-08](#125----2026-05-08)
 - [\[1.2.4\] -- 2026-05-07](#124----2026-05-07)
 - [\[1.2.3\] -- 2026-05-07](#123----2026-05-07)
@@ -13,6 +14,19 @@
 - [\[1.2.0\] -- 2026-05-07](#120----2026-05-07)
 - [\[1.1.0\] -- 2026-05-02](#110----2026-05-02)
 - [\[1.0.0\] -- 2026-03-28](#100----2026-03-28)
+
+## [1.2.6] -- 2026-05-18
+
+### Исправлено
+
+- `_extract_and_clear` в `FixedSQLiteSession`: type-валидация `takeout_id` и `tmp_auth_key`, `has_data` через `is not None` (раньше `bool(b'')==False` пропускал пустые BLOB как «нет данных»). Telethon при `store_tmp_auth_key_on_disk=False` пишет `b''` в physical позицию `tmp_auth_key`, а swap-баг при следующем чтении ставит `session._takeout_id = b''`, что валит сериализатор `InvokeWithTakeoutRequest(takeout_id=b'')` с `struct.error: required argument is not an integer`. Дополнительно post-init валидация: если после `super().__init__()` `_takeout_id` оказался non-int -- clear.
+- Атомарный `commit_phase_progress` в `ExportState` ([tg_export/state.py](tg_export/state.py)). Ранее фаза 2 делала 4 раздельных commit-а (last/oldest/full_history/messages_count); прерывание сети между ними оставляло несогласованное состояние, и `set_oldest_msg_id` мог упасть с `NOT NULL constraint failed: export_state.last_msg_id`. Все четыре сеттера переведены на единый `_upsert_chat_state` с whitelist колонок и явным `last_msg_id=0` в INSERT-ветке. Схема: `last_msg_id INTEGER NOT NULL DEFAULT 0`.
+- Кооперативное прерывание HTML-рендера в `render_chat_streaming` и `_render_index` через параметр `should_stop`. Force shutdown зависал после «state saved», потому что `asyncio.to_thread` ставит задачу в default `ThreadPoolExecutor`, `task.cancel()` прерывает только `await`, а сам thread продолжает Jinja2-рендер; `asyncio.run().__exit__` ждёт thread join() с таймаутом. Гранулярность прерывания -- month bucket; внутри одного `jinja2.render()` прерывания нет (CPython не позволяет прервать thread без yield).
+- `chat_error_line` принимает опциональный `chat_id`, и сообщение об ошибке экспорта чата включает id (`Error exporting Alice (id=12345): ...`) для возможности ручной правки записи в `export_state`.
+
+### Качество кода
+
+- `cast(Any, ...)` для возвращаемых значений Telethon `get_personal_info()` / `get_top_peers()`: Pyright не разрешал доступ к `.full_user` / `.users` / `.categories` для `Union` без stubs.
 
 ## [1.2.5] -- 2026-05-08
 
