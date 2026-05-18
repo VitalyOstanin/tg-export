@@ -295,7 +295,7 @@ class ExportState:
         await self.db.executescript("""
             CREATE TABLE IF NOT EXISTS export_state (
                 chat_id        INTEGER PRIMARY KEY,
-                last_msg_id    INTEGER NOT NULL,
+                last_msg_id    INTEGER NOT NULL DEFAULT 0,
                 oldest_msg_id  INTEGER DEFAULT 0,
                 full_history   INTEGER DEFAULT 0,
                 messages_count INTEGER DEFAULT 0,
@@ -394,40 +394,82 @@ class ExportState:
             row = await cur.fetchone()
             return dict(row) if row else None
 
-    async def set_last_msg_id(self, chat_id: int, msg_id: int):
-        await self.db.execute(
-            """INSERT INTO export_state (chat_id, last_msg_id, updated_at)
-               VALUES (?, ?, ?)
-               ON CONFLICT(chat_id) DO UPDATE SET last_msg_id=?, updated_at=?""",
-            (chat_id, msg_id, datetime.now(), msg_id, datetime.now()),
+    # Whitelist колонок для _upsert_chat_state. Защита от случайной передачи
+    # неизвестного ключа через **fields и от SQL-инъекций через имя колонки.
+    _UPSERT_COLS = frozenset({"last_msg_id", "oldest_msg_id", "full_history", "messages_count"})
+
+    async def _upsert_chat_state(self, chat_id: int, **fields):
+        """UPSERT по export_state.
+
+        Why: исторически у нас было 4 отдельных сеттера. У set_oldest_msg_id
+        INSERT-ветка не указывала last_msg_id (NOT NULL) и падала с
+        IntegrityError при создании новой записи. set_full_history и
+        update_messages_count были UPDATE-only и тихо терялись для чата без
+        записи. Этот хелпер всегда корректно создаёт строку, заполняя
+        отсутствующие NOT NULL колонки нулями.
+        """
+        unknown = set(fields) - self._UPSERT_COLS
+        if unknown:
+            raise ValueError(f"Unknown export_state columns: {sorted(unknown)}")
+        if not fields:
+            raise ValueError("commit_phase_progress requires at least one field")
+
+        now = datetime.now()
+        # INSERT-ветка должна задать значения для всех NOT NULL колонок.
+        insert_values = {
+            "chat_id": chat_id,
+            "last_msg_id": 0,
+            **fields,
+            "updated_at": now,
+        }
+        insert_cols = list(insert_values.keys())
+        update_cols = [*fields.keys(), "updated_at"]
+        update_values = {**fields, "updated_at": now}
+
+        sql = (
+            f"INSERT INTO export_state ({', '.join(insert_cols)}) "
+            f"VALUES ({', '.join('?' * len(insert_cols))}) "
+            f"ON CONFLICT(chat_id) DO UPDATE SET "
+            f"{', '.join(f'{c}=?' for c in update_cols)}"
         )
+        params = [insert_values[c] for c in insert_cols] + [update_values[c] for c in update_cols]
+        await self.db.execute(sql, params)
         await self.commit()
+
+    async def set_last_msg_id(self, chat_id: int, msg_id: int):
+        await self._upsert_chat_state(chat_id, last_msg_id=msg_id)
 
     async def set_oldest_msg_id(self, chat_id: int, msg_id: int):
-        # Why UPSERT: set_oldest_msg_id may be called before set_last_msg_id
-        # for a freshly seen chat; without an INSERT branch the UPDATE is a no-op.
-        await self.db.execute(
-            """INSERT INTO export_state (chat_id, oldest_msg_id, updated_at)
-               VALUES (?, ?, ?)
-               ON CONFLICT(chat_id) DO UPDATE SET oldest_msg_id=?, updated_at=?""",
-            (chat_id, msg_id, datetime.now(), msg_id, datetime.now()),
-        )
-        await self.commit()
+        await self._upsert_chat_state(chat_id, oldest_msg_id=msg_id)
 
     async def set_full_history(self, chat_id: int, full: bool = True):
-        await self.db.execute(
-            """UPDATE export_state SET full_history=?, updated_at=?
-               WHERE chat_id=?""",
-            (int(full), datetime.now(), chat_id),
-        )
-        await self.commit()
+        await self._upsert_chat_state(chat_id, full_history=int(full))
 
     async def update_messages_count(self, chat_id: int, count: int):
-        await self.db.execute(
-            "UPDATE export_state SET messages_count=?, updated_at=? WHERE chat_id=?",
-            (count, datetime.now(), chat_id),
+        await self._upsert_chat_state(chat_id, messages_count=count)
+
+    async def commit_phase_progress(
+        self,
+        chat_id: int,
+        last_msg_id: int,
+        oldest_msg_id: int,
+        full_history: bool,
+        messages_count: int,
+    ):
+        """Атомарная запись прогресса фазы 2 одним UPSERT-ом.
+
+        Why: ранее фаза 2 делала 4 раздельных commit-а (last/oldest/full_history/
+        messages_count). Прерывание сети/процесса между ними оставляло
+        несогласованное состояние: например, oldest_msg_id записан, а last_msg_id
+        нет, и при следующем запуске чат начинался с нуля.
+        """
+        await self._upsert_chat_state(
+            chat_id,
+            last_msg_id=last_msg_id,
+            oldest_msg_id=oldest_msg_id,
+            full_history=int(full_history),
+            messages_count=messages_count,
         )
-        await self.commit()
 
     async def get_last_msg_id(self, chat_id: int) -> int | None:
         async with self.db.execute("SELECT last_msg_id FROM export_state WHERE chat_id=?", (chat_id,)) as cur:

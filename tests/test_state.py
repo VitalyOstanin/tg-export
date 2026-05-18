@@ -51,6 +51,74 @@ async def test_export_state_returns_none_for_unknown_chat(state):
 
 
 @pytest.mark.asyncio
+async def test_set_oldest_msg_id_creates_record_when_missing(state):
+    # Регрессия: ранее INSERT-ветка set_oldest_msg_id не указывала last_msg_id
+    # и падала с NOT NULL constraint failed: export_state.last_msg_id.
+    await state.set_oldest_msg_id(chat_id=999, msg_id=100)
+
+    chat_state = await state.get_chat_state(chat_id=999)
+    assert chat_state is not None
+    assert chat_state["oldest_msg_id"] == 100
+    assert chat_state["last_msg_id"] == 0
+
+
+@pytest.mark.asyncio
+async def test_set_full_history_creates_record_when_missing(state):
+    await state.set_full_history(chat_id=999)
+
+    chat_state = await state.get_chat_state(chat_id=999)
+    assert chat_state is not None
+    assert chat_state["full_history"] == 1
+    assert chat_state["last_msg_id"] == 0
+
+
+@pytest.mark.asyncio
+async def test_update_messages_count_creates_record_when_missing(state):
+    await state.update_messages_count(chat_id=999, count=42)
+
+    chat_state = await state.get_chat_state(chat_id=999)
+    assert chat_state is not None
+    assert chat_state["messages_count"] == 42
+    assert chat_state["last_msg_id"] == 0
+
+
+@pytest.mark.asyncio
+async def test_commit_phase_progress_creates_record(state):
+    await state.commit_phase_progress(
+        chat_id=999,
+        last_msg_id=500,
+        oldest_msg_id=100,
+        full_history=True,
+        messages_count=42,
+    )
+
+    chat_state = await state.get_chat_state(chat_id=999)
+    assert chat_state is not None
+    assert chat_state["last_msg_id"] == 500
+    assert chat_state["oldest_msg_id"] == 100
+    assert chat_state["full_history"] == 1
+    assert chat_state["messages_count"] == 42
+
+
+@pytest.mark.asyncio
+async def test_commit_phase_progress_updates_existing_record(state):
+    await state.set_last_msg_id(chat_id=999, msg_id=100)
+    await state.commit_phase_progress(
+        chat_id=999,
+        last_msg_id=500,
+        oldest_msg_id=50,
+        full_history=False,
+        messages_count=10,
+    )
+
+    chat_state = await state.get_chat_state(chat_id=999)
+    assert chat_state["last_msg_id"] == 500
+    assert chat_state["oldest_msg_id"] == 50
+    assert chat_state["full_history"] == 0
+    assert chat_state["messages_count"] == 10
+
+
+@pytest.mark.asyncio
 async def test_file_registration(state):
     await state.register_file(
         file_id=100,

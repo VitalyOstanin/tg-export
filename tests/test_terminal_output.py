@@ -59,6 +59,18 @@ def test_chat_error_line_escapes_markup_in_name_and_error():
     assert "[link]nasty[/link]" in plain
 
 
+def test_chat_error_line_includes_chat_id_when_provided():
+    # Why: при NOT NULL constraint failed (или иной БД-ошибке) нужно знать
+    # chat_id, чтобы вручную поправить запись в export_state.
+    from tg_export.exporter import chat_error_line
+
+    err = ValueError("boom")
+    line = chat_error_line("Alice", err, chat_id=12345)
+    plain = Text.from_markup(line).plain
+    assert "Alice" in plain
+    assert "12345" in plain
+
+
 def test_disk_space_error_line_escapes_markup():
     from tg_export.exporter import disk_space_error_line
 

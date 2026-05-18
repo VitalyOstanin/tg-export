@@ -70,9 +70,10 @@ def chat_progress_description(chat_name: str) -> str:
     return f"[cyan]{escape(chat_name)}[/]"
 
 
-def chat_error_line(chat_name: str, error: BaseException) -> str:
-    """Build the `Error exporting <chat>: <e>` line, escaping both."""
-    return f"Error exporting {escape(chat_name)}: {escape(str(error))}"
+def chat_error_line(chat_name: str, error: BaseException, chat_id: int | None = None) -> str:
+    """Build the `Error exporting <chat> (id=<id>): <e>` line, escaping both."""
+    suffix = f" (id={chat_id})" if chat_id is not None else ""
+    return f"Error exporting {escape(chat_name)}{suffix}: {escape(str(error))}"
 
 
 def disk_space_error_line(error: BaseException) -> str:
@@ -616,8 +617,8 @@ class Exporter:
                         console.print("[yellow]Force shutdown during export...[/]")
                         break
                     except Exception as e:
-                        console.print(chat_error_line(chat.name, e))
-                        stats.errors.append(f"{chat.name}: {e}")
+                        console.print(chat_error_line(chat.name, e, chat_id=chat.id))
+                        stats.errors.append(f"{chat.name} (id={chat.id}): {e}")
 
         except asyncio.CancelledError:
             self._force_shutdown = True
@@ -790,20 +791,31 @@ class Exporter:
                 await self.state.store_messages_batch(batch)
                 batch.clear()
 
-            if phase2_max_id > last_msg_id:
-                await self.state.set_last_msg_id(chat.id, phase2_max_id)
-                last_msg_id = phase2_max_id
-            if current_oldest > 0:
-                await self.state.set_oldest_msg_id(chat.id, current_oldest)
-
-            if not self._shutdown and (reached_date_from or iterator_exhausted):
-                await self.state.set_full_history(chat.id)
+            # Why atomic commit: ранее фаза 2 делала 4 раздельных commit-а
+            # (last/oldest/full_history/messages_count). Прерывание сети/процесса
+            # между ними оставляло несогласованное состояние — например,
+            # set_oldest_msg_id срабатывал на чате без записи и валил INSERT с
+            # NOT NULL constraint failed: export_state.last_msg_id.
+            new_last = max(last_msg_id, phase2_max_id)
+            new_oldest = current_oldest if current_oldest > 0 else oldest_msg_id
+            new_full = not self._shutdown and (reached_date_from or iterator_exhausted)
+            msg_count = await self.state.count_messages(chat.id)
+            await self.state.commit_phase_progress(
+                chat_id=chat.id,
+                last_msg_id=new_last,
+                oldest_msg_id=new_oldest,
+                full_history=new_full,
+                messages_count=msg_count,
+            )
+            last_msg_id = new_last
+            if new_full:
                 logger.debug("  %s: full history complete", chat.name)
-
-        # Update messages_count in export_state
-        msg_count = await self.state.count_messages(chat.id)
-        if msg_count > 0:
-            await self.state.update_messages_count(chat.id, msg_count)
+        else:
+            # Phase 2 пропущена (full_history уже True или shutdown). Всё равно
+            # обновим messages_count: батчи фазы 1 могли добавить новых сообщений.
+            msg_count = await self.state.count_messages(chat.id)
+            if msg_count > 0:
+                await self.state.update_messages_count(chat.id, msg_count)
 
         # Render HTML streaming month-by-month from SQLite to avoid loading
         # the full message list into memory.
