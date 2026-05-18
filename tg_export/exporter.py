@@ -832,7 +832,13 @@ class Exporter:
                 from tg_export.state import _load_messages_for_month_sync
 
                 load_month = lambda key: _load_messages_for_month_sync(db_path, chat_id, key)  # noqa: E731
-                self.renderer.render_chat_streaming(chat, month_keys, load_month, chat_dir)
+                # Why should_stop: render runs inside asyncio.to_thread; the
+                # worker thread cannot be cancelled by task.cancel, so without
+                # a checkpoint between months the default executor blocks
+                # asyncio shutdown until the entire chat is rendered.
+                self.renderer.render_chat_streaming(
+                    chat, month_keys, load_month, chat_dir, should_stop=lambda: self._shutdown
+                )
 
             await asyncio.to_thread(_render)
         else:

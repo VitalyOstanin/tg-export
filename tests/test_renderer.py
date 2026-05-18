@@ -170,6 +170,54 @@ def test_render_chat_monthly_split(renderer, tmp_path):
     assert 'title="2024-01-15 10:00:00"' in jan_html
 
 
+def test_render_chat_streaming_respects_should_stop(renderer, tmp_path):
+    # На force-shutdown рендерер должен прерваться между месяцами и не
+    # тянуть jinja2 для оставшихся buckets — иначе ThreadPoolExecutor не
+    # завершится и asyncio.run зависнет на shutdown_default_executor.
+    chat = Chat(
+        id=777,
+        name="Stoppable",
+        type=ChatType.personal,
+        username=None,
+        folder=None,
+        members_count=None,
+        last_message_date=None,
+        messages_count=3,
+        is_left=False,
+        is_archived=False,
+        is_forum=False,
+        migrated_to_id=None,
+        migrated_from_id=None,
+        is_monoforum=False,
+    )
+    month_keys = ["2024-01", "2024-02", "2024-03"]
+    msgs_by_month = {
+        "2024-01": [_make_msg(id=1, text="Jan", date=datetime(2024, 1, 15))],
+        "2024-02": [_make_msg(id=2, text="Feb", date=datetime(2024, 2, 15))],
+        "2024-03": [_make_msg(id=3, text="Mar", date=datetime(2024, 3, 15))],
+    }
+    calls = []
+
+    def load_month(key):
+        calls.append(key)
+        return msgs_by_month[key]
+
+    stop_after = 1  # рендерим только первый месяц
+
+    def should_stop():
+        return len(calls) >= stop_after
+
+    chat_dir = tmp_path / "output" / "unfiled" / "Stoppable_777"
+    renderer.render_chat_streaming(chat, month_keys, load_month, chat_dir, should_stop=should_stop)
+
+    # Первый месяц отрендерен.
+    assert (chat_dir / "messages_2024-01.html").exists()
+    # Второй и третий — нет: цикл прерван до load_month("2024-02").
+    assert not (chat_dir / "messages_2024-02.html").exists()
+    assert not (chat_dir / "messages_2024-03.html").exists()
+    assert calls == ["2024-01"]
+
+
 def test_render_chat_escapes_xss_in_chat_name(renderer, tmp_path):
     chat = Chat(
         id=999,

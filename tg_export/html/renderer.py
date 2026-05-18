@@ -310,6 +310,7 @@ class HtmlRenderer:
         month_keys: list[str],
         load_month: Callable[[str], list[Message]],
         chat_dir: Path,
+        should_stop: Callable[[], bool] | None = None,
     ):
         """Render chat month-by-month, loading each month on demand.
 
@@ -320,6 +321,13 @@ class HtmlRenderer:
         load_month(month_key) must return the message list for that month.
         Albums spanning month boundaries are not supported (Telegram albums are
         created within seconds, so this is a non-issue in practice).
+
+        should_stop: optional callable. Called before loading each month and
+        before rendering its page; if it returns True, rendering aborts (and
+        the redirect file is NOT written, to leave a clear partial-state signal
+        for next run). Why: render runs inside asyncio.to_thread, and the
+        worker thread cannot be cancelled by task.cancel — without a checkpoint
+        the executor blocks asyncio shutdown until the whole chat is rendered.
         """
         chat_dir.mkdir(parents=True, exist_ok=True)
 
@@ -332,7 +340,11 @@ class HtmlRenderer:
         rel = _relative_path(chat_dir, self.output_dir)
         template = self.env.get_template("chat.html.j2")
 
+        aborted = False
         for page_idx, pinfo in enumerate(pages_info):
+            if should_stop and should_stop():
+                aborted = True
+                break
             messages = load_month(pinfo["key"])
             for msg in messages:
                 _fix_media_path(msg, chat_dir)
@@ -348,7 +360,7 @@ class HtmlRenderer:
                 template=template,
             )
 
-        if pages_info:
+        if pages_info and not aborted:
             redirect_html = f'<!DOCTYPE html><html><head><meta http-equiv="refresh" content="0;url={pages_info[0]["filename"]}"></head></html>'
             (chat_dir / "messages.html").write_text(redirect_html, encoding="utf-8")
 

@@ -751,7 +751,7 @@ async def _run_export(account, config_override, output_override, verify, dry_run
         else:
             # Render index
             if not dry_run:
-                await _render_index(renderer, chats, cfg, state)
+                await _render_index(renderer, chats, cfg, state, should_stop=lambda: exporter._shutdown)
 
             # Summary
             from tg_export.exporter import _format_size
@@ -804,16 +804,28 @@ async def _run_export(account, config_override, output_override, verify, dry_run
             await state.close()
 
 
-async def _render_index(renderer, chats, cfg, state):
-    """Build and render the main index page."""
+async def _render_index(renderer, chats, cfg, state, should_stop=None):
+    """Build and render the main index page.
+
+    should_stop: optional callable. If returns True between chats or before
+    the final jinja render, abort early. Why: render_index runs synchronously
+    inside the event loop after the main export loop; without a checkpoint a
+    fresh SIGINT during this phase would still have to wait for the index
+    render to finish before asyncio.run() can exit.
+    """
     from collections import defaultdict
 
     from tg_export.exporter import sanitize_name
+
+    if should_stop and should_stop():
+        return
 
     folders = defaultdict(list)
     unfiled = []
 
     for chat in chats:
+        if should_stop and should_stop():
+            return
         chat_cfg = cfg.resolve_chat_config(chat.id, chat.name, chat.folder, chat.type.value)
         if chat_cfg is None:
             continue
@@ -893,10 +905,14 @@ async def _render_index(renderer, chats, cfg, state):
             }
         )
 
+    if should_stop and should_stop():
+        return
     renderer.render_index(folders_list=folders_list, unfiled=unfiled, sections=sections)
 
     # Render per-folder index pages
     for folder_info in folders_list:
+        if should_stop and should_stop():
+            return
         adjusted = []
         for entry in folder_info["chats"]:
             dir_name = entry["href"].split("/")[-2]  # Chat_123 from folders/Folder/Chat_123/messages.html
