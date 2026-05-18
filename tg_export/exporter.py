@@ -11,6 +11,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any, cast
 
 from rich.console import Console
 from rich.live import Live
@@ -914,7 +915,10 @@ class Exporter:
 
     async def _export_personal_info(self):
         """Fetch and render personal info."""
-        result = await self.api.get_personal_info()
+        # cast(Any): Telethon get_personal_info() возвращает Union без stubs,
+        # Pyright не разрешает атрибуты .full_user/.users. Доступ безопасен —
+        # дальше используем getattr с дефолтами.
+        result = cast(Any, await self.api.get_personal_info())
         full_user = result.full_user
         user = result.users[0] if result.users else None
 
@@ -966,7 +970,8 @@ class Exporter:
                 )
 
         frequent = []
-        top_result = await self.api.get_top_peers()
+        # cast(Any): аналогично _export_personal_info — Telethon API без stubs.
+        top_result = cast(Any, await self.api.get_top_peers())
         if top_result and hasattr(top_result, "categories"):
             for cat in top_result.categories:
                 for tp in cat.peers:
