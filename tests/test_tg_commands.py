@@ -161,3 +161,47 @@ class TestTgMessagesOutput:
         assert "[42]" in result.output
         assert "Alice" in result.output
         assert "hello" in result.output
+
+
+# ---------------------------------------------------------------------------
+# TgApi: proxy / python-socks guard
+# ---------------------------------------------------------------------------
+
+
+def test_tgapi_raises_when_proxy_set_but_python_socks_missing():
+    from tg_export.api import TgApi
+
+    proxy = ("socks5", "127.0.0.1", 1080, True, None, None)
+    with (
+        patch("tg_export.api.importlib.util.find_spec", return_value=None),
+        pytest.raises(RuntimeError, match="python-socks"),
+    ):
+        TgApi("/tmp/test.session", 1, "hash", proxy=proxy)
+
+
+def test_tgapi_passes_proxy_to_client_when_python_socks_available():
+    from tg_export.api import TgApi
+
+    proxy = ("socks5", "127.0.0.1", 1080, True, None, None)
+    with (
+        patch("tg_export.api.importlib.util.find_spec", return_value=object()),
+        patch("tg_export.api.FixedSQLiteSession"),
+        patch("tg_export.api.TelegramClient") as mock_client,
+    ):
+        TgApi("/tmp/test.session", 1, "hash", proxy=proxy)
+
+    assert mock_client.call_args.kwargs["proxy"] == proxy
+
+
+def test_tgapi_no_proxy_does_not_check_python_socks():
+    from tg_export.api import TgApi
+
+    with (
+        patch("tg_export.api.importlib.util.find_spec", return_value=None) as mock_find,
+        patch("tg_export.api.FixedSQLiteSession"),
+        patch("tg_export.api.TelegramClient") as mock_client,
+    ):
+        TgApi("/tmp/test.session", 1, "hash", proxy=None)
+
+    mock_find.assert_not_called()
+    assert "proxy" not in mock_client.call_args.kwargs

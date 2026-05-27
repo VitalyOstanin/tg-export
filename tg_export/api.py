@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import logging
 from pathlib import Path
 
@@ -27,6 +28,16 @@ class TgApi:
     def __init__(self, session_path: str | Path, api_id: int, api_hash: str, proxy: tuple | None = None):
         kwargs = {}
         if proxy:
+            # Telethon silently ignores `proxy=` when python-socks is missing
+            # (only warns), connecting directly and leaking the real IP. Fail
+            # fast instead so a configured proxy is never bypassed unnoticed.
+            if importlib.util.find_spec("python_socks") is None:
+                raise RuntimeError(
+                    "Proxy is configured, but the 'python-socks' package is not "
+                    "installed. Telethon would ignore the proxy and connect "
+                    "directly, exposing the real IP. Install the proxy extra: "
+                    "pip install 'tg-export[proxy]' (or uv pip install 'tg-export[proxy]')."
+                )
             kwargs["proxy"] = proxy
         session = FixedSQLiteSession(str(session_path))
         self.client = TelegramClient(session, api_id, api_hash, **kwargs)
