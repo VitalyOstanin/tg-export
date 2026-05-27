@@ -205,3 +205,20 @@ def test_tgapi_no_proxy_does_not_check_python_socks():
 
     mock_find.assert_not_called()
     assert "proxy" not in mock_client.call_args.kwargs
+
+
+# ---------------------------------------------------------------------------
+# CLI: --version
+# ---------------------------------------------------------------------------
+
+
+def test_cli_version_option():
+    from importlib.metadata import version
+
+    from click.testing import CliRunner
+
+    from tg_export.cli import main
+
+    result = CliRunner().invoke(main, ["--version"])
+    assert result.exit_code == 0
+    assert version("tg-export") in result.output

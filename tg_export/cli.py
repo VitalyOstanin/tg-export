@@ -19,6 +19,7 @@ def _mgr() -> AccountManager:
 
 
 @click.group()
+@click.version_option(package_name="tg-export", prog_name="tg-export")
 @click.option("--debug", is_flag=True, default=False, help="Enable debug logging")
 @click.pass_context
 def main(ctx, debug):
