@@ -52,6 +52,15 @@ filterwarnings = [
 ]
 timeout = 60
 
+[tool.coverage.run]
+source = ["tg_export"]
+
+[tool.coverage.report]
+# Защита от регрессии покрытия. Порог ниже текущего фактического (~48%),
+# чтобы фиксировать нижнюю границу, не блокируя CI при колебаниях.
+# Проверяется при запуске с --cov (см. ci.yml).
+fail_under = 45
+
 [tool.ruff]
 target-version = "py311"
 line-length = 110
@@ -81,4 +90,4 @@ reportOptionalMemberAccess = "warning"
 include = ["tg_export*"]
 
 [project.scripts]
-tg-export = "tg_export.cli:main"
+tg-export = "tg_export.cli:run_cli"

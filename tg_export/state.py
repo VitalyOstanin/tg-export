@@ -14,6 +14,8 @@ from typing import Any
 
 import aiosqlite
 
+from tg_export.errors import TgExportError
+
 try:
     import fcntl as _fcntl
 except ImportError:  # pragma: no cover - Windows
@@ -142,6 +144,21 @@ def _buttons_from_json(s: str | None) -> list[list[InlineButton]] | None:
     ]
 
 
+def _month_range(month_key: str) -> tuple[str, str]:
+    """Return [start, end) ISO date bounds for a "YYYY-MM" key.
+
+    Why: filtering by ``date >= start AND date < end`` lets SQLite use the
+    idx_messages_date index, unlike ``strftime('%Y-%m', date) = ?`` which wraps
+    the indexed column in a function and forces a full scan. Stored dates are
+    ISO-8601 strings, so lexicographic comparison matches chronological order.
+    """
+    year = int(month_key[:4])
+    month = int(month_key[5:7])
+    start = f"{year:04d}-{month:02d}-01"
+    end = f"{year + 1:04d}-01-01" if month == 12 else f"{year:04d}-{month + 1:02d}-01"
+    return start, end
+
+
 def _row_to_message(row: dict) -> Message:
     """Reconstruct Message from database row."""
     return Message(
@@ -184,9 +201,10 @@ def _load_messages_for_month_sync(db_path: Path, chat_id: int, month_key: str) -
                 (chat_id,),
             )
         else:
+            start, end = _month_range(month_key)
             cur = db.execute(
-                "SELECT * FROM messages WHERE chat_id=? AND strftime('%Y-%m', date) = ? ORDER BY msg_id",
-                (chat_id, month_key),
+                "SELECT * FROM messages WHERE chat_id=? AND date >= ? AND date < ? ORDER BY msg_id",
+                (chat_id, start, end),
             )
         rows = cur.fetchall()
         return [_row_to_message(dict(r)) for r in rows]
@@ -194,7 +212,7 @@ def _load_messages_for_month_sync(db_path: Path, chat_id: int, month_key: str) -
         db.close()
 
 
-class StateLockError(RuntimeError):
+class StateLockError(TgExportError, RuntimeError):
     """Raised when another process already holds the state DB lock."""
 
 
@@ -394,19 +412,19 @@ class ExportState:
             row = await cur.fetchone()
             return dict(row) if row else None
 
-    # Whitelist колонок для _upsert_chat_state. Защита от случайной передачи
-    # неизвестного ключа через **fields и от SQL-инъекций через имя колонки.
+    # Column whitelist for _upsert_chat_state. Guards against an unknown key
+    # passed via **fields and against SQL injection through a column name.
     _UPSERT_COLS = frozenset({"last_msg_id", "oldest_msg_id", "full_history", "messages_count"})
 
     async def _upsert_chat_state(self, chat_id: int, **fields):
-        """UPSERT по export_state.
+        """UPSERT into export_state.
 
-        Why: исторически у нас было 4 отдельных сеттера. У set_oldest_msg_id
-        INSERT-ветка не указывала last_msg_id (NOT NULL) и падала с
-        IntegrityError при создании новой записи. set_full_history и
-        update_messages_count были UPDATE-only и тихо терялись для чата без
-        записи. Этот хелпер всегда корректно создаёт строку, заполняя
-        отсутствующие NOT NULL колонки нулями.
+        Why: there used to be 4 separate setters. set_oldest_msg_id's INSERT
+        branch did not set last_msg_id (NOT NULL) and failed with IntegrityError
+        when creating a new row. set_full_history and update_messages_count were
+        UPDATE-only and silently lost for a chat without a row. This helper
+        always creates the row correctly, filling missing NOT NULL columns with
+        zeros.
         """
         unknown = set(fields) - self._UPSERT_COLS
         if unknown:
@@ -415,7 +433,7 @@ class ExportState:
             raise ValueError("commit_phase_progress requires at least one field")
 
         now = datetime.now()
-        # INSERT-ветка должна задать значения для всех NOT NULL колонок.
+        # The INSERT branch must provide values for all NOT NULL columns.
         insert_values = {
             "chat_id": chat_id,
             "last_msg_id": 0,
@@ -456,12 +474,12 @@ class ExportState:
         full_history: bool,
         messages_count: int,
     ):
-        """Атомарная запись прогресса фазы 2 одним UPSERT-ом.
+        """Atomically write phase-2 progress in a single UPSERT.
 
-        Why: ранее фаза 2 делала 4 раздельных commit-а (last/oldest/full_history/
-        messages_count). Прерывание сети/процесса между ними оставляло
-        несогласованное состояние: например, oldest_msg_id записан, а last_msg_id
-        нет, и при следующем запуске чат начинался с нуля.
+        Why: phase 2 used to do 4 separate commits (last/oldest/full_history/
+        messages_count). A network/process interruption between them left an
+        inconsistent state: e.g. oldest_msg_id written but last_msg_id not, so
+        the next run restarted the chat from scratch.
         """
         await self._upsert_chat_state(
             chat_id,
@@ -634,8 +652,9 @@ class ExportState:
             sql = "SELECT * FROM messages WHERE chat_id=? AND date IS NULL ORDER BY msg_id"
             params: tuple = (chat_id,)
         else:
-            sql = "SELECT * FROM messages WHERE chat_id=? AND strftime('%Y-%m', date) = ? ORDER BY msg_id"
-            params = (chat_id, month_key)
+            start, end = _month_range(month_key)
+            sql = "SELECT * FROM messages WHERE chat_id=? AND date >= ? AND date < ? ORDER BY msg_id"
+            params = (chat_id, start, end)
         async with self.db.execute(sql, params) as cur:
             rows = await cur.fetchall()
             return [_row_to_message(dict(r)) for r in rows]
@@ -690,15 +709,28 @@ class ExportState:
         }
 
     async def purge_chat(self, chat_id: int) -> dict[str, int]:
-        """Delete all data for a chat. Returns counts of deleted rows."""
-        counts = {}
-        for table in ("messages", "files", "export_state", "catalog_cache"):
-            async with self.db.execute(f"SELECT COUNT(*) FROM {table} WHERE chat_id=?", (chat_id,)) as cur:
-                row = await cur.fetchone()
-                counts[table] = row[0] if row else 0
-            await self.db.execute(f"DELETE FROM {table} WHERE chat_id=?", (chat_id,))
-        await self.commit()
-        return counts
+        """Delete all data for a chat. Returns counts of deleted rows.
+
+        Why shield: the deletes across four tables plus the final commit form
+        one logical transaction. Without shield, a cancellation (e.g. SIGINT)
+        between two DELETEs could leave some tables purged and others not,
+        producing partially-consistent chat data. shield runs the whole block
+        to completion even if the surrounding task is cancelled.
+        """
+
+        async def _purge() -> dict[str, int]:
+            counts = {}
+            for table in ("messages", "files", "export_state", "catalog_cache"):
+                async with self.db.execute(
+                    f"SELECT COUNT(*) FROM {table} WHERE chat_id=?", (chat_id,)
+                ) as cur:
+                    row = await cur.fetchone()
+                    counts[table] = row[0] if row else 0
+                await self.db.execute(f"DELETE FROM {table} WHERE chat_id=?", (chat_id,))
+            await self.db.commit()
+            return counts
+
+        return await asyncio.shield(_purge())
 
     async def find_chat_by_name(self, name: str) -> list[dict]:
         """Search chats in catalog_cache by name (case-insensitive substring)."""

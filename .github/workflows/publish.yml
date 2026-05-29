@@ -26,8 +26,25 @@ jobs:
       - name: Set up Python
         run: uv python install 3.12
 
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Run tests
+        # Гейт перед публикацией: релиз делается из тега, ci.yml на тег не
+        # триггерится, поэтому тесты прогоняются здесь на том же commit.
+        run: uv run python -m pytest
+
       - name: Build package
         run: uv build
+
+      - name: Smoke test built wheel
+        # Установить собранный wheel в изолированное эфемерное окружение и
+        # убедиться, что точка входа запускается, до публикации на PyPI.
+        run: |
+          set -euo pipefail
+          WHEEL=$(ls dist/*.whl)
+          uv run --no-project --with "$WHEEL" tg-export --version
+          uv run --no-project --with "$WHEEL" tg-export --help
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # v1.14.0

@@ -2,14 +2,20 @@ import asyncio
 import contextlib
 import logging
 from pathlib import Path
+from typing import Any
 
 import aiosqlite
 import click
 import yaml
 
 from tg_export.auth import AccountManager
+from tg_export.errors import TgExportError
 
 logger = logging.getLogger(__name__)
+
+# Set by main() from the global --debug flag; used by run_cli() to decide
+# whether to show a full traceback or a short message for domain errors.
+_DEBUG = False
 
 
 def _mgr() -> AccountManager:
@@ -18,28 +24,89 @@ def _mgr() -> AccountManager:
     return mgr
 
 
+# Set by main() from the global --quiet flag. When True, non-essential status
+# and progress messages are suppressed; errors and final summaries still print.
+_QUIET = False
+
+
+def _diag(message: str, *, essential: bool = False, **kwargs) -> None:
+    """Print a diagnostic / status / error message to stderr.
+
+    stdout is reserved for machine-readable output of query commands
+    (list / state show / tg info / tg messages), so everything that is not
+    that data -- progress, confirmations, error notices -- goes to stderr.
+
+    Under --quiet only ``essential`` messages (errors, final summaries) are
+    printed; routine status/progress lines are suppressed.
+    """
+    if _QUIET and not essential:
+        return
+    click.echo(message, err=True, **kwargs)
+
+
+_LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
+
+
+def _resolve_log_level(debug: bool, log_level: str | None) -> int:
+    """Resolve the effective log level.
+
+    Priority (highest first): --debug flag, --log-level flag, LOG_LEVEL env var,
+    default WARNING. --debug always wins so it stays a quick "show me everything"
+    switch regardless of the environment.
+    """
+    import os
+
+    if debug:
+        return logging.DEBUG
+    raw = log_level or os.environ.get("LOG_LEVEL")
+    if not raw:
+        return logging.WARNING
+    name = raw.strip().upper()
+    if name not in _LOG_LEVELS:
+        raise click.BadParameter(
+            f"unknown log level {raw!r}; expected one of {', '.join(_LOG_LEVELS)}",
+            param_hint="--log-level",
+        )
+    return getattr(logging, name)
+
+
 @click.group()
 @click.version_option(package_name="tg-export", prog_name="tg-export")
-@click.option("--debug", is_flag=True, default=False, help="Enable debug logging")
+@click.option("--debug", is_flag=True, default=False, help="Enable debug logging (forces DEBUG level)")
+@click.option(
+    "--log-level",
+    default=None,
+    help="Log level (DEBUG/INFO/WARNING/ERROR/CRITICAL). Overrides the LOG_LEVEL env var; --debug overrides this.",
+)
+@click.option(
+    "--quiet",
+    "-q",
+    is_flag=True,
+    default=False,
+    help="Suppress progress and status output (errors and the final summary are still shown).",
+)
 @click.pass_context
-def main(ctx, debug):
+def main(ctx, debug, log_level, quiet):
     """tg-export: Flexible Telegram data export tool."""
-    import logging
-
     from rich.logging import RichHandler
 
-    level = logging.DEBUG if debug else logging.WARNING
     from tg_export.exporter import console as export_console
+
+    level = _resolve_log_level(debug, log_level)
 
     logging.basicConfig(
         level=level,
         format="%(name)s %(message)s",
         handlers=[RichHandler(console=export_console, rich_tracebacks=True, show_path=debug)],
     )
-    if not debug:
+    if level > logging.DEBUG:
         logging.getLogger("aiosqlite").setLevel(logging.ERROR)
+    global _QUIET, _DEBUG
+    _QUIET = quiet
+    _DEBUG = debug
     ctx.ensure_object(dict)
     ctx.obj["debug"] = debug
+    ctx.obj["quiet"] = quiet
 
 
 @main.group()
@@ -55,7 +122,7 @@ def auth_credentials(api_id, api_hash):
     """Set Telegram API credentials (api_id and api_hash)."""
     mgr = _mgr()
     mgr.save_credentials(api_id=api_id, api_hash=api_hash)
-    click.echo("Credentials saved.")
+    _diag("Credentials saved.")
 
 
 @auth.command("add")
@@ -65,33 +132,42 @@ def auth_add(name):
     mgr = _mgr()
     cred_path = mgr.config_dir / "api_credentials.yaml"
     if not cred_path.exists():
-        click.echo("No API credentials found. Run 'tg-export auth credentials' first.")
+        _diag("No API credentials found. Run 'tg-export auth credentials' first.")
         raise click.exceptions.Exit(1)
     asyncio.run(mgr.add_account(name))
-    click.echo(f"Account '{name}' added successfully.")
+    _diag(f"Account '{name}' added successfully.")
 
 
 @auth.command("check")
 @click.argument("name", required=False, default=None)
-def auth_check(name):
+@click.option("--json", "as_json", is_flag=True, help="Output as machine-readable JSON")
+def auth_check(name, as_json):
     """Check if account sessions are valid."""
-    asyncio.run(_auth_check(name))
+    asyncio.run(_auth_check(name, as_json))
 
 
-async def _auth_check(name):
+async def _auth_check(name, as_json=False):
+    import json
+
     from tg_export.api import TgApi
 
     mgr = _mgr()
     accounts = [name] if name else mgr.list_accounts()
     if not accounts:
-        click.echo("No accounts configured.")
+        if as_json:
+            click.echo(json.dumps([], ensure_ascii=False, indent=2))
+        else:
+            _diag("No accounts configured.")
         return
 
     api_id, api_hash = mgr.load_credentials()
+    results = []
     for acc in accounts:
         session = mgr.session_path(acc)
         if not session.exists():
-            click.echo(f"  {acc}: session file missing")
+            results.append({"account": acc, "status": "session_missing"})
+            if not as_json:
+                _diag(f"  {acc}: session file missing")
             continue
         proxy = mgr.load_proxy()
         api = TgApi(session, api_id, api_hash, proxy=proxy)
@@ -101,14 +177,30 @@ async def _auth_check(name):
                 me = await api.client.get_me()
                 first = getattr(me, "first_name", "")
                 last = getattr(me, "last_name", None) or ""
-                me_id = getattr(me, "id", "?")
-                click.echo(f"  {acc}: OK - {first} {last} (id={me_id})")
+                me_id = getattr(me, "id", None)
+                results.append(
+                    {
+                        "account": acc,
+                        "status": "ok",
+                        "name": f"{first} {last}".strip(),
+                        "id": me_id,
+                    }
+                )
+                if not as_json:
+                    _diag(f"  {acc}: OK - {first} {last} (id={me_id})")
             else:
-                click.echo(f"  {acc}: not authorized")
+                results.append({"account": acc, "status": "not_authorized"})
+                if not as_json:
+                    _diag(f"  {acc}: not authorized")
         except Exception as e:
-            click.echo(f"  {acc}: error - {e}")
+            results.append({"account": acc, "status": "error", "error": str(e)})
+            if not as_json:
+                _diag(f"  {acc}: error - {e}")
         finally:
             await api.disconnect()
+
+    if as_json:
+        click.echo(json.dumps(results, ensure_ascii=False, indent=2))
 
 
 @main.group()
@@ -118,13 +210,20 @@ def account():
 
 
 @account.command("list")
-def account_list():
+@click.option("--json", "as_json", is_flag=True, help="Output as machine-readable JSON")
+def account_list(as_json):
     """List configured accounts."""
     mgr = _mgr()
     accounts = mgr.list_accounts()
     default = mgr.get_default_account()
+    if as_json:
+        import json
+
+        payload = [{"name": acc, "default": acc == default} for acc in accounts]
+        click.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        return
     if not accounts:
-        click.echo("No accounts configured.")
+        _diag("No accounts configured.")
         return
     for acc in accounts:
         marker = " (default)" if acc == default else ""
@@ -138,10 +237,10 @@ def account_default(name):
     mgr = _mgr()
     if name:
         if name not in mgr.list_accounts():
-            click.echo(f"Account '{name}' not found.")
+            _diag(f"Account '{name}' not found.")
             raise click.exceptions.Exit(1)
         mgr.set_default_account(name)
-        click.echo(f"Default account set to '{name}'.")
+        _diag(f"Default account set to '{name}'.")
     else:
         default = mgr.get_default_account()
         if default:
@@ -156,10 +255,10 @@ def account_remove(name):
     """Remove a Telegram account."""
     mgr = _mgr()
     if name not in mgr.list_accounts():
-        click.echo(f"Account '{name}' not found.")
+        _diag(f"Account '{name}' not found.")
         return
     mgr.remove_account(name)
-    click.echo(f"Account '{name}' removed.")
+    _diag(f"Account '{name}' removed.")
 
 
 @main.command("config")
@@ -177,13 +276,12 @@ def show_config(verbose):
         data = mgr.load_global_config()
         proxy = data.get("proxy")
         if proxy:
-            p = proxy
             auth_str = ""
-            if p.get("username"):
-                auth_str = f" auth={p['username']}:***"
+            if proxy.get("username"):
+                auth_str = f" auth={proxy['username']}:***"
             click.echo(
-                f"  proxy: {p.get('type', 'socks5')}://{p.get('host')}:{p.get('port')}"
-                f" rdns={p.get('rdns', True)}{auth_str}"
+                f"  proxy: {proxy.get('type', 'socks5')}://{proxy.get('host')}:{proxy.get('port')}"
+                f" rdns={proxy.get('rdns', True)}{auth_str}"
             )
         else:
             click.echo("  proxy: none")
@@ -329,15 +427,15 @@ async def _takeout_clear(name):
     try:
         session = api.client.session
         if session is None:
-            click.echo(f"  {account}: no session available")
+            _diag(f"  {account}: no session available")
             return
         old_id = session.takeout_id
         if old_id is None:
-            click.echo(f"  {account}: no active takeout session")
+            _diag(f"  {account}: no active takeout session")
             return
         session.takeout_id = None
         session.save()
-        click.echo(f"  {account}: takeout session cleared (was id={old_id})")
+        _diag(f"  {account}: takeout session cleared (was id={old_id})")
     finally:
         await api.disconnect()
 
@@ -442,7 +540,7 @@ async def _tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_fi
             ids.append(entry["id"])
 
     if not ids:
-        click.echo("No chat IDs specified. Use arguments or --from-catalog --type.")
+        _diag("No chat IDs specified. Use arguments or --from-catalog --type.")
         return
 
     mgr = _mgr()
@@ -460,7 +558,7 @@ async def _tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_fi
                 entity = await api.client.get_entity(cid)
                 title = getattr(entity, "title", None) or _entity_name(entity)
                 limit = max(last_n, 1)
-                result = await api.client(
+                result: Any = await api.client(
                     GetHistoryRequest(
                         peer=entity,  # pyright: ignore[reportArgumentType]
                         offset_id=0,
@@ -505,7 +603,7 @@ async def _tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_fi
                 if not output_file:
                     click.echo(f"[{idx}/{total}] {title} (id={cid}): {count} msgs, last: {last_date}")
                 elif idx % 50 == 0:
-                    click.echo(f"  [{idx}/{total}]...")
+                    _diag(f"  [{idx}/{total}]...")
 
             except Exception as e:
                 entry = {"id": cid, "error": str(e), "messages": 0}
@@ -516,7 +614,7 @@ async def _tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_fi
         if output_file:
             with open(output_file, "w") as f:
                 json.dump(results, f, ensure_ascii=False, indent=2)
-            click.echo(f"Saved {len(results)} entries to {output_file}")
+            _diag(f"Saved {len(results)} entries to {output_file}")
     finally:
         await api.disconnect()
 
@@ -548,7 +646,7 @@ async def _list_chats(account, output, fmt, include_left):
 
         if output:
             Path(output).write_text(result, encoding="utf-8")
-            click.echo(f"Catalog saved to {output}")
+            _diag(f"Catalog saved to {output}")
         else:
             click.echo(result)
     finally:
@@ -577,7 +675,7 @@ async def _init_config(account, from_catalog, output):
         with open(from_catalog) as f:
             yaml.safe_load(f)
         # Simple passthrough — generate template
-        click.echo(f"Generating config from catalog: {from_catalog}")
+        _diag(f"Generating config from catalog: {from_catalog}")
     else:
         # Fetch from API
         from tg_export.api import TgApi
@@ -591,12 +689,12 @@ async def _init_config(account, from_catalog, output):
             chats = await fetch_catalog(api)
             template = generate_config_template(chats, account=account)
             config_path.write_text(template, encoding="utf-8")
-            click.echo(f"Config template saved to {config_path}")
+            _diag(f"Config template saved to {config_path}")
         finally:
             await api.disconnect()
         return
 
-    click.echo(f"Config saved to {config_path}")
+    _diag(f"Config saved to {config_path}")
 
 
 def _get_dir_size(path: Path) -> int | None:
@@ -627,12 +725,16 @@ def _get_dir_size(path: Path) -> int | None:
 @click.option("--output", type=click.Path(), help="Override output directory")
 @click.option("--verify", is_flag=True, help="Verify file integrity after export")
 @click.option("--dry-run", is_flag=True, help="Show what would be exported")
-def run_export(account, config, output, verify, dry_run):
+@click.pass_context
+def run_export(ctx, account, config, output, verify, dry_run):
     """Run export according to config. Config resolved by account name convention."""
-    asyncio.run(_run_export(account, config, output, verify, dry_run))
+    quiet = bool(ctx.obj and ctx.obj.get("quiet"))
+    exit_code = asyncio.run(_run_export(account, config, output, verify, dry_run, quiet=quiet))
+    if exit_code:
+        raise click.exceptions.Exit(exit_code)
 
 
-async def _run_export(account, config_override, output_override, verify, dry_run):
+async def _run_export(account, config_override, output_override, verify, dry_run, quiet=False):
     from tg_export.api import TgApi
     from tg_export.catalog import fetch_catalog
     from tg_export.config import load_config
@@ -645,14 +747,14 @@ async def _run_export(account, config_override, output_override, verify, dry_run
     account = mgr.resolve_account(account)
     config_path = mgr.resolve_config(account, config_override)
     if not config_path.exists():
-        click.echo(f"Config not found: {config_path}")
-        click.echo(f"Create it with: tg-export init --account {account}")
+        _diag(f"Config not found: {config_path}", essential=True)
+        _diag(f"Create it with: tg-export init --account {account}", essential=True)
         raise click.exceptions.Exit(1)
 
     cfg = load_config(config_path)
     output_base = Path(output_override) if output_override else Path(cfg.output.path)
-    click.echo(f"Account: {account}")
-    click.echo(f"Output: {output_base.resolve()}")
+    _diag(f"Account: {account}")
+    _diag(f"Output: {output_base.resolve()}")
 
     # Ensure output dir exists (needed for state DB)
     output_base.mkdir(parents=True, exist_ok=True)
@@ -668,6 +770,7 @@ async def _run_export(account, config_override, output_override, verify, dry_run
     api = TgApi(mgr.session_path(account), api_id, api_hash, proxy=proxy)
     await api.connect()
 
+    exporter = None
     try:
         # Start takeout if possible
         from telethon.errors import TakeoutInitDelayError
@@ -682,17 +785,17 @@ async def _run_export(account, config_override, output_override, verify, dry_run
                 files=True,
                 max_file_size=cfg.defaults.media.max_file_size_bytes,
             )
-            click.echo("Takeout session started.")
+            _diag("Takeout session started.")
         except TakeoutInitDelayError as e:
             hours = e.seconds // 3600
             minutes = (e.seconds % 3600) // 60
-            click.echo(
+            _diag(
                 f"Takeout cooldown: need to wait {hours}h {minutes}m "
                 f"({e.seconds}s). Approve takeout in your Telegram client "
                 f"to skip the wait. Using regular API for now."
             )
         except Exception as e:
-            click.echo(f"Takeout not available: {e}. Using regular API.")
+            _diag(f"Takeout not available: {e}. Using regular API.")
 
         # Setup renderer
         renderer = HtmlRenderer(output_dir=output_base, config=cfg.output)
@@ -704,7 +807,7 @@ async def _run_export(account, config_override, output_override, verify, dry_run
         tdesktop_indexes = build_tdesktop_indexes(cfg.import_existing)
         if tdesktop_indexes:
             for idx in tdesktop_indexes:
-                click.echo(f"tdesktop import: {idx.export_path}")
+                _diag(f"tdesktop import: {idx.export_path}")
 
         # Auto-discover sibling account state DBs for file deduplication
         import logging
@@ -720,7 +823,7 @@ async def _run_export(account, config_override, output_override, verify, dry_run
                 logger.debug("sibling state DB: %s", sdb)
         if sibling_dbs:
             names = [s.parent.name for s in sibling_dbs]
-            click.echo(f"Sibling exports for file dedup: {', '.join(names)}")
+            _diag(f"Sibling exports for file dedup: {', '.join(names)}")
 
         # Setup downloader
         min_free = mgr.load_min_free_space() or 20 * 1024**3  # default 20GB
@@ -744,57 +847,61 @@ async def _run_export(account, config_override, output_override, verify, dry_run
             renderer=renderer,
             downloader=downloader,
             account=account,
+            quiet=quiet,
         )
         stats = await exporter.run(dry_run=dry_run, verify=verify, chat_list=chats)
 
         if exporter._force_shutdown:
-            click.echo("\nForce shutdown — state saved.")
+            _diag("\nForce shutdown — state saved.", essential=True)
         else:
             # Render index
             if not dry_run:
                 await _render_index(renderer, chats, cfg, state, should_stop=lambda: exporter._shutdown)
 
-            # Summary
+            # Summary (the final report -> stderr, marked essential so --quiet keeps it;
+            # the export artifacts themselves are the files written to disk)
             from tg_export.exporter import _format_size
 
-            click.echo("\nExport complete:")
-            click.echo(
-                f"  Chats: {stats.chats_exported}/{stats.chats_included} (skipped {stats.chats_skipped})"
+            _diag("\nExport complete:", essential=True)
+            _diag(
+                f"  Chats: {stats.chats_exported}/{stats.chats_included} (skipped {stats.chats_skipped})",
+                essential=True,
             )
-            click.echo(f"  Messages: {stats.messages_exported}")
-            click.echo(f"  Files downloaded: {stats.files_downloaded}")
+            _diag(f"  Messages: {stats.messages_exported}", essential=True)
+            _diag(f"  Files downloaded: {stats.files_downloaded}", essential=True)
             if stats.files_existing:
-                click.echo(f"  Files existing: {stats.files_existing}")
+                _diag(f"  Files existing: {stats.files_existing}", essential=True)
             if stats.files_reused_chat:
-                click.echo(f"  Reused from chat: {stats.files_reused_chat}")
+                _diag(f"  Reused from chat: {stats.files_reused_chat}", essential=True)
             if stats.files_reused_tdesktop:
-                click.echo(f"  Reused from tdesktop: {stats.files_reused_tdesktop}")
+                _diag(f"  Reused from tdesktop: {stats.files_reused_tdesktop}", essential=True)
             if stats.files_reused_sibling:
-                click.echo(f"  Reused from sibling: {stats.files_reused_sibling}")
+                _diag(f"  Reused from sibling: {stats.files_reused_sibling}", essential=True)
             if stats.files_skipped_by_size:
-                click.echo(f"  Skipped by size: {stats.files_skipped_by_size}")
+                _diag(f"  Skipped by size: {stats.files_skipped_by_size}", essential=True)
             if stats.files_skipped_by_type:
-                click.echo(f"  Skipped by type: {stats.files_skipped_by_type}")
+                _diag(f"  Skipped by type: {stats.files_skipped_by_type}", essential=True)
             if stats.data_size:
-                click.echo(f"  Downloaded: {_format_size(stats.data_size)}")
+                _diag(f"  Downloaded: {_format_size(stats.data_size)}", essential=True)
             # File counts from DB
             file_counts = await state.count_files()
-            click.echo(
-                f"  Files: {file_counts['files_downloaded']}/{file_counts['expected_files']} (media messages: {file_counts['media_messages']})"
+            _diag(
+                f"  Files: {file_counts['files_downloaded']}/{file_counts['expected_files']} (media messages: {file_counts['media_messages']})",
+                essential=True,
             )
             # DB size
             db_size = state.db_path.stat().st_size if state.db_path.exists() else 0
-            click.echo(f"  DB size: {_format_size(db_size)}")
+            _diag(f"  DB size: {_format_size(db_size)}", essential=True)
             # Total export size on disk (excluding DB).
             # Why to_thread: du can take seconds on a large export; don't block the loop.
             total_disk = await asyncio.to_thread(_get_dir_size, output_base)
             if total_disk is not None:
-                click.echo(f"  Export size on disk: {_format_size(total_disk)}")
+                _diag(f"  Export size on disk: {_format_size(total_disk)}", essential=True)
             if stats.errors:
-                click.echo(f"  Errors: {len(stats.errors)}")
+                _diag(f"  Errors: {len(stats.errors)}", essential=True)
 
     except asyncio.CancelledError:
-        click.echo("\nForce shutdown — saving state...")
+        _diag("\nForce shutdown — saving state...", essential=True)
     finally:
         if api.takeout:
             with contextlib.suppress(Exception, asyncio.CancelledError):
@@ -803,6 +910,11 @@ async def _run_export(account, config_override, output_override, verify, dry_run
             await api.disconnect()
         with contextlib.suppress(Exception, asyncio.CancelledError):
             await state.close()
+
+    # Map a signal-induced shutdown to a conventional exit code: 130 for SIGINT,
+    # 143 for SIGTERM (128 + signal number). A normal finish returns 0.
+    signum = exporter._shutdown_signal if exporter else None
+    return 128 + signum if signum else 0
 
 
 async def _render_index(renderer, chats, cfg, state, should_stop=None):
@@ -845,11 +957,16 @@ async def _render_index(renderer, chats, cfg, state, should_stop=None):
                 logger.debug("_render_index: count_messages failed for %s: %s", chat.id, e)
 
         dir_name = f"{sanitize_name(chat.name)}_{chat.id}"
+        # Why sanitize_name(folder): the on-disk folder directory is created via
+        # sanitize_name (see resolve_chat_dir / render_folder_index). Using the
+        # raw folder name here would produce a href to a non-existent path (404)
+        # when the folder name contains spaces, cyrillic specials or /\:*?"<>|.
+        folder_prefix = f"folders/{sanitize_name(chat.folder)}/" if chat.folder else "unfiled/"
         entry = {
             "name": chat.name,
             "type": chat.type.value,
             "messages": msg_count,
-            "href": f"{'folders/' + chat.folder + '/' if chat.folder else 'unfiled/'}{dir_name}/messages.html",
+            "href": f"{folder_prefix}{dir_name}/messages.html",
         }
         if chat.folder:
             folders[chat.folder].append(entry)
@@ -943,7 +1060,7 @@ def _open_state(account, config_override, output_override):
     account = mgr.resolve_account(account)
     config_path = mgr.resolve_config(account, config_override)
     if not config_path.exists():
-        click.echo(f"Config not found: {config_path}")
+        _diag(f"Config not found: {config_path}")
         raise click.exceptions.Exit(1)
 
     cfg = load_config(config_path)
@@ -951,7 +1068,7 @@ def _open_state(account, config_override, output_override):
     state_path = output_base / ".tg-export-state.db"
 
     if not state_path.exists():
-        click.echo("No state database found.")
+        _diag("No state database found.")
         raise click.exceptions.Exit(1)
 
     return ExportState(state_path), output_base, account
@@ -961,22 +1078,39 @@ def _open_state(account, config_override, output_override):
 @click.option("--account", default=None, help="Account alias")
 @click.option("--config", type=click.Path(exists=True), default=None)
 @click.option("--output", type=click.Path(), default=None)
+@click.option("--json", "as_json", is_flag=True, help="Output as machine-readable JSON")
 @click.argument("chat_id", type=int, required=False)
-def state_show(account, config, output, chat_id):
+def state_show(account, config, output, as_json, chat_id):
     """Show export state for all chats or a specific chat."""
-    asyncio.run(_state_show(account, config, output, chat_id))
+    asyncio.run(_state_show(account, config, output, chat_id, as_json))
 
 
-async def _state_show(account, config_override, output_override, chat_id):
+async def _state_show(account, config_override, output_override, chat_id, as_json=False):
+    import json
+
     st, _, account = _open_state(account, config_override, output_override)
     await st.open()
     try:
         if chat_id:
             chat_state = await st.get_chat_state(chat_id)
             if not chat_state:
-                click.echo(f"No state for chat {chat_id}")
+                if as_json:
+                    click.echo(json.dumps(None))
+                else:
+                    _diag(f"No state for chat {chat_id}")
                 return
             msg_count = await st.count_messages(chat_id)
+            if as_json:
+                payload = {
+                    "chat_id": chat_id,
+                    "last_msg_id": chat_state["last_msg_id"],
+                    "oldest_msg_id": chat_state["oldest_msg_id"],
+                    "full_history": bool(chat_state["full_history"]),
+                    "messages_in_db": msg_count,
+                    "updated_at": chat_state["updated_at"],
+                }
+                click.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+                return
             click.echo(f"Chat {chat_id}:")
             click.echo(f"  last_msg_id:   {chat_state['last_msg_id']}")
             click.echo(f"  oldest_msg_id: {chat_state['oldest_msg_id']}")
@@ -989,8 +1123,22 @@ async def _state_show(account, config_override, output_override, chat_id):
                 "FROM export_state es ORDER BY es.updated_at DESC"
             ) as cur:
                 rows = await cur.fetchall()
+            if as_json:
+                payload = [
+                    {
+                        "chat_id": d["chat_id"],
+                        "messages": d["msg_count"],
+                        "last_msg_id": d["last_msg_id"],
+                        "oldest_msg_id": d["oldest_msg_id"],
+                        "full_history": bool(d["full_history"]),
+                        "updated_at": d["updated_at"],
+                    }
+                    for d in (dict(r) for r in rows)
+                ]
+                click.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+                return
             if not rows:
-                click.echo("No export state records.")
+                _diag("No export state records.")
                 return
             click.echo(
                 f"{'chat_id':>15}  {'msgs':>6}  {'last_id':>8}  {'oldest_id':>9}  {'full':>4}  updated_at"
@@ -1016,7 +1164,7 @@ async def _state_show(account, config_override, output_override, chat_id):
 def state_reset(account, config, output, reset_all, delete_messages, chat_id):
     """Reset export state to force re-download. Specify chat_id or --all."""
     if not chat_id and not reset_all:
-        click.echo("Specify chat_id or --all")
+        _diag("Specify chat_id or --all")
         raise click.exceptions.Exit(1)
     asyncio.run(_state_reset(account, config, output, reset_all, delete_messages, chat_id))
 
@@ -1031,11 +1179,11 @@ async def _state_reset(account, config_override, output_override, reset_all, del
                 await st.db.execute("DELETE FROM messages")
                 await st.db.execute("DELETE FROM files")
             await st.db.commit()
-            click.echo("Reset all chats.")
+            _diag("Reset all chats.")
         else:
             chat_state = await st.get_chat_state(chat_id)
             if not chat_state:
-                click.echo(f"No state for chat {chat_id}")
+                _diag(f"No state for chat {chat_id}")
                 return
             await st.db.execute(
                 "UPDATE export_state SET last_msg_id=0, oldest_msg_id=0, full_history=0 WHERE chat_id=?",
@@ -1048,7 +1196,7 @@ async def _state_reset(account, config_override, output_override, reset_all, del
             msg = f"Reset chat {chat_id}."
             if delete_messages:
                 msg += " Messages and files records deleted."
-            click.echo(msg)
+            _diag(msg)
     finally:
         await st.close()
 
@@ -1077,7 +1225,7 @@ async def _purge_chat(chat_arg, account, config_override, output_override, skip_
     account = mgr.resolve_account(account)
     config_path = mgr.resolve_config(account, config_override)
     if not config_path.exists():
-        click.echo(f"Config not found: {config_path}")
+        _diag(f"Config not found: {config_path}")
         raise click.exceptions.Exit(1)
 
     cfg = load_config(config_path)
@@ -1085,7 +1233,7 @@ async def _purge_chat(chat_arg, account, config_override, output_override, skip_
     state_path = output_base / ".tg-export-state.db"
 
     if not state_path.exists():
-        click.echo("No state database found.")
+        _diag("No state database found.")
         raise click.exceptions.Exit(1)
 
     state = ExportState(state_path)
@@ -1100,13 +1248,13 @@ async def _purge_chat(chat_arg, account, config_override, output_override, skip_
         except ValueError:
             matches = await state.find_chat_by_name(chat_arg)
             if not matches:
-                click.echo(f"No chats found matching '{chat_arg}'")
+                _diag(f"No chats found matching '{chat_arg}'")
                 raise click.exceptions.Exit(1) from None
             if len(matches) > 1:
-                click.echo(f"Multiple chats match '{chat_arg}':")
+                _diag(f"Multiple chats match '{chat_arg}':")
                 for m in matches:
-                    click.echo(f"  {m['chat_id']}  {m['name']}  ({m['type']})")
-                click.echo("Specify exact chat ID.")
+                    _diag(f"  {m['chat_id']}  {m['name']}  ({m['type']})")
+                _diag("Specify exact chat ID.")
                 raise click.exceptions.Exit(1) from None
             chat_id = matches[0]["chat_id"]
             chat_name = matches[0]["name"]
@@ -1143,19 +1291,19 @@ async def _purge_chat(chat_arg, account, config_override, output_override, skip_
         chat_dirs: list[Path] = []
         for d in candidate_dirs:
             if d.is_symlink():
-                click.echo(f"  SKIP (symlink): {d}")
+                _diag(f"  SKIP (symlink): {d}")
                 continue
             try:
                 d_resolved = d.resolve()
             except OSError:
                 continue
             if not d_resolved.is_relative_to(output_resolved):
-                click.echo(f"  SKIP (outside output): {d}")
+                _diag(f"  SKIP (outside output): {d}")
                 continue
             chat_dirs.append(d)
 
-        click.echo(f"Chat: {chat_name} (id={chat_id})")
-        click.echo(
+        _diag(f"Chat: {chat_name} (id={chat_id})")
+        _diag(
             f"  DB: messages={counts['messages']}, files={counts['files']}, "
             f"export_state={counts['export_state']}, catalog_cache={counts['catalog_cache']}"
         )
@@ -1164,24 +1312,24 @@ async def _purge_chat(chat_arg, account, config_override, output_override, skip_
                 size = sum(f.stat().st_size for f in d.rglob("*") if f.is_file())
                 from tg_export.exporter import _format_size
 
-                click.echo(f"  Dir: {d} ({_format_size(size)})")
+                _diag(f"  Dir: {d} ({_format_size(size)})")
         else:
-            click.echo("  Dir: not found")
+            _diag("  Dir: not found")
 
         if not skip_confirm and not click.confirm("Delete all data for this chat?"):
-            click.echo("Cancelled.")
+            _diag("Cancelled.")
             return
 
         # Purge from DB
         deleted = await state.purge_chat(chat_id)
-        click.echo(f"  Deleted from DB: {deleted}")
+        _diag(f"  Deleted from DB: {deleted}")
 
         # Remove directory
         for d in chat_dirs:
             shutil.rmtree(d)
-            click.echo(f"  Removed: {d}")
+            _diag(f"  Removed: {d}")
 
-        click.echo("Done.")
+        _diag("Done.")
 
     finally:
         await state.close()
@@ -1204,7 +1352,7 @@ async def _verify_files(account, config_override, output_override):
     account = mgr.resolve_account(account)
     config_path = mgr.resolve_config(account, config_override)
     if not config_path.exists():
-        click.echo(f"Config not found: {config_path}")
+        _diag(f"Config not found: {config_path}")
         raise click.exceptions.Exit(1)
 
     cfg = load_config(config_path)
@@ -1212,7 +1360,7 @@ async def _verify_files(account, config_override, output_override):
     state_path = output_base / ".tg-export-state.db"
 
     if not state_path.exists():
-        click.echo("No state database found. Nothing to verify.")
+        _diag("No state database found. Nothing to verify.")
         return
 
     state = ExportState(state_path)
@@ -1221,12 +1369,12 @@ async def _verify_files(account, config_override, output_override):
     try:
         broken = await state.get_files_to_verify()
         if not broken:
-            click.echo("All files OK.")
+            _diag("All files OK.")
             return
 
-        click.echo(f"Found {len(broken)} files with issues:")
+        _diag(f"Found {len(broken)} files with issues:")
         for f in broken:
-            click.echo(
+            _diag(
                 f"  {f['local_path']} - status: {f['status']}, "
                 f"expected: {f['expected_size']}, actual: {f['actual_size']}"
             )
@@ -1253,7 +1401,7 @@ async def _verify_files(account, config_override, output_override):
                         else (tl_messages[0] if tl_messages else None)
                     )
                     if tl_msg is None or tl_msg.media is None:
-                        click.echo(f"  [skip] msg {msg_id}: not found or no media")
+                        _diag(f"  [skip] msg {msg_id}: not found or no media")
                         continue
 
                     if local_path.exists():
@@ -1275,13 +1423,13 @@ async def _verify_files(account, config_override, output_override):
                         )
                         await state.commit()
                         redownloaded += 1
-                        click.echo(f"  [ok] {path}")
+                        _diag(f"  [ok] {path}")
                     else:
-                        click.echo(f"  [fail] {local_path}")
+                        _diag(f"  [fail] {local_path}")
                 except Exception as e:
-                    click.echo(f"  [error] {local_path}: {e}")
+                    _diag(f"  [error] {local_path}: {e}")
 
-            click.echo(f"\nRe-downloaded: {redownloaded}/{len(broken)}")
+            _diag(f"\nRe-downloaded: {redownloaded}/{len(broken)}")
         finally:
             await api.disconnect()
     finally:
@@ -1331,7 +1479,7 @@ def tg_send(account, files, text, recipients):
     recipients, including those who already received the message.
     """
     if not text and not files:
-        click.echo("Error: specify --text and/or --file")
+        _diag("Error: specify --text and/or --file")
         raise click.exceptions.Exit(1)
 
     parsed = []
@@ -1370,14 +1518,14 @@ async def _tg_send(account_name, recipients, text, files):
                 elif text:
                     await api.client.send_message(recipient, text)
 
-                click.echo(f"  sent to {recipient}")
+                _diag(f"  sent to {recipient}")
                 sent_count += 1
             except Exception as e:
-                click.echo(f"  error sending to {recipient}: {e}")
+                _diag(f"  error sending to {recipient}: {e}")
                 failed.append((recipient, str(e)))
 
         if failed:
-            click.echo(
+            _diag(
                 f"\nDelivered to {sent_count}/{total} recipients. "
                 f"{len(failed)} failed. Re-running this command will resend "
                 f"to ALL {total} recipients (no idempotency)."
@@ -1456,7 +1604,7 @@ async def _tg_download(account_name, chat_id, msg_id, output_dir):
         if isinstance(tl_msg, list):
             tl_msg = tl_msg[0] if tl_msg else None
         if tl_msg is None:
-            click.echo(f"Message {msg_id} not found in chat {chat_id}")
+            _diag(f"Message {msg_id} not found in chat {chat_id}")
             return
 
         # Save text
@@ -1464,14 +1612,14 @@ async def _tg_download(account_name, chat_id, msg_id, output_dir):
         if msg_text:
             text_file = out / f"{msg_id}.txt"
             text_file.write_text(msg_text, encoding="utf-8")
-            click.echo(f"  text: {text_file}")
+            _diag(f"  text: {text_file}")
 
         # Download media (skip if file already exists)
         downloaded = {f for f in out.iterdir() if f.is_file()}
         if tl_msg.media:
             path = await _download_if_new(api.client, tl_msg, out, downloaded)
             if path:
-                click.echo(f"  media: {path}")
+                _diag(f"  media: {path}")
 
         # Check for grouped_id (album) — download all parts
         if tl_msg.grouped_id:
@@ -1488,12 +1636,29 @@ async def _tg_download(account_name, chat_id, msg_id, output_dir):
                 ):
                     path = await _download_if_new(api.client, grouped_msg, out, downloaded)
                     if path:
-                        click.echo(f"  album media: {path}")
+                        _diag(f"  album media: {path}")
                         count += 1
             if count:
-                click.echo(f"  ({count} additional album files)")
+                _diag(f"  ({count} additional album files)")
 
         if not msg_text and not tl_msg.media:
-            click.echo("  (empty message, no text or media)")
+            _diag("  (empty message, no text or media)")
     finally:
         await api.disconnect()
+
+
+def run_cli() -> None:
+    """Console-script entry point.
+
+    Wraps the Click app so that tg-export domain errors (TgExportError and its
+    subclasses) are reported as a short message on stderr with exit code 1,
+    instead of dumping a stack trace. The full traceback is shown only when
+    --debug is passed.
+    """
+    try:
+        main.main(standalone_mode=True)
+    except TgExportError as e:
+        if _DEBUG:
+            raise
+        click.echo(f"Error: {e}", err=True)
+        raise SystemExit(1) from e

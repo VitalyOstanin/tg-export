@@ -43,9 +43,7 @@ uv run python -m pytest -v
 
 ## Линтер и type-check
 
-(Подключение `ruff` и `pyright` запланировано в текущем цикле -- см. [CHANGELOG.md](CHANGELOG.md) Unreleased).
-
-Когда они подключены:
+Перед отправкой PR обязательно прогнать линтер, форматтер и проверку типов -- эти же шаги выполняются в CI:
 
 ```bash
 uv run ruff check .

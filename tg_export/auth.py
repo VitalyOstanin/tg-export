@@ -10,10 +10,12 @@ from pathlib import Path
 import click
 import yaml
 
+from tg_export.errors import TgExportError
+
 logger = logging.getLogger(__name__)
 
 
-class CredentialsError(ValueError):
+class CredentialsError(TgExportError, ValueError):
     """Raised when api_credentials.yaml is missing required fields or has bad types."""
 
 
@@ -167,7 +169,7 @@ class AccountManager:
         api_id, api_hash = self.load_credentials()
         session_path = str(self.session_path(name))
 
-        # Удаляем старую сессию если есть (может быть битая)
+        # Remove the old session if present (it may be corrupted)
         old = self.session_path(name)
         if old.exists():
             old.unlink()

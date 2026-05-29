@@ -10,8 +10,10 @@ from typing import Any
 
 import yaml
 
+from tg_export.errors import TgExportError
 
-class ConfigError(Exception):
+
+class ConfigError(TgExportError):
     pass
 
 
@@ -175,32 +177,21 @@ class Config:
             if chat_type and self.type_rules:
                 type_rule = self._match_type_rule(chat_type)
                 if type_rule is not None:
-                    return self._type_rule_to_export_config(type_rule)
+                    return self._rule_to_export_config(type_rule)
 
-            media = folder_rule.media if folder_rule.media is not None else self.defaults.media
-            return ChatExportConfig(
-                media=media,
-                date_from=self.defaults.date_from,
-                date_to=self.defaults.date_to,
-                export_service_messages=self.defaults.export_service_messages,
-            )
+            return self._defaults_export_config(folder_rule.media)
 
         # Priority 4: type_rules
         if chat_type and self.type_rules:
             type_rule = self._match_type_rule(chat_type)
             if type_rule is not None:
-                return self._type_rule_to_export_config(type_rule)
+                return self._rule_to_export_config(type_rule)
 
         # Priority 5: defaults (if unmatched allows it)
         if self.unmatched_action == "skip":
             return None
 
-        return ChatExportConfig(
-            media=self.defaults.media,
-            date_from=self.defaults.date_from,
-            date_to=self.defaults.date_to,
-            export_service_messages=self.defaults.export_service_messages,
-        )
+        return self._defaults_export_config()
 
     def _match_type_rule(self, chat_type: str) -> TypeRule | None:
         """Find matching type rule. Exact type > category, first match wins."""
@@ -213,18 +204,17 @@ class Config:
                 return rule
         return None
 
-    def _rule_to_export_config(self, rule: ChatRule) -> ChatExportConfig | None:
-        if rule.skip:
-            return None
-        media = rule.media if rule.media is not None else self.defaults.media
+    def _defaults_export_config(self, media: MediaConfig | None = None) -> ChatExportConfig:
+        """Build a ChatExportConfig from defaults, optionally overriding media."""
         return ChatExportConfig(
-            media=media,
-            date_from=rule.date_from or self.defaults.date_from,
-            date_to=rule.date_to or self.defaults.date_to,
+            media=media if media is not None else self.defaults.media,
+            date_from=self.defaults.date_from,
+            date_to=self.defaults.date_to,
             export_service_messages=self.defaults.export_service_messages,
         )
 
-    def _type_rule_to_export_config(self, rule: TypeRule) -> ChatExportConfig | None:
+    def _rule_to_export_config(self, rule: ChatRule | TypeRule) -> ChatExportConfig | None:
+        """Build export config for a ChatRule or TypeRule (shared fields)."""
         if rule.skip:
             return None
         media = rule.media if rule.media is not None else self.defaults.media
@@ -298,6 +288,43 @@ def _parse_folder_rule(d: dict) -> FolderRule:
 # Main loader
 # ---------------------------------------------------------------------------
 
+# Allowed values for enumerated config fields. Validated at load time so a
+# typo in YAML (e.g. `action: skipp`) fails fast instead of silently changing
+# behaviour at runtime (where comparisons are against exact literals).
+_LEFT_CHANNELS_ACTIONS = {"skip", "export_with_defaults"}
+_ARCHIVED_ACTIONS = {"skip", "export_with_defaults"}
+_UNMATCHED_ACTIONS = {"skip", "export_with_defaults", "ask"}
+_OUTPUT_FORMATS = {"html", "json", "both"}
+
+# Known top-level config keys. An unknown key is most likely a typo in a
+# section name (e.g. `default` instead of `defaults`); without this check such
+# data is silently ignored and defaults are applied.
+_KNOWN_TOP_LEVEL_KEYS = {
+    "output",
+    "defaults",
+    "personal_info",
+    "contacts",
+    "sessions",
+    "userpics",
+    "stories",
+    "profile_music",
+    "other_data",
+    "left_channels",
+    "archived",
+    "unmatched",
+    "import_existing",
+    "folders",
+    "type_rules",
+    "chats",
+}
+
+
+def _validate_choice(value: str, allowed: set[str], field_name: str) -> str:
+    if value not in allowed:
+        allowed_str = ", ".join(sorted(allowed))
+        raise ConfigError(f"Invalid value {value!r} for {field_name}; allowed values: {allowed_str}")
+    return value
+
 
 def load_config(path: Path) -> Config:
     """Load and validate YAML config file."""
@@ -307,11 +334,17 @@ def load_config(path: Path) -> Config:
     if not isinstance(raw, dict):
         raise ConfigError(f"Config must be a YAML mapping, got {type(raw).__name__}")
 
+    unknown_keys = set(raw) - _KNOWN_TOP_LEVEL_KEYS
+    if unknown_keys:
+        unknown_str = ", ".join(sorted(unknown_keys))
+        known_str = ", ".join(sorted(_KNOWN_TOP_LEVEL_KEYS))
+        raise ConfigError(f"Unknown config key(s): {unknown_str}. Known keys: {known_str}")
+
     # Output
     out_raw = raw.get("output", {})
     output = OutputConfig(
         path=out_raw.get("path", "./export_output"),
-        format=out_raw.get("format", "html"),
+        format=_validate_choice(out_raw.get("format", "html"), _OUTPUT_FORMATS, "output.format"),
     )
 
     # Defaults
@@ -350,14 +383,19 @@ def load_config(path: Path) -> Config:
     # Left channels
     lc_raw = raw.get("left_channels", {})
     left_channels_action = lc_raw.get("action", "skip") if isinstance(lc_raw, dict) else "skip"
+    left_channels_action = _validate_choice(
+        left_channels_action, _LEFT_CHANNELS_ACTIONS, "left_channels.action"
+    )
 
     # Archived
     ar_raw = raw.get("archived", {})
     archived_action = ar_raw.get("action", "skip") if isinstance(ar_raw, dict) else "skip"
+    archived_action = _validate_choice(archived_action, _ARCHIVED_ACTIONS, "archived.action")
 
     # Unmatched
     um_raw = raw.get("unmatched", {})
     unmatched_action = um_raw.get("action", "skip") if isinstance(um_raw, dict) else "skip"
+    unmatched_action = _validate_choice(unmatched_action, _UNMATCHED_ACTIONS, "unmatched.action")
 
     return Config(
         output=output,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import logging
 import re
 import signal
@@ -32,6 +33,7 @@ from rich.text import Text
 from tg_export.api import TgApi
 from tg_export.config import ChatExportConfig, Config
 from tg_export.converter import convert_message
+from tg_export.format import format_size
 from tg_export.html.renderer import HtmlRenderer
 from tg_export.media import DiskSpaceError, MediaDownloader
 from tg_export.models import Chat, ForumTopic, Message
@@ -39,7 +41,10 @@ from tg_export.state import ExportState
 
 logger = logging.getLogger(__name__)
 
-console = Console()
+# Progress, status tables, per-chat lines and diagnostic output go to stderr so
+# that stdout stays reserved for machine-readable output of query commands
+# (list / state show / tg info / tg messages). See cli.py for the stdout side.
+console = Console(stderr=True)
 
 
 def _log(msg: str):
@@ -87,15 +92,9 @@ def file_progress_description(filename: str) -> str:
     return escape(filename)
 
 
-def _format_size(size_bytes: int) -> str:
-    """Format bytes as human-readable size."""
-    if size_bytes < 1024:
-        return f"{size_bytes} B"
-    if size_bytes < 1024**2:
-        return f"{size_bytes / 1024:.1f} KB"
-    if size_bytes < 1024**3:
-        return f"{size_bytes / 1024**2:.1f} MB"
-    return f"{size_bytes / 1024**3:.2f} GB"
+# Re-exported for backward compatibility; the implementation lives in
+# tg_export.format so the renderer can share the same formatting.
+_format_size = format_size
 
 
 def _format_speed(bytes_count: int, elapsed_s: float) -> str:
@@ -315,6 +314,7 @@ class Exporter:
         renderer: HtmlRenderer,
         downloader: MediaDownloader,
         account: str,
+        quiet: bool = False,
     ):
         self.api = api
         self.state = state
@@ -322,10 +322,36 @@ class Exporter:
         self.renderer = renderer
         self.downloader = downloader
         self.account = account
+        # When True, progress (Live display) and routine status lines are
+        # suppressed; errors and shutdown notices are still printed.
+        self.quiet = quiet
         self._shutdown = False
         self._force_shutdown = False
         self._first_signal_time: float = 0
         self._use_live: bool = False
+        # Signal number that triggered shutdown (SIGINT / SIGTERM), or None.
+        # The CLI maps it to exit code 128 + signum (130 for SIGINT, 143 for SIGTERM).
+        self._shutdown_signal: int | None = None
+
+    def _status_print(self, *args, **kwargs) -> None:
+        """Print a non-essential status line unless running in quiet mode."""
+        if self.quiet:
+            return
+        console.print(*args, **kwargs)
+
+    def _snapshot_active_downloads(self) -> dict:
+        """Read a consistent copy of the downloader's active downloads.
+
+        Prefers the downloader's thread-safe snapshot method; falls back to a
+        plain copy when it is unavailable (e.g. a test double).
+        """
+        snapshot = getattr(self.downloader, "snapshot_active_downloads", None)
+        if callable(snapshot):
+            try:
+                return dict(cast(Any, snapshot()))
+            except (TypeError, RuntimeError):
+                pass
+        return dict(self.downloader.active_downloads)
 
     def _build_status_table(
         self,
@@ -340,8 +366,8 @@ class Exporter:
         """Build the live status table.
 
         Called from the Live refresh thread; reads ``active_downloads`` via a
-        snapshot to avoid ``RuntimeError: dictionary changed size during iteration``
-        when the event loop mutates it concurrently.
+        lock-protected snapshot to avoid ``RuntimeError: dictionary changed size
+        during iteration`` when the event loop mutates it concurrently.
         """
         completed = stats.messages_in_db + stats.chat_messages_new
         if stats.messages_total > 0:
@@ -349,7 +375,7 @@ class Exporter:
         else:
             progress.update(main_task, completed=completed, total=None)
 
-        active = dict(self.downloader.active_downloads)
+        active = self._snapshot_active_downloads()
         for msg_id in list(file_tasks):
             if msg_id not in active:
                 file_progress.remove_task(file_tasks.pop(msg_id))
@@ -392,8 +418,8 @@ class Exporter:
         stats = ExportStats()
 
         loop = asyncio.get_event_loop()
-        loop.add_signal_handler(signal.SIGINT, self._handle_shutdown)
-        loop.add_signal_handler(signal.SIGTERM, self._handle_shutdown)
+        loop.add_signal_handler(signal.SIGINT, functools.partial(self._handle_shutdown, signal.SIGINT))
+        loop.add_signal_handler(signal.SIGTERM, functools.partial(self._handle_shutdown, signal.SIGTERM))
 
         if chat_list is None:
             return stats
@@ -427,15 +453,15 @@ class Exporter:
         start_time = time.monotonic()
         start_dt = datetime.now()
         mode_str = "[bold yellow]DRY-RUN[/]" if dry_run else "[bold green]EXPORT[/]"
-        console.print(
+        self._status_print(
             f"\n{mode_str}: {stats.chats_included} chats to export, "
             f"{stats.chats_skipped} skipped (total {stats.chats_total})"
         )
         if self.config.defaults.date_from or self.config.defaults.date_to:
             df = self.config.defaults.date_from or "..."
             dt = self.config.defaults.date_to or "..."
-            console.print(f"[dim]date range: {df} — {dt}[/]")
-        console.print(f"[dim]started at {start_dt.strftime('%H:%M:%S')}[/]\n")
+            self._status_print(f"[dim]date range: {df} — {dt}[/]")
+        self._status_print(f"[dim]started at {start_dt.strftime('%H:%M:%S')}[/]\n")
 
         progress = Progress(
             SpinnerColumn(),
@@ -516,7 +542,8 @@ class Exporter:
                 line2=_status_line2(),
             )
 
-        use_live = console.is_terminal
+        # Quiet mode disables the Live progress display; non-TTY also disables it.
+        use_live = console.is_terminal and not self.quiet
         self._use_live = use_live
 
         live_cm: contextlib.AbstractContextManager[object] = (
@@ -538,7 +565,7 @@ class Exporter:
                         break
 
                     if dry_run:
-                        console.print(
+                        self._status_print(
                             chat_export_line(
                                 chat_name=chat.name,
                                 chat_type=chat.type.value,
@@ -604,9 +631,13 @@ class Exporter:
                         for idx in self.downloader.tdesktop_indexes:
                             idx.unload_chat_index()
 
-                        # Log progress periodically for non-TTY
+                        # Log progress periodically for non-TTY (suppressed in quiet mode)
                         now = time.monotonic()
-                        if not use_live and (now - last_log_time >= 10 or stats.chats_exported % 10 == 0):
+                        if (
+                            not use_live
+                            and not self.quiet
+                            and (now - last_log_time >= 10 or stats.chats_exported % 10 == 0)
+                        ):
                             _log(Text.from_markup(_status_lines()).plain)
                             last_log_time = now
 
@@ -627,10 +658,10 @@ class Exporter:
         # Export global data (personal info, contacts, sessions, etc.)
         if not dry_run and not self._force_shutdown and not self._shutdown:
             try:
-                console.print("\n[cyan]Exporting global data...[/]")
+                self._status_print("\n[cyan]Exporting global data...[/]")
                 await self.export_global_data()
             except Exception as e:
-                logger.warning("Failed to export global data: %s", e)
+                logger.warning("Failed to export global data: %s", e, exc_info=True)
 
         if verify and not self._force_shutdown:
             await self._verify_files(stats)
@@ -752,6 +783,12 @@ class Exporter:
             phase2_max_id = last_msg_id
             p2_kwargs = dict(iter_kwargs)  # includes offset_date if set
             if oldest_msg_id > 0:
+                # Telethon uses offset_id when both offset_id and offset_date are
+                # given (offset_date only applies when offset_id == 0). Passing
+                # both is redundant and confusing; drop offset_date here. The
+                # date_from/date_to bounds are still enforced per-message via
+                # _before_date_from below.
+                p2_kwargs.pop("offset_date", None)
                 p2_kwargs["offset_id"] = oldest_msg_id
             elif last_msg_id > 0:
                 # Continue from where phase 1 left off (but not first run)
@@ -792,11 +829,11 @@ class Exporter:
                 await self.state.store_messages_batch(batch)
                 batch.clear()
 
-            # Why atomic commit: ранее фаза 2 делала 4 раздельных commit-а
-            # (last/oldest/full_history/messages_count). Прерывание сети/процесса
-            # между ними оставляло несогласованное состояние — например,
-            # set_oldest_msg_id срабатывал на чате без записи и валил INSERT с
-            # NOT NULL constraint failed: export_state.last_msg_id.
+            # Why atomic commit: phase 2 used to issue 4 separate commits
+            # (last/oldest/full_history/messages_count). A network/process
+            # interruption between them left inconsistent state -- e.g.
+            # set_oldest_msg_id firing on a chat with no row and failing the
+            # INSERT with NOT NULL constraint failed: export_state.last_msg_id.
             new_last = max(last_msg_id, phase2_max_id)
             new_oldest = current_oldest if current_oldest > 0 else oldest_msg_id
             new_full = not self._shutdown and (reached_date_from or iterator_exhausted)
@@ -812,8 +849,8 @@ class Exporter:
             if new_full:
                 logger.debug("  %s: full history complete", chat.name)
         else:
-            # Phase 2 пропущена (full_history уже True или shutdown). Всё равно
-            # обновим messages_count: батчи фазы 1 могли добавить новых сообщений.
+            # Phase 2 skipped (full_history already True or shutdown). Still
+            # refresh messages_count: phase 1 batches may have added new messages.
             msg_count = await self.state.count_messages(chat.id)
             if msg_count > 0:
                 await self.state.update_messages_count(chat.id, msg_count)
@@ -887,43 +924,43 @@ class Exporter:
             try:
                 await self._export_personal_info()
             except Exception as e:
-                logger.warning("Failed to export personal info: %s", e)
+                logger.warning("Failed to export personal info: %s", e, exc_info=True)
 
         if self.config.contacts:
             try:
                 await self._export_contacts()
             except Exception as e:
-                logger.warning("Failed to export contacts: %s", e)
+                logger.warning("Failed to export contacts: %s", e, exc_info=True)
 
         if self.config.sessions:
             try:
                 await self._export_sessions()
             except Exception as e:
-                logger.warning("Failed to export sessions: %s", e)
+                logger.warning("Failed to export sessions: %s", e, exc_info=True)
 
         if self.config.userpics:
             try:
                 await self._export_userpics()
             except Exception as e:
-                logger.warning("Failed to export userpics: %s", e)
+                logger.warning("Failed to export userpics: %s", e, exc_info=True)
 
         if self.config.stories:
             try:
                 await self._export_stories()
             except Exception as e:
-                logger.warning("Failed to export stories: %s", e)
+                logger.warning("Failed to export stories: %s", e, exc_info=True)
 
         if self.config.other_data or self.config.profile_music:
             try:
                 await self._export_other_data()
             except Exception as e:
-                logger.warning("Failed to export other data: %s", e)
+                logger.warning("Failed to export other data: %s", e, exc_info=True)
 
     async def _export_personal_info(self):
         """Fetch and render personal info."""
-        # cast(Any): Telethon get_personal_info() возвращает Union без stubs,
-        # Pyright не разрешает атрибуты .full_user/.users. Доступ безопасен —
-        # дальше используем getattr с дефолтами.
+        # cast(Any): Telethon get_personal_info() returns a Union without stubs,
+        # so Pyright rejects the .full_user/.users attributes. Access is safe --
+        # below we use getattr with defaults.
         result = cast(Any, await self.api.get_personal_info())
         full_user = result.full_user
         user = result.users[0] if result.users else None
@@ -939,8 +976,8 @@ class Exporter:
                 )
                 if path:
                     photo_path = f"profile_photos/{Path(path).name}"
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Failed to download profile photo: %s", e)
 
         user_data = {
             "first_name": getattr(user, "first_name", "") or "",
@@ -953,7 +990,7 @@ class Exporter:
             "photo_path": photo_path,
         }
         self.renderer.render_personal_info(user_data)
-        console.print("  [green]exported[/]: personal info")
+        self._status_print("  [green]exported[/]: personal info")
 
     async def _export_contacts(self):
         """Fetch and render contacts list."""
@@ -976,18 +1013,18 @@ class Exporter:
                 )
 
         frequent = []
-        # cast(Any): аналогично _export_personal_info — Telethon API без stubs.
+        # cast(Any): same as _export_personal_info -- Telethon API without stubs.
         top_result = cast(Any, await self.api.get_top_peers())
         if top_result and hasattr(top_result, "categories"):
             for cat in top_result.categories:
-                for tp in cat.peers:
+                for top_peer in cat.peers:
                     peer_id = None
-                    if hasattr(tp.peer, "user_id"):
-                        peer_id = tp.peer.user_id
-                    elif hasattr(tp.peer, "chat_id"):
-                        peer_id = tp.peer.chat_id
-                    elif hasattr(tp.peer, "channel_id"):
-                        peer_id = tp.peer.channel_id
+                    if hasattr(top_peer.peer, "user_id"):
+                        peer_id = top_peer.peer.user_id
+                    elif hasattr(top_peer.peer, "chat_id"):
+                        peer_id = top_peer.peer.chat_id
+                    elif hasattr(top_peer.peer, "channel_id"):
+                        peer_id = top_peer.peer.channel_id
                     user = users_by_id.get(peer_id)
                     name = ""
                     if user:
@@ -995,12 +1032,12 @@ class Exporter:
                     frequent.append(
                         {
                             "name": name or str(peer_id),
-                            "rating": f"{tp.rating:.2f}",
+                            "rating": f"{top_peer.rating:.2f}",
                         }
                     )
 
         self.renderer.render_contacts(contacts, frequent)
-        console.print(f"  [green]exported[/]: {len(contacts)} contacts, {len(frequent)} frequent")
+        self._status_print(f"  [green]exported[/]: {len(contacts)} contacts, {len(frequent)} frequent")
 
     async def _export_sessions(self):
         """Fetch and render active sessions."""
@@ -1008,11 +1045,11 @@ class Exporter:
 
         app_sessions = []
         for auth in getattr(sessions_result, "authorizations", []):
-            da = getattr(auth, "date_active", None)
-            if isinstance(da, datetime):
-                date_str = da.strftime("%Y-%m-%d %H:%M")
-            elif da:
-                date_str = datetime.fromtimestamp(da).strftime("%Y-%m-%d %H:%M")
+            date_active = getattr(auth, "date_active", None)
+            if isinstance(date_active, datetime):
+                date_str = date_active.strftime("%Y-%m-%d %H:%M")
+            elif date_active:
+                date_str = datetime.fromtimestamp(date_active).strftime("%Y-%m-%d %H:%M")
             else:
                 date_str = ""
             app_sessions.append(
@@ -1030,27 +1067,27 @@ class Exporter:
             )
 
         web_sessions = []
-        for wa in getattr(web_result, "authorizations", []):
-            da = getattr(wa, "date_active", None)
-            if isinstance(da, datetime):
-                date_str = da.strftime("%Y-%m-%d %H:%M")
-            elif da:
-                date_str = datetime.fromtimestamp(da).strftime("%Y-%m-%d %H:%M")
+        for web_auth in getattr(web_result, "authorizations", []):
+            date_active = getattr(web_auth, "date_active", None)
+            if isinstance(date_active, datetime):
+                date_str = date_active.strftime("%Y-%m-%d %H:%M")
+            elif date_active:
+                date_str = datetime.fromtimestamp(date_active).strftime("%Y-%m-%d %H:%M")
             else:
                 date_str = ""
             web_sessions.append(
                 {
-                    "domain": getattr(wa, "domain", ""),
-                    "browser": getattr(wa, "browser", ""),
-                    "platform": getattr(wa, "platform", ""),
-                    "ip": getattr(wa, "ip", ""),
-                    "region": getattr(wa, "region", ""),
+                    "domain": getattr(web_auth, "domain", ""),
+                    "browser": getattr(web_auth, "browser", ""),
+                    "platform": getattr(web_auth, "platform", ""),
+                    "ip": getattr(web_auth, "ip", ""),
+                    "region": getattr(web_auth, "region", ""),
                     "date_active": date_str,
                 }
             )
 
         self.renderer.render_sessions(app_sessions, web_sessions)
-        console.print(
+        self._status_print(
             f"  [green]exported[/]: {len(app_sessions)} app sessions, {len(web_sessions)} web sessions"
         )
 
@@ -1060,12 +1097,15 @@ class Exporter:
         photos_dir.mkdir(parents=True, exist_ok=True)
 
         photos = []
-        idx = 0
+        seq = 0
         async for photo in self.api.iter_userpics():
+            # Use a separate per-iteration counter for the filename so a failed
+            # download does not cause the next photo to reuse the same name.
+            seq += 1
             try:
                 path = await self.api.client.download_media(
                     photo,
-                    file=str(photos_dir / f"photo_{idx}"),
+                    file=str(photos_dir / f"photo_{seq}"),
                 )
                 if path:
                     date_str = ""
@@ -1077,12 +1117,11 @@ class Exporter:
                             "date": date_str,
                         }
                     )
-                    idx += 1
             except Exception as e:
-                logger.debug("Failed to download userpic %d: %s", idx, e)
+                logger.debug("Failed to download userpic %d: %s", seq, e)
 
         self.renderer.render_userpics(photos)
-        console.print(f"  [green]exported[/]: {len(photos)} profile photos")
+        self._status_print(f"  [green]exported[/]: {len(photos)} profile photos")
 
     async def _export_stories(self):
         """Fetch and render stories."""
@@ -1145,7 +1184,7 @@ class Exporter:
             )
 
         self.renderer.render_stories(stories)
-        console.print(f"  [green]exported[/]: {len(stories)} stories")
+        self._status_print(f"  [green]exported[/]: {len(stories)} stories")
 
     async def _export_other_data(self):
         """Fetch and render ringtones and other data."""
@@ -1189,7 +1228,7 @@ class Exporter:
 
         self.renderer.render_other_data({"ringtones": ringtones})
         if ringtones:
-            console.print(f"  [green]exported[/]: {len(ringtones)} ringtones")
+            self._status_print(f"  [green]exported[/]: {len(ringtones)} ringtones")
 
     async def _verify_files(self, stats: ExportStats):
         """Verify integrity of downloaded files and re-download broken ones."""
@@ -1197,7 +1236,7 @@ class Exporter:
         if not broken:
             return
 
-        console.print(f"[yellow]Found {len(broken)} files to re-download[/]")
+        self._status_print(f"[yellow]Found {len(broken)} files to re-download[/]")
         redownloaded = 0
         for f in broken:
             if self._shutdown:
@@ -1245,7 +1284,7 @@ class Exporter:
                 logger.debug("verify re-download error: %s", e)
 
         if redownloaded:
-            console.print(f"[green]Re-downloaded {redownloaded}/{len(broken)} files[/]")
+            self._status_print(f"[green]Re-downloaded {redownloaded}/{len(broken)} files[/]")
         if stats.errors:
             console.print(f"[red]{len(stats.errors)} files still have issues[/]")
 
@@ -1331,8 +1370,10 @@ class Exporter:
         if removed:
             logger.info("removed %d orphaned files in %s", removed, chat_dir.name)
 
-    def _handle_shutdown(self):
+    def _handle_shutdown(self, signum: int | None = None):
         now = time.monotonic()
+        if signum is not None:
+            self._shutdown_signal = signum
         if self._shutdown and (now - self._first_signal_time) < 3:
             # Second signal within 3s -> force exit via cancelling current task
             self._force_shutdown = True

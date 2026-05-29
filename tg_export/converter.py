@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from typing import Any
 
@@ -664,6 +665,9 @@ def _extract_migrated_to(entity: Any) -> int | None:
     return getattr(migrated_to, "channel_id", None)
 
 
+_classify_logger = logging.getLogger(__name__)
+
+
 def _classify_chat(entity: Any, dialog: Any) -> ChatType:
     cls_name = entity.__class__.__name__
 
@@ -684,6 +688,9 @@ def _classify_chat(entity: Any, dialog: Any) -> ChatType:
             return ChatType.public_supergroup if has_username else ChatType.private_supergroup
         return ChatType.public_channel if has_username else ChatType.private_channel
 
+    # Unknown entity class: log it instead of silently bucketing as personal,
+    # so a new Telegram entity type surfaces in --debug rather than hiding.
+    _classify_logger.warning("Unknown entity class %r classified as personal", cls_name)
     return ChatType.personal
 
 

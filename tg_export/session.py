@@ -40,9 +40,9 @@ class FixedSQLiteSession(SQLiteSession):
     def __init__(self, session_id=None, store_tmp_auth_key_on_disk: bool = False):
         saved_takeout_id, saved_tmp_auth_key = self._extract_and_clear(session_id)
         super().__init__(session_id, store_tmp_auth_key_on_disk)
-        # Defense-in-depth: даже если pre-init read что-то пропустил, после
-        # super().__init__() swap-баг Telethon мог поставить _takeout_id в
-        # non-int (например, b'' из physical tmp_auth_key column). Нормализуем.
+        # Defense-in-depth: even if the pre-init read missed something, after
+        # super().__init__() Telethon's swap bug could set _takeout_id to a
+        # non-int (e.g. b'' from the physical tmp_auth_key column). Normalize it.
         if self._takeout_id is not None and not isinstance(self._takeout_id, int):
             logger.warning(
                 "Post-init takeout_id has unexpected type %s; clearing.",
@@ -73,22 +73,22 @@ class FixedSQLiteSession(SQLiteSession):
                 if row is None:
                     return None, None
                 takeout_id_raw, tmp_auth_key_raw = row
-                # Why `is not None` для обоих, а не bool(): Telethon
-                # _update_session_table при store_tmp_auth_key_on_disk=False
-                # пишет b'' в physical position 5 (tmp_auth_key). Это
-                # falsy для bool(), но при следующем чтении swap-баг
-                # ставит session._takeout_id = b'', что валит struct.pack
-                # в InvokeWithTakeoutRequest. Считаем b'' тоже «есть данные»
-                # и зачищаем БД, чтобы Telethon прочитал NULL/NULL.
+                # Why `is not None` for both, not bool(): Telethon's
+                # _update_session_table with store_tmp_auth_key_on_disk=False
+                # writes b'' into physical position 5 (tmp_auth_key). That is
+                # falsy for bool(), but on the next read the swap bug sets
+                # session._takeout_id = b'', which breaks struct.pack in
+                # InvokeWithTakeoutRequest. Treat b'' as "has data" too and
+                # clear the DB so Telethon reads NULL/NULL.
                 has_data = takeout_id_raw is not None or tmp_auth_key_raw is not None
                 if not has_data:
                     return None, None
 
-                # Type validation: одна и та же асимметрия read/write могла
-                # подсунуть BLOB в позицию takeout_id (например, b'') или int
-                # в позицию tmp_auth_key. Дальше Telethon-сериализатор сломается
-                # на struct.pack (struct.error: required argument is not an
-                # integer) или AuthKey(data=int) на sha1. Чистим аномалии.
+                # Type validation: the same read/write asymmetry could place a
+                # BLOB into the takeout_id slot (e.g. b'') or an int into the
+                # tmp_auth_key slot. The Telethon serializer would then break on
+                # struct.pack (struct.error: required argument is not an integer)
+                # or AuthKey(data=int) on sha1. Clean up anomalies.
                 takeout_id: int | None
                 if isinstance(takeout_id_raw, int):
                     takeout_id = takeout_id_raw
@@ -119,9 +119,9 @@ class FixedSQLiteSession(SQLiteSession):
                     "staging restore via FixedSQLiteSession (Telethon column-order bug)",
                     path,
                 )
-                # Зачищаем БД даже если все значения оказались аномалиями: при
-                # следующем super().__init__() Telethon с тем же swap-багом
-                # снова прочитал бы их в неправильные слоты.
+                # Clear the DB even if every value turned out anomalous: on the
+                # next super().__init__() Telethon, with the same swap bug, would
+                # read them back into the wrong slots again.
                 conn.execute("UPDATE sessions SET takeout_id = NULL, tmp_auth_key = NULL")
                 conn.commit()
                 return takeout_id, tmp_auth_key

@@ -3,17 +3,27 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
+import random
 import shutil
 import sqlite3
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
 from tg_export.config import MediaConfig
+from tg_export.errors import TgExportError
 from tg_export.models import Media, MediaType
 
 logger = logging.getLogger(__name__)
+
+# Download retry policy: transient errors (network/OS) are retried with
+# exponential backoff plus jitter to avoid synchronised retry bursts when many
+# parallel downloads fail at once.
+_MAX_DOWNLOAD_ATTEMPTS = 3
+_RETRY_JITTER_SECONDS = 1.0
 
 
 MEDIA_SUBDIRS = {
@@ -78,11 +88,11 @@ def _is_sibling_path_safe(local_path: Path, db_path: Path) -> bool:
         return False
 
 
-class DiskSpaceError(Exception):
+class DiskSpaceError(TgExportError):
     pass
 
 
-class _FileTooLargeError(Exception):
+class _FileTooLargeError(TgExportError):
     """Raised inside progress callback when real file size exceeds limit."""
 
     def __init__(self, size: int):
@@ -117,19 +127,47 @@ class MediaDownloader:
         self.tdesktop_indexes = tdesktop_indexes or []
         self.sibling_db_paths = sibling_db_paths or []
         self.active_downloads: dict[int, DownloadProgress] = {}  # msg_id -> progress
+        # active_downloads is mutated by the event loop and read by the Rich
+        # Live refresh thread; this lock guards both sides against
+        # "dictionary changed size during iteration". Use snapshot_active_downloads()
+        # to read a consistent copy from another thread.
+        self._active_lock = threading.Lock()
         self._next_dl_id = 0
         # Why: two coroutines processing different messages with the same
         # file_id (cross-chat duplicates) would otherwise both download the
         # same content; per-file-id locks serialise them so the second one
         # picks up the registered file via _try_link_intra_account.
         self._file_id_locks: dict[int, asyncio.Lock] = {}
+        # Reference count per file_id so a lock can be dropped from the dict
+        # once no coroutine holds or waits on it. Without this the dict grows
+        # monotonically for the whole export (one Lock per unique file_id).
+        self._file_id_lock_users: dict[int, int] = {}
 
-    def _file_lock(self, file_id: int) -> asyncio.Lock:
+    def snapshot_active_downloads(self) -> dict[int, DownloadProgress]:
+        """Return a consistent copy of active_downloads (thread-safe).
+
+        Called from the Rich Live refresh thread; copying under the lock
+        prevents a race with the event loop mutating the dict.
+        """
+        with self._active_lock:
+            return dict(self.active_downloads)
+
+    @contextlib.asynccontextmanager
+    async def _file_lock(self, file_id: int):
         lock = self._file_id_locks.get(file_id)
         if lock is None:
             lock = asyncio.Lock()
             self._file_id_locks[file_id] = lock
-        return lock
+        self._file_id_lock_users[file_id] = self._file_id_lock_users.get(file_id, 0) + 1
+        try:
+            async with lock:
+                yield
+        finally:
+            self._file_id_lock_users[file_id] -= 1
+            if self._file_id_lock_users[file_id] == 0:
+                # No other coroutine holds or waits on this lock — release it.
+                del self._file_id_lock_users[file_id]
+                del self._file_id_locks[file_id]
 
     async def download(
         self, tl_message, media: Media, chat_dir: Path, chat_id: int = 0
@@ -416,7 +454,8 @@ class MediaDownloader:
             filename = filename[:37] + "..."
 
         dl_progress = DownloadProgress(filename=filename)
-        self.active_downloads[msg_id] = dl_progress
+        with self._active_lock:
+            self.active_downloads[msg_id] = dl_progress
 
         def _progress_cb(received: int, total: int):
             dl_progress.received = received
@@ -426,15 +465,19 @@ class MediaDownloader:
                 raise _FileTooLargeError(total)
 
         try:
-            for attempt in range(3):
+            for attempt in range(_MAX_DOWNLOAD_ATTEMPTS):
                 try:
                     return await self.api.download_media(tl_message, target_dir, progress_cb=_progress_cb)
                 except _FileTooLargeError:
                     raise
                 except (ConnectionError, TimeoutError, OSError):
-                    if attempt == 2:
+                    if attempt == _MAX_DOWNLOAD_ATTEMPTS - 1:
                         raise
-                    await asyncio.sleep(2**attempt)
+                    # Exponential backoff with jitter to desynchronise retries
+                    # of many parallel downloads after a shared network blip.
+                    delay = 2**attempt + random.uniform(0, _RETRY_JITTER_SECONDS)
+                    await asyncio.sleep(delay)
             return None
         finally:
-            self.active_downloads.pop(msg_id, None)
+            with self._active_lock:
+                self.active_downloads.pop(msg_id, None)

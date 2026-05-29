@@ -14,6 +14,8 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from markupsafe import Markup
 
 from tg_export.config import OutputConfig
+from tg_export.format import format_size
+from tg_export.media import MEDIA_SUBDIRS
 from tg_export.models import (
     Chat,
     ContactMedia,
@@ -49,7 +51,7 @@ class HtmlRenderer:
         )
         # Register helpers for use in Jinja2 templates
         self.env.globals["render_text"] = render_text_parts
-        self.env.globals["format_size"] = _format_size
+        self.env.globals["format_size"] = format_size
         self.env.filters["safe_href"] = _safe_href
 
     def setup(self):
@@ -518,7 +520,7 @@ class HtmlRenderer:
 
         if isinstance(media, DocumentMedia):
             name = escape(media.name or "File")
-            size = _format_size(media.file.size) if media.file else ""
+            size = format_size(media.file.size) if media.file else ""
             if media.type == MediaType.voice:
                 dur = f" ({media.duration}s)" if media.duration else ""
                 return f'<div class="media-block"><div class="voice">Voice message{dur}</div></div>'
@@ -762,26 +764,9 @@ def _fix_media_path(msg: Message, chat_dir: Path):
             file_obj.local_path = str(resolved.relative_to(chat_dir.resolve()))
         except ValueError:
             # Last resort: just keep the filename parts after the media subdir
+            media_subdirs = set(MEDIA_SUBDIRS.values())
             parts = p.parts
             for i, part in enumerate(parts):
-                if part in (
-                    "photos",
-                    "videos",
-                    "files",
-                    "voice_messages",
-                    "video_messages",
-                    "stickers",
-                    "gifs",
-                ):
+                if part in media_subdirs:
                     file_obj.local_path = str(Path(*parts[i:]))
                     return
-
-
-def _format_size(size: int) -> str:
-    if size < 1024:
-        return f"{size} B"
-    if size < 1024**2:
-        return f"{size / 1024:.1f} KB"
-    if size < 1024**3:
-        return f"{size / 1024**2:.1f} MB"
-    return f"{size / 1024**3:.1f} GB"

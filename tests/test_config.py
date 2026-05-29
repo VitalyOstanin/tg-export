@@ -1,6 +1,8 @@
 from pathlib import Path
 
-from tg_export.config import Config, load_config
+import pytest
+
+from tg_export.config import Config, ConfigError, load_config
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -125,3 +127,49 @@ def test_folder_chats_beats_type_rules():
     result = cfg.resolve_chat_config(1, "ImportantBot", "work", chat_type="bot")
     assert result is not None
     assert result.media.types == ["document"]
+
+
+def _write_config(tmp_path: Path, content: str) -> Path:
+    path = tmp_path / "config.yaml"
+    path.write_text(content)
+    return path
+
+
+def test_invalid_unmatched_action_raises(tmp_path):
+    path = _write_config(tmp_path, "unmatched:\n  action: skipp\n")
+    with pytest.raises(ConfigError, match="unmatched.action"):
+        load_config(path)
+
+
+def test_invalid_output_format_raises(tmp_path):
+    path = _write_config(tmp_path, "output:\n  format: xml\n")
+    with pytest.raises(ConfigError, match="output.format"):
+        load_config(path)
+
+
+def test_invalid_archived_action_raises(tmp_path):
+    path = _write_config(tmp_path, "archived:\n  action: nope\n")
+    with pytest.raises(ConfigError, match="archived.action"):
+        load_config(path)
+
+
+def test_unknown_top_level_key_raises(tmp_path):
+    # `default` is a typo for `defaults` and must fail fast, not be ignored.
+    path = _write_config(tmp_path, "default:\n  media:\n    types: [photo]\n")
+    with pytest.raises(ConfigError, match="Unknown config key"):
+        load_config(path)
+
+
+def test_valid_actions_accepted(tmp_path):
+    path = _write_config(
+        tmp_path,
+        "unmatched:\n  action: export_with_defaults\n"
+        "archived:\n  action: export_with_defaults\n"
+        "left_channels:\n  action: export_with_defaults\n"
+        "output:\n  format: both\n",
+    )
+    cfg = load_config(path)
+    assert cfg.unmatched_action == "export_with_defaults"
+    assert cfg.archived_action == "export_with_defaults"
+    assert cfg.left_channels_action == "export_with_defaults"
+    assert cfg.output.format == "both"
