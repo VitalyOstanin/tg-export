@@ -124,6 +124,14 @@ uv run tg-export tg info 123456789 987654321
 uv run tg-export tg info --from-catalog catalog.json --type personal --last 3
 ```
 
+Посмотреть последние сообщения чата. Текст по умолчанию обрезается до 200 символов; `--truncate N` задаёт другую длину, `--truncate 0` и `--no-truncate` печатают текст целиком:
+
+```bash
+uv run tg-export tg messages 123456789 -n 5
+uv run tg-export tg messages 123456789 -n 5 --truncate 1000
+uv run tg-export tg messages 123456789 -n 5 --no-truncate
+```
+
 ### 5. Настройка правил экспорта
 
 Сгенерировать шаблон конфига:

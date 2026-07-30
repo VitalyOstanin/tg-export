@@ -117,50 +117,102 @@ class TestDownloadIfNew:
 # ---------------------------------------------------------------------------
 
 
+def _invoke_tg_messages(args: list[str], text: str = "hello"):
+    """Run `tg messages` against a mocked API returning a single message."""
+    from click.testing import CliRunner
+
+    from tg_export.cli import main
+
+    mock_entity = MagicMock()
+    mock_entity.title = "Test Chat"
+
+    mock_msg = MagicMock()
+    mock_msg.id = 42
+    mock_msg.date = MagicMock()
+    mock_msg.date.strftime.return_value = "2026-01-01 12:00"
+    mock_msg.sender = MagicMock()
+    mock_msg.sender.first_name = "Alice"
+    mock_msg.sender.last_name = ""
+    mock_msg.message = text
+    mock_msg.media = None
+    mock_msg.action = None
+
+    async def _fake_iter(*a, **kw):
+        yield mock_msg
+
+    mock_api = AsyncMock()
+    mock_api.client.get_entity.return_value = mock_entity
+    mock_api.client.iter_messages = _fake_iter
+    mock_api.connect = AsyncMock()
+    mock_api.disconnect = AsyncMock()
+
+    with patch("tg_export.cli._mgr") as mock_mgr, patch("tg_export.api.TgApi", return_value=mock_api):
+        mgr = MagicMock()
+        mgr.resolve_account.return_value = "test"
+        mgr.load_credentials.return_value = ("id", "hash")
+        mgr.load_proxy.return_value = None
+        mgr.session_path.return_value = "/tmp/test.session"
+        mock_mgr.return_value = mgr
+
+        runner = CliRunner()
+        return runner.invoke(main, ["tg", "messages", "123", *args])
+
+
 class TestTgMessagesOutput:
     def test_msg_id_in_output(self):
         """tg messages output includes [msg_id] for each message."""
-        from click.testing import CliRunner
-
-        from tg_export.cli import main
-
-        mock_entity = MagicMock()
-        mock_entity.title = "Test Chat"
-
-        mock_msg = MagicMock()
-        mock_msg.id = 42
-        mock_msg.date = MagicMock()
-        mock_msg.date.strftime.return_value = "2026-01-01 12:00"
-        mock_msg.sender = MagicMock()
-        mock_msg.sender.first_name = "Alice"
-        mock_msg.sender.last_name = ""
-        mock_msg.message = "hello"
-        mock_msg.media = None
-        mock_msg.action = None
-
-        async def _fake_iter(*a, **kw):
-            yield mock_msg
-
-        mock_api = AsyncMock()
-        mock_api.client.get_entity.return_value = mock_entity
-        mock_api.client.iter_messages = _fake_iter
-        mock_api.connect = AsyncMock()
-        mock_api.disconnect = AsyncMock()
-
-        with patch("tg_export.cli._mgr") as mock_mgr, patch("tg_export.api.TgApi", return_value=mock_api):
-            mgr = MagicMock()
-            mgr.resolve_account.return_value = "test"
-            mgr.load_credentials.return_value = ("id", "hash")
-            mgr.load_proxy.return_value = None
-            mgr.session_path.return_value = "/tmp/test.session"
-            mock_mgr.return_value = mgr
-
-            runner = CliRunner()
-            result = runner.invoke(main, ["tg", "messages", "123", "-n", "1"])
+        result = _invoke_tg_messages(["-n", "1"])
 
         assert "[42]" in result.output
         assert "Alice" in result.output
         assert "hello" in result.output
+
+    def test_text_truncated_to_200_chars_by_default(self):
+        """Without options the text is cut to 200 characters."""
+        text = "x" * 250
+
+        result = _invoke_tg_messages(["-n", "1"], text=text)
+
+        assert "x" * 200 in result.output
+        assert "x" * 201 not in result.output
+
+    def test_no_truncate_prints_full_text(self):
+        """--no-truncate prints the message text in full."""
+        text = "y" * 5000
+
+        result = _invoke_tg_messages(["-n", "1", "--no-truncate"], text=text)
+
+        assert text in result.output
+
+    def test_truncate_sets_custom_length(self):
+        """--truncate N cuts the text to N characters."""
+        text = "z" * 100
+
+        result = _invoke_tg_messages(["-n", "1", "--truncate", "10"], text=text)
+
+        assert "z" * 10 in result.output
+        assert "z" * 11 not in result.output
+
+    def test_truncate_zero_prints_full_text(self):
+        """--truncate 0 disables truncation."""
+        text = "w" * 3000
+
+        result = _invoke_tg_messages(["-n", "1", "--truncate", "0"], text=text)
+
+        assert text in result.output
+
+    def test_no_truncate_conflicts_with_truncate(self):
+        """--no-truncate together with an explicit --truncate is a usage error."""
+        result = _invoke_tg_messages(["-n", "1", "--no-truncate", "--truncate", "10"])
+
+        assert result.exit_code == 2
+        assert "--no-truncate" in result.output
+
+    def test_negative_truncate_rejected(self):
+        """Negative --truncate is a usage error."""
+        result = _invoke_tg_messages(["-n", "1", "--truncate", "-5"])
+
+        assert result.exit_code == 2
 
 
 # ---------------------------------------------------------------------------

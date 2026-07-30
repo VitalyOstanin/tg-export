@@ -46,6 +46,9 @@ def _diag(message: str, *, essential: bool = False, **kwargs) -> None:
 
 _LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
 
+# Default cut length for message text in `tg messages`; 0 disables the cut.
+DEFAULT_MESSAGE_TEXT_LENGTH = 200
+
 
 def _resolve_log_level(debug: bool, log_level: str | None) -> int:
     """Resolve the effective log level.
@@ -455,12 +458,27 @@ def tg():
 @click.argument("chat_id", type=int)
 @click.option("--account", default=None, help="Account alias (default: from 'auth default')")
 @click.option("--limit", "-n", default=10, help="Number of messages to show")
-def tg_messages(chat_id, account, limit):
+@click.option(
+    "--truncate",
+    type=int,
+    default=None,
+    help=f"Cut message text to N characters (0 = no cut, default: {DEFAULT_MESSAGE_TEXT_LENGTH})",
+)
+@click.option("--no-truncate", is_flag=True, default=False, help="Print message text in full")
+def tg_messages(chat_id, account, limit, truncate, no_truncate):
     """Show recent messages from a chat."""
-    asyncio.run(_tg_messages(chat_id, account, limit))
+    if no_truncate:
+        if truncate:
+            raise click.BadParameter("--no-truncate cannot be combined with --truncate")
+        truncate = 0
+    elif truncate is None:
+        truncate = DEFAULT_MESSAGE_TEXT_LENGTH
+    elif truncate < 0:
+        raise click.BadParameter("--truncate must be 0 or greater")
+    asyncio.run(_tg_messages(chat_id, account, limit, truncate))
 
 
-async def _tg_messages(chat_id, account, limit):
+async def _tg_messages(chat_id, account, limit, truncate=DEFAULT_MESSAGE_TEXT_LENGTH):
     from tg_export.api import TgApi
 
     mgr = _mgr()
@@ -491,7 +509,9 @@ async def _tg_messages(chat_id, account, limit):
                 action_type = msg.action.__class__.__name__.replace("MessageAction", "")
                 text = f"({action_type})"
 
-            click.echo(f"  {date_str}  [{msg.id}]  {sender}: {text[:200]}")
+            if truncate:
+                text = text[:truncate]
+            click.echo(f"  {date_str}  [{msg.id}]  {sender}: {text}")
     finally:
         await api.disconnect()
 
