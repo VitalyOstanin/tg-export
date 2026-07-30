@@ -1,8 +1,11 @@
+import logging
 from datetime import datetime
 from unittest.mock import MagicMock
 
+from telethon.tl.types import ChannelForbidden, ChatForbidden
+
 from tg_export.converter import convert_chat, convert_message
-from tg_export.models import TextType
+from tg_export.models import ChatType, TextType
 
 
 def _make_mock_message(text: str | None = "Hello", date=None, media=None, action=None):
@@ -107,3 +110,53 @@ def test_convert_chat_no_migration():
     dialog.unread_count = 0
     chat = convert_chat(dialog)
     assert chat.migrated_to_id is None
+
+
+def _make_dialog(entity) -> MagicMock:
+    """Wrap a real Telethon entity into a minimal Dialog-like mock."""
+    dialog = MagicMock()
+    dialog.entity = entity
+    dialog.date = datetime(2024, 1, 1)
+    dialog.unread_count = 0
+    dialog.dialog = None
+    return dialog
+
+
+def test_convert_chat_forbidden_is_private_group_and_left(caplog):
+    """ChatForbidden is a basic group we were kicked from: no access to history."""
+    entity = ChatForbidden(id=100, title="Kicked Group")
+    with caplog.at_level(logging.WARNING, logger="tg_export.converter"):
+        chat = convert_chat(_make_dialog(entity))
+    assert chat.type is ChatType.private_group
+    assert chat.is_left is True
+    assert chat.name == "Kicked Group"
+    assert "Unknown entity class" not in caplog.text
+
+
+def test_convert_channel_forbidden_is_private_channel_and_left(caplog):
+    entity = ChannelForbidden(id=200, access_hash=1, title="Banned Channel", broadcast=True)
+    with caplog.at_level(logging.WARNING, logger="tg_export.converter"):
+        chat = convert_chat(_make_dialog(entity))
+    assert chat.type is ChatType.private_channel
+    assert chat.is_left is True
+    assert "Unknown entity class" not in caplog.text
+
+
+def test_convert_channel_forbidden_megagroup_is_private_supergroup():
+    entity = ChannelForbidden(id=300, access_hash=1, title="Banned Supergroup", megagroup=True)
+    chat = convert_chat(_make_dialog(entity))
+    assert chat.type is ChatType.private_supergroup
+    assert chat.is_left is True
+
+
+def test_convert_chat_unknown_entity_class_still_warns(caplog):
+    """The fallback branch must keep reporting genuinely unknown entity classes."""
+    entity = MagicMock()
+    entity.__class__.__name__ = "ChatEmpty"
+    entity.id = 400
+    entity.title = "Empty"
+    entity.left = False
+    with caplog.at_level(logging.WARNING, logger="tg_export.converter"):
+        chat = convert_chat(_make_dialog(entity))
+    assert chat.type is ChatType.personal
+    assert "Unknown entity class 'ChatEmpty'" in caplog.text

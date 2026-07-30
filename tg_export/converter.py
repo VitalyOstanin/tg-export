@@ -619,7 +619,7 @@ def convert_chat(tl_dialog: Any, folder: str | None = None) -> Chat:
     """Convert Telethon Dialog to models.Chat."""
     entity = tl_dialog.entity
 
-    chat_type = _classify_chat(entity, tl_dialog)
+    chat_type = _classify_chat(entity)
 
     return Chat(
         id=entity.id,
@@ -630,7 +630,7 @@ def convert_chat(tl_dialog: Any, folder: str | None = None) -> Chat:
         members_count=getattr(entity, "participants_count", None),
         last_message_date=getattr(tl_dialog, "date", None),
         messages_count=_get_messages_count(tl_dialog),
-        is_left=getattr(entity, "left", False),
+        is_left=bool(getattr(entity, "left", False)) or _is_forbidden(entity),
         is_archived=False,
         is_forum=getattr(entity, "forum", False),
         migrated_to_id=_extract_migrated_to(entity),
@@ -667,8 +667,16 @@ def _extract_migrated_to(entity: Any) -> int | None:
 
 _classify_logger = logging.getLogger(__name__)
 
+# Telegram returns these instead of Chat/Channel when the account was kicked or
+# banned: the title is still known, but history and members are inaccessible.
+_FORBIDDEN_ENTITY_CLASSES = ("ChatForbidden", "ChannelForbidden")
 
-def _classify_chat(entity: Any, dialog: Any) -> ChatType:
+
+def _is_forbidden(entity: Any) -> bool:
+    return entity.__class__.__name__ in _FORBIDDEN_ENTITY_CLASSES
+
+
+def _classify_chat(entity: Any) -> ChatType:
     cls_name = entity.__class__.__name__
 
     if cls_name == "User":
@@ -678,10 +686,10 @@ def _classify_chat(entity: Any, dialog: Any) -> ChatType:
             return ChatType.bot
         return ChatType.personal
 
-    if cls_name == "Chat":
+    if cls_name in ("Chat", "ChatForbidden"):
         return ChatType.private_group
 
-    if cls_name == "Channel":
+    if cls_name in ("Channel", "ChannelForbidden"):
         is_megagroup = getattr(entity, "megagroup", False)
         has_username = bool(getattr(entity, "username", None))
         if is_megagroup:
