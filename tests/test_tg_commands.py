@@ -7,7 +7,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from tg_export.cli import _download_if_new
+from tg_export.cli import common as cli_common
+from tg_export.cli import tg as cli_tg
+from tg_export.cli.tg import _download_if_new
 
 # ---------------------------------------------------------------------------
 # _download_if_new: deduplication logic
@@ -147,7 +149,7 @@ def _invoke_tg_messages(args: list[str], text: str = "hello"):
     mock_api.connect = AsyncMock()
     mock_api.disconnect = AsyncMock()
 
-    with patch("tg_export.cli._mgr") as mock_mgr, patch("tg_export.api.TgApi", return_value=mock_api):
+    with patch("tg_export.cli.common._mgr") as mock_mgr, patch("tg_export.api.TgApi", return_value=mock_api):
         mgr = MagicMock()
         mgr.resolve_account.return_value = "test"
         mgr.load_credentials.return_value = ("id", "hash")
@@ -285,8 +287,7 @@ def test_cli_version_option():
 class TestTgSend:
     @staticmethod
     def _run_send(tmp_path, file_count, as_document, text="caption"):
-        from tg_export import cli
-        from tg_export.cli import _tg_send
+        from tg_export.cli.tg import _tg_send
 
         files = []
         for i in range(file_count):
@@ -302,8 +303,8 @@ class TestTgSend:
             yield api, "acc"
 
         with (
-            patch("tg_export.cli._connected_api", fake_connected_api),
-            patch.object(cli, "_QUIET", True),
+            patch("tg_export.cli.common._connected_api", fake_connected_api),
+            patch.object(cli_common, "_QUIET", True),
         ):
             asyncio.run(_tg_send("acc", [123], text, files, as_document))
 
@@ -352,8 +353,6 @@ async def test_send_files_escapes_the_file_name_for_rich(tmp_path, monkeypatch):
     import contextlib
     from unittest.mock import AsyncMock, MagicMock
 
-    import tg_export.cli as cli
-
     tricky = tmp_path / "[draft]report.txt"
     tricky.write_bytes(b"data")
 
@@ -374,12 +373,12 @@ async def test_send_files_escapes_the_file_name_for_rich(tmp_path, monkeypatch):
     def fake_progress(by_bytes):
         yield _Progress()
 
-    monkeypatch.setattr(cli, "_upload_progress", fake_progress)
+    monkeypatch.setattr(cli_tg, "_upload_progress", fake_progress)
 
     client = MagicMock()
     client.send_file = AsyncMock()
 
-    await cli._send_files(client, 1, [tricky], "text", True)
+    await cli_tg._send_files(client, 1, [tricky], "text", True)
 
     assert descriptions == ["\\[draft]report.txt"], descriptions
 
@@ -408,14 +407,13 @@ def test_upload_progress_is_silent_without_a_terminal(monkeypatch):
     """Экспортёр рисует живой прогресс только при `console.is_terminal`, а
     прогресс отправки такой проверки не имел: в конвейере и в файле журнала
     оседали перерисовки бара."""
-    import tg_export.cli as cli
     import tg_export.console as console_module
 
     fake_console = MagicMock()
     fake_console.is_terminal = False
     monkeypatch.setattr(console_module, "console", fake_console)
 
-    with cli._upload_progress(by_bytes=True) as progress:
+    with cli_tg._upload_progress(by_bytes=True) as progress:
         assert progress is None
 
 
@@ -428,13 +426,12 @@ def test_upload_progress_shows_percentage_in_both_modes(monkeypatch):
     from rich.console import Console
     from rich.progress import TaskProgressColumn
 
-    import tg_export.cli as cli
     import tg_export.console as console_module
 
     monkeypatch.setattr(console_module, "console", Console(file=io.StringIO(), force_terminal=True))
 
     for by_bytes in (True, False):
-        with cli._upload_progress(by_bytes=by_bytes) as progress:
+        with cli_tg._upload_progress(by_bytes=by_bytes) as progress:
             assert progress is not None
             kinds = [type(c) for c in progress.columns]
             assert TaskProgressColumn in kinds, (by_bytes, kinds)
@@ -448,8 +445,6 @@ async def test_album_progress_never_passes_the_file_count(tmp_path, monkeypatch)
     прогресс уходил за 100%."""
     import contextlib
     from unittest.mock import MagicMock
-
-    import tg_export.cli as cli
 
     files = []
     for i in range(25):
@@ -478,7 +473,7 @@ async def test_album_progress_never_passes_the_file_count(tmp_path, monkeypatch)
     def fake_progress(by_bytes):
         yield _Progress()
 
-    monkeypatch.setattr(cli, "_upload_progress", fake_progress)
+    monkeypatch.setattr(cli_tg, "_upload_progress", fake_progress)
 
     async def send_file(recipient, paths, caption=None, force_document=False, progress_callback=None):
         # Воспроизводит нарезку Telethon: sent -- сквозной, total -- остаток.
@@ -495,7 +490,7 @@ async def test_album_progress_never_passes_the_file_count(tmp_path, monkeypatch)
     client = MagicMock()
     client.send_file = send_file
 
-    await cli._send_files(client, 1, files, "text", False)
+    await cli_tg._send_files(client, 1, files, "text", False)
 
     assert totals[1] == 25, totals
     assert max(updates) <= 25, max(updates)
@@ -529,7 +524,7 @@ def _invoke_tg_info(args: list[str], *, chat_ids=("123",), fail_on=()):
     mock_api.connect = AsyncMock()
     mock_api.disconnect = AsyncMock()
 
-    with patch("tg_export.cli._mgr") as mock_mgr, patch("tg_export.api.TgApi", return_value=mock_api):
+    with patch("tg_export.cli.common._mgr") as mock_mgr, patch("tg_export.api.TgApi", return_value=mock_api):
         mgr = MagicMock()
         mgr.resolve_account.return_value = "test"
         mgr.load_credentials.return_value = ("id", "hash")

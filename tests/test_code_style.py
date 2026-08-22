@@ -16,6 +16,15 @@ def _read(name: str) -> str:
     return (PROJECT / name).read_text(encoding="utf-8")
 
 
+# CLI разложен на пакет: модуль на группу команд плюс common. Проверки, которые
+# раньше читали cli.py, обходят все модули пакета.
+CLI_MODULES = sorted((PROJECT / "cli").glob("*.py"))
+
+
+def _read_cli() -> str:
+    return "\n".join(p.read_text(encoding="utf-8") for p in CLI_MODULES)
+
+
 def test_auth_uses_click_echo_not_bare_print():
     """auth.py не должен вызывать bare print(); используй click.echo."""
     src = _read("auth.py")
@@ -88,20 +97,27 @@ def test_every_telegram_client_is_built_on_the_fixed_session():
 
 
 def _exit_is_a_failure(node) -> bool:
-    """True for `raise click.exceptions.Exit(<non-zero>)`."""
+    """True for a call to `_fail(...)` with a non-zero code.
+
+    `_fail` is the single way a command stops with a failure (см.
+    tg_export/cli/common.py); до этого то же место выглядело как
+    `raise click.exceptions.Exit(1)`, и обе формы здесь распознаются.
+    """
     import ast
 
-    if not isinstance(node, ast.Raise) or not isinstance(node.exc, ast.Call):
+    if isinstance(node, ast.Raise) and isinstance(node.exc, ast.Call):
+        call = node.exc
+    elif isinstance(node, ast.Expr) and isinstance(node.value, ast.Call):
+        call = node.value
+    else:
         return False
-    func = node.exc.func
+    func = call.func
     name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
-    if name != "Exit":
+    if name not in ("Exit", "_fail"):
         return False
-    if not node.exc.args:
-        # `Exit()` defaults to code 1 -- a failure like any other.
-        return True
-    arg = node.exc.args[0]
-    return not (isinstance(arg, ast.Constant) and arg.value == 0)
+    args = list(call.args) + [kw.value for kw in call.keywords if kw.arg == "code"]
+    codes = [a for a in args if isinstance(a, ast.Constant) and isinstance(a.value, int)]
+    return not any(c.value == 0 for c in codes)
 
 
 def _is_suppressible_diag(node) -> bool:
@@ -129,9 +145,8 @@ def test_messages_before_a_failure_exit_survive_quiet():
     """
     import ast
 
-    tree = ast.parse(_read("cli.py"))
     offenders = []
-    for node in ast.walk(tree):
+    for node in ast.walk(ast.parse(_read_cli())):
         for field in ("body", "orelse", "finalbody"):
             block = getattr(node, field, None)
             if not isinstance(block, list):
@@ -276,7 +291,7 @@ def test_every_package_data_file_is_declared_for_packaging():
 def _cli_ast():
     import ast
 
-    return ast.parse(_read("cli.py"))
+    return ast.parse(_read_cli())
 
 
 def test_cli_never_manages_connection_lifetime_by_hand():
@@ -312,7 +327,7 @@ def test_cli_helpers_are_context_managers():
     """
     import ast
 
-    src = _read("cli.py")
+    src = _read("cli/common.py")
     tree = ast.parse(src)
     for name in ("_connected_api", "_opened_state"):
         fn = next(
@@ -359,7 +374,7 @@ def test_cli_does_not_run_sql_of_its_own():
     и кортеж таблиц чата был продублирован в двух местах: правка схемы в одном
     из них давала purge, который удаляет не то, о чём предупредил.
     """
-    src = _read("cli.py")
+    src = _read_cli()
     hits = [
         (n, line.strip())
         for n, line in enumerate(src.splitlines(), start=1)
@@ -369,18 +384,18 @@ def test_cli_does_not_run_sql_of_its_own():
 
 
 def test_cli_has_a_module_docstring():
-    """Самый крупный модуль проекта -- единственный без строки назначения."""
+    """У каждого модуля пакета cli есть строка назначения, у пакета -- карта групп."""
     import ast
 
-    tree = ast.parse(_read("cli.py"))
-    doc = ast.get_docstring(tree)
-    assert doc, "cli.py нужен модульный docstring с картой групп команд"
-    assert "import" in doc.lower(), "объясни в нём приём с отложенными импортами"
+    missing = [p.name for p in CLI_MODULES if not ast.get_docstring(ast.parse(p.read_text(encoding="utf-8")))]
+    assert not missing, f"модулям пакета cli нужен docstring: {missing}"
+    doc = ast.get_docstring(ast.parse(_read("cli/__init__.py")))
+    assert doc and "import" in doc.lower(), "объясни в нём приём с отложенными импортами"
 
 
 def test_cli_takes_formatting_helpers_from_their_own_module():
     """`_format_size` в exporter.py -- лишь псевдоним для format.format_size."""
-    src = _read("cli.py")
+    src = _read_cli()
     assert "_format_size" not in src, "импортируй format_size из tg_export.format"
 
 

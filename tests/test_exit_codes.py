@@ -12,19 +12,21 @@ import pytest
 from click.testing import CliRunner
 
 from tg_export.auth import AccountManager
+from tg_export.cli import common as cli_common
 from tg_export.cli import main
+from tg_export.cli import state as cli_state
+from tg_export.cli import tg as cli_tg
 
 
 @pytest.fixture
 def cfg_dir(tmp_path, monkeypatch):
     """Изолированный каталог настроек с одним аккаунтом и учётными данными."""
-    import tg_export.cli as cli
 
     d = tmp_path / "config"
     mgr = AccountManager(config_dir=d)
     mgr.ensure_dirs()
     mgr.save_credentials(12345, "hash")
-    monkeypatch.setattr(cli, "_mgr", lambda: AccountManager(config_dir=d))
+    monkeypatch.setattr(cli_common, "_mgr", lambda: AccountManager(config_dir=d))
     return d
 
 
@@ -93,45 +95,42 @@ def test_auth_check_without_accounts_is_ok(cfg_dir):
 
 @pytest.mark.asyncio
 async def test_tg_send_reports_failed_delivery(monkeypatch):
-    from tg_export import cli
 
     api = MagicMock()
     api.disconnect = AsyncMock()
     api.client.send_message = AsyncMock(side_effect=RuntimeError("no such user"))
-    monkeypatch.setattr(cli, "_connected_api", _fake_connected_api(api))
+    monkeypatch.setattr(cli_common, "_connected_api", _fake_connected_api(api))
 
-    code = await cli._tg_send("acc", ["someone"], "hi", None)
+    code = await cli_tg._tg_send("acc", ["someone"], "hi", None)
     assert code == 1
 
 
 @pytest.mark.asyncio
 async def test_tg_send_success_returns_zero(monkeypatch):
-    from tg_export import cli
 
     api = MagicMock()
     api.disconnect = AsyncMock()
     api.client.send_message = AsyncMock()
-    monkeypatch.setattr(cli, "_connected_api", _fake_connected_api(api))
+    monkeypatch.setattr(cli_common, "_connected_api", _fake_connected_api(api))
 
-    code = await cli._tg_send("acc", ["someone"], "hi", None)
+    code = await cli_tg._tg_send("acc", ["someone"], "hi", None)
     assert code == 0
 
 
 @pytest.mark.asyncio
 async def test_tg_download_missing_message_is_error(monkeypatch, tmp_path):
-    from tg_export import cli
 
     api = MagicMock()
     api.disconnect = AsyncMock()
     api.client.get_messages = AsyncMock(return_value=None)
-    monkeypatch.setattr(cli, "_connected_api", _fake_connected_api(api))
+    monkeypatch.setattr(cli_common, "_connected_api", _fake_connected_api(api))
 
-    code = await cli._tg_download("acc", 1, 2, tmp_path)
+    code = await cli_tg._tg_download("acc", 1, 2, tmp_path)
     assert code == 1
 
 
 def test_export_exit_code_maps_signal_and_errors():
-    from tg_export.cli import _export_exit_code
+    from tg_export.cli.common import _export_exit_code
 
     assert _export_exit_code(signum=None, error_count=0) == 0
     assert _export_exit_code(signum=None, error_count=3) == 1
@@ -158,13 +157,12 @@ def test_keyboard_interrupt_maps_to_130(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_state_reset_unknown_chat_is_error(tmp_path, monkeypatch):
-    from tg_export import cli
     from tg_export.state import ExportState
 
     st = ExportState(tmp_path / "state.db")
-    monkeypatch.setattr(cli, "_opened_state", _fake_opened_state(st))
+    monkeypatch.setattr(cli_common, "_opened_state", _fake_opened_state(st))
 
-    code = await cli._state_reset("acc", None, None, False, False, 999)
+    code = await cli_state._state_reset("acc", None, None, False, False, 999)
     assert code == 1
 
 

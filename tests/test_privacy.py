@@ -90,7 +90,7 @@ def test_existing_directory_permissions_are_left_alone(tmp_path):
 def test_api_hash_prompt_hides_input():
     """api_hash -- секрет того же уровня, что и пароль: набранный в открытую,
     он остаётся в истории оболочки и виден в списке процессов."""
-    from tg_export.cli import auth_credentials
+    from tg_export.cli.auth import auth_credentials
 
     option = next(p for p in auth_credentials.params if p.name == "api_hash")
     assert isinstance(option, click.Option)

@@ -13,6 +13,8 @@ import pytest
 from click.testing import CliRunner
 
 from tg_export.auth import AccountManager
+from tg_export.cli import common as cli_common
+from tg_export.cli import export as cli_export
 from tg_export.cli import main
 from tg_export.exporter import ExportStats
 
@@ -20,7 +22,6 @@ from tg_export.exporter import ExportStats
 @pytest.fixture
 def run_env(tmp_path, monkeypatch):
     """Окружение для run: аккаунт, конфиг, подставные Telegram и экспортёр."""
-    import tg_export.cli as cli
 
     cfg_dir = tmp_path / "config"
     mgr = AccountManager(config_dir=cfg_dir)
@@ -38,7 +39,7 @@ def run_env(tmp_path, monkeypatch):
         "    max_file_size: 50MB\n"
         "    concurrent_downloads: 3\n"
     )
-    monkeypatch.setattr(cli, "_mgr", lambda: AccountManager(config_dir=cfg_dir))
+    monkeypatch.setattr(cli_common, "_mgr", lambda: AccountManager(config_dir=cfg_dir))
 
     api = MagicMock()
     api.connect = AsyncMock()
@@ -71,7 +72,7 @@ def run_env(tmp_path, monkeypatch):
     exporter.shutdown_requested = False
     exporter.shutdown_signal = None
     monkeypatch.setattr("tg_export.exporter.Exporter", lambda *a, **k: exporter)
-    monkeypatch.setattr(cli, "_render_index", AsyncMock())
+    monkeypatch.setattr(cli_export, "_render_index", AsyncMock())
 
     return MagicMock(api=api, exporter=exporter, stats=stats, out_dir=out_dir, cfg_dir=cfg_dir)
 
@@ -156,7 +157,6 @@ def test_run_keeps_the_takeout_session_for_the_next_run(run_env):
 def test_takeout_clear_finishes_the_session_on_the_server(tmp_path, monkeypatch):
     """Раз экспорт намеренно оставляет сессию живой, clear должен закрыть её и
     на сервере, иначе takeout остаётся запущенным без способа к нему обратиться."""
-    import tg_export.cli as cli
 
     cfg_dir = tmp_path / "config"
     mgr = AccountManager(config_dir=cfg_dir)
@@ -164,7 +164,7 @@ def test_takeout_clear_finishes_the_session_on_the_server(tmp_path, monkeypatch)
     mgr.save_credentials(1, "hash")
     mgr.set_default_account("acc")
     mgr.session_path("acc").write_bytes(b"")
-    monkeypatch.setattr(cli, "_mgr", lambda: AccountManager(config_dir=cfg_dir))
+    monkeypatch.setattr(cli_common, "_mgr", lambda: AccountManager(config_dir=cfg_dir))
 
     api = MagicMock()
     api.connect = AsyncMock()

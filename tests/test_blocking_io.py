@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from tg_export.cli import export as cli_export
 from tg_export.config import MediaConfig
 from tg_export.media import MediaDownloader
 from tg_export.models import FileInfo, MediaType, PhotoMedia
@@ -111,7 +112,6 @@ async def test_intra_account_link_leaves_the_event_loop(tmp_path, monkeypatch):
 async def test_index_render_leaves_the_event_loop(tmp_path):
     """Рендер индекса идёт при живом соединении с Telegram: пока шаблон
     собирается, соединение не обслуживается. Рендер чата уже вынесен в поток."""
-    import tg_export.cli as cli
 
     seen = {}
     renderer = MagicMock()
@@ -130,7 +130,7 @@ async def test_index_render_leaves_the_event_loop(tmp_path):
     state.count_messages = AsyncMock(return_value=0)
     state.message_counts = AsyncMock(return_value={})
 
-    await cli._render_index(renderer, [], cfg, state)
+    await cli_export._render_index(renderer, [], cfg, state)
 
     assert seen["thread"] != threading.get_ident()
 

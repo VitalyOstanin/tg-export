@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from tg_export.cli import common as cli_common
 from tg_export.exporter import Exporter, ExportStats, chat_error_line
 
 
@@ -89,7 +90,7 @@ def test_an_unexpected_error_is_reported_as_a_line_not_a_traceback(monkeypatch, 
     """Трассировка ложится поверх незакрытого прогресс-бара и читается как поломка."""
     from tg_export import cli
 
-    monkeypatch.setattr(cli, "_DEBUG", False)
+    monkeypatch.setattr(cli_common, "_DEBUG", False)
     monkeypatch.setattr(cli.main, "main", MagicMock(side_effect=RuntimeError("socket closed")))
 
     with pytest.raises(SystemExit) as exit_info:
@@ -108,32 +109,30 @@ def test_debug_does_not_turn_on_the_libraries_own_logging():
     telethon логирует каждый пакет MTProto, aiosqlite -- каждый запрос; на их
     фоне три десятка собственных debug-записей не найти.
     """
-    from tg_export import cli
 
     try:
-        level, include_libraries = cli._resolve_log_level(debug=True, log_level=None)
+        level, include_libraries = cli_common._resolve_log_level(debug=True, log_level=None)
         assert (level, include_libraries) == (logging.DEBUG, False)
 
-        cli._quiet_third_party_loggers(level, include_libraries=include_libraries)
+        cli_common._quiet_third_party_loggers(level, include_libraries=include_libraries)
         assert logging.getLogger("telethon").level == logging.WARNING
         assert logging.getLogger("aiosqlite").level == logging.WARNING
     finally:
-        for name in cli._THIRD_PARTY_LOGGERS:
+        for name in cli_common._THIRD_PARTY_LOGGERS:
             logging.getLogger(name).setLevel(logging.NOTSET)
 
 
 def test_the_all_suffix_lifts_the_libraries_too():
     """Полный вывод библиотек должен оставаться доступным -- отдельным словом."""
-    from tg_export import cli
 
     try:
-        level, include_libraries = cli._resolve_log_level(debug=False, log_level="DEBUG:all")
+        level, include_libraries = cli_common._resolve_log_level(debug=False, log_level="DEBUG:all")
         assert (level, include_libraries) == (logging.DEBUG, True)
 
-        cli._quiet_third_party_loggers(level, include_libraries=include_libraries)
+        cli_common._quiet_third_party_loggers(level, include_libraries=include_libraries)
         assert logging.getLogger("telethon").level == logging.DEBUG
     finally:
-        for name in cli._THIRD_PARTY_LOGGERS:
+        for name in cli_common._THIRD_PARTY_LOGGERS:
             logging.getLogger(name).setLevel(logging.NOTSET)
 
 

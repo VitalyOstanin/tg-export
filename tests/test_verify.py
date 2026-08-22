@@ -25,7 +25,7 @@ def _entry(path: Path) -> dict:
 
 @pytest.mark.asyncio
 async def test_failed_redownload_keeps_the_existing_file(tmp_path):
-    from tg_export.cli import _redownload_broken_file
+    from tg_export.cli.export import _redownload_broken_file
 
     existing = tmp_path / "photo.jpg"
     existing.write_bytes(b"partial")
@@ -44,7 +44,7 @@ async def test_failed_redownload_keeps_the_existing_file(tmp_path):
 
 @pytest.mark.asyncio
 async def test_empty_download_keeps_the_existing_file(tmp_path):
-    from tg_export.cli import _redownload_broken_file
+    from tg_export.cli.export import _redownload_broken_file
 
     existing = tmp_path / "photo.jpg"
     existing.write_bytes(b"partial")
@@ -61,7 +61,7 @@ async def test_empty_download_keeps_the_existing_file(tmp_path):
 
 @pytest.mark.asyncio
 async def test_successful_redownload_replaces_the_file(tmp_path):
-    from tg_export.cli import _redownload_broken_file
+    from tg_export.cli.export import _redownload_broken_file
 
     existing = tmp_path / "photo.jpg"
     existing.write_bytes(b"partial")
@@ -88,7 +88,7 @@ async def test_successful_redownload_replaces_the_file(tmp_path):
 
 @pytest.mark.asyncio
 async def test_missing_message_is_skipped_without_touching_the_file(tmp_path):
-    from tg_export.cli import _redownload_broken_file
+    from tg_export.cli.export import _redownload_broken_file
 
     existing = tmp_path / "photo.jpg"
     existing.write_bytes(b"partial")
@@ -104,7 +104,7 @@ async def test_missing_message_is_skipped_without_touching_the_file(tmp_path):
 
 
 def test_stale_staging_dirs_are_cleaned(tmp_path):
-    from tg_export.cli import _clean_verify_staging
+    from tg_export.cli.export import _clean_verify_staging
 
     stale = tmp_path / "chat" / ".tg-export-verify-abc"
     stale.mkdir(parents=True)

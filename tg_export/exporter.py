@@ -53,7 +53,6 @@ BATCH_SIZE = 500
 LOG_INTERVAL = 3  # seconds
 
 
-
 def _log(msg: str):
     """Print with immediate flush (works in non-TTY / redirected output)."""
     console.print(msg, markup=False, highlight=False, soft_wrap=True)
