@@ -791,6 +791,20 @@ class ExportState:
                 counts[table] = row[0] if row else 0
         return counts
 
+    async def count_all_rows(self) -> dict[str, int]:
+        """Count every row of the chat-scoped tables, for a whole-database reset.
+
+        `state reset --all --delete-messages` empties `messages` and `files`
+        across the account; the confirmation needs the same kind of summary
+        `purge` prints for a single chat.
+        """
+        counts = {}
+        for table in CHAT_TABLES:
+            async with self.db.execute(f"SELECT COUNT(*) FROM {table}") as cur:
+                row = await cur.fetchone()
+                counts[table] = row[0] if row else 0
+        return counts
+
     async def message_counts(self) -> dict[int, int]:
         """Number of messages per chat, for every chat at once.
 

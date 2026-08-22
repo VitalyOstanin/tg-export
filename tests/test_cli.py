@@ -370,3 +370,99 @@ def test_the_output_override_names_the_directory_itself(tmp_path, monkeypatch):
     _, _, output_base = cli._resolve_output("acc", None, override)
 
     assert output_base == override
+
+
+def test_h_is_a_synonym_of_help():
+    """`-h` завершался кодом 2 с «No such option»."""
+    from click.testing import CliRunner
+
+    from tg_export.cli import main
+
+    result = CliRunner().invoke(main, ["-h"])
+    assert result.exit_code == 0, result.output
+    assert "Usage:" in result.output
+
+
+def test_every_option_is_described_in_help():
+    """Часть опций выводилась в --help без единого слова описания.
+
+    У `run` те же `--config`/`--output` описаны, у `state show` и `state reset`
+    -- нет; расходились не только формулировки, но и сам факт описания.
+    """
+    import click
+
+    from tg_export.cli import main
+
+    undocumented = []
+
+    def walk(command, path):
+        for param in command.params:
+            if isinstance(param, click.Option) and not param.help and not param.hidden:
+                if param.name in {"help"}:
+                    continue
+                undocumented.append(f"{' '.join(path)} {param.opts[0]}")
+        if isinstance(command, click.Group):
+            for name, sub in command.commands.items():
+                walk(sub, [*path, name])
+
+    walk(main, ["tg-export"])
+    assert not undocumented, f"опции без help=: {undocumented}"
+
+
+def test_reset_of_the_whole_database_asks_before_deleting(tmp_path, monkeypatch):
+    """`state reset --all --delete-messages` стирал базу без единого вопроса.
+
+    `purge` показывает объём удаляемого и спрашивает подтверждение, а сброс
+    всего состояния -- нет, хотя опечатка в команде стоит повторной выгрузки
+    всего аккаунта.
+    """
+    import asyncio
+    import contextlib
+    from unittest.mock import MagicMock
+
+    from tg_export import cli
+    from tg_export.state import ExportState
+
+    st = ExportState(tmp_path / "state.db")
+
+    @contextlib.asynccontextmanager
+    async def fake(*_a, **_k):
+        await st.open()
+        try:
+            yield st, MagicMock(), "acc"
+        finally:
+            await st.close()
+
+    monkeypatch.setattr(cli, "_opened_state", fake)
+    asked = []
+    monkeypatch.setattr(cli.click, "confirm", lambda text, **kw: asked.append(text) or False)
+
+    code = asyncio.run(cli._state_reset("acc", None, None, True, True, None, skip_confirm=False))
+
+    assert asked, "подтверждение не запрошено"
+    assert code == 0
+
+
+def test_reset_of_the_whole_database_skips_the_question_with_yes(tmp_path, monkeypatch):
+    import asyncio
+    import contextlib
+    from unittest.mock import MagicMock
+
+    from tg_export import cli
+    from tg_export.state import ExportState
+
+    st = ExportState(tmp_path / "state.db")
+
+    @contextlib.asynccontextmanager
+    async def fake(*_a, **_k):
+        await st.open()
+        try:
+            yield st, MagicMock(), "acc"
+        finally:
+            await st.close()
+
+    monkeypatch.setattr(cli, "_opened_state", fake)
+    monkeypatch.setattr(cli.click, "confirm", lambda *a, **k: pytest.fail("вопрос задан вопреки --yes"))
+
+    code = asyncio.run(cli._state_reset("acc", None, None, True, True, None, skip_confirm=True))
+    assert code == 0

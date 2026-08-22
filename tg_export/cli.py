@@ -252,7 +252,7 @@ def _quiet_third_party_loggers(level: int, *, include_libraries: bool = False) -
         logging.getLogger(name).setLevel(level if include_libraries else max(level, logging.WARNING))
 
 
-@click.group()
+@click.group(context_settings={"help_option_names": ["-h", "--help"]})
 @click.version_option(package_name="tg-export", prog_name="tg-export")
 @click.option("--debug", is_flag=True, default=False, help="Enable debug logging (forces DEBUG level)")
 @click.option(
@@ -704,12 +704,25 @@ def _entity_name(entity) -> str:
     "--from-catalog",
     "catalog_file",
     type=click.Path(exists=True, path_type=Path),
-    help="JSON catalog file (from tg-export list --format json)",
+    help="JSON catalog file (from tg-export list --json)",
 )
 @click.option("--type", "chat_type", default=None, help="Filter by chat type (with --from-catalog)")
-@click.option("--last", "last_n", type=int, default=0, help="Show last N messages per chat")
 @click.option(
-    "--output", "output_file", type=click.Path(path_type=Path), default=None, help="Save results to JSON file"
+    "--limit",
+    "-n",
+    "--last",
+    "last_n",
+    type=int,
+    default=0,
+    help="Show the last N messages of each chat (0 = only the counters); --last is the old spelling",
+)
+@click.option(
+    "--output-file",
+    "--output",
+    "output_file",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Save results to this JSON file (--output is the old spelling)",
 )
 @click.option("--json", "as_json", is_flag=True, help="Output as machine-readable JSON")
 def tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_file, as_json):
@@ -818,12 +831,25 @@ async def _tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_fi
 
 @main.command("list")
 @click.option("--account", default=None, help="Account alias (default: from 'auth default')")
-@click.option("--output", type=click.Path(path_type=Path), help="Output file path")
-@click.option("--format", "fmt", type=click.Choice(["yaml", "json"]), default="yaml")
+@click.option(
+    "--output-file",
+    "--output",
+    "output",
+    type=click.Path(path_type=Path),
+    help="Write the catalog to this file instead of stdout (--output is the old spelling)",
+)
+@click.option("--json", "as_json", is_flag=True, help="Output as machine-readable JSON")
+@click.option(
+    "--format",
+    "fmt",
+    type=click.Choice(["yaml", "json"]),
+    default="yaml",
+    help="Output format (default: yaml); --json is the short form of --format json",
+)
 @click.option("--include-left", is_flag=True, help="Include left channels")
-def list_chats(account, output, fmt, include_left):
+def list_chats(account, output, as_json, fmt, include_left):
     """Export chat/folder catalog."""
-    asyncio.run(_list_chats(account, output, fmt, include_left))
+    asyncio.run(_list_chats(account, output, "json" if as_json else fmt, include_left))
 
 
 async def _list_chats(account, output, fmt, include_left):
@@ -842,7 +868,13 @@ async def _list_chats(account, output, fmt, include_left):
 
 @main.command("init")
 @click.option("--account", default=None, help="Account alias (default: from 'auth default')")
-@click.option("--from", "from_catalog", type=click.Path(exists=True, path_type=Path), help="Catalog file")
+@click.option(
+    "--from-catalog",
+    "--from",
+    "from_catalog",
+    type=click.Path(exists=True, path_type=Path),
+    help="Build the config from this catalog file (--from is the old spelling)",
+)
 @click.option("--output", type=click.Path(path_type=Path), default=None, help="Override output config path")
 def init_config(account, from_catalog, output):
     """Generate config template from catalog. Saves to ~/.config/tg-export/<account>.yaml."""
@@ -1313,8 +1345,10 @@ def state():
 
 @state.command("show")
 @click.option("--account", default=None, help="Account alias")
-@click.option("--config", type=click.Path(exists=True, path_type=Path), default=None)
-@click.option("--output", type=click.Path(path_type=Path), default=None)
+@click.option(
+    "--config", type=click.Path(exists=True, path_type=Path), default=None, help="Override config path"
+)
+@click.option("--output", type=click.Path(path_type=Path), default=None, help="Export output directory")
 @click.option("--json", "as_json", is_flag=True, help="Output as machine-readable JSON")
 @click.argument("chat_id", type=int, required=False)
 def state_show(account, config, output, as_json, chat_id):
@@ -1384,24 +1418,56 @@ async def _state_show(account, config_override, output_override, chat_id, as_jso
 
 @state.command("reset")
 @click.option("--account", default=None, help="Account alias")
-@click.option("--config", type=click.Path(exists=True, path_type=Path), default=None)
-@click.option("--output", type=click.Path(path_type=Path), default=None)
+@click.option(
+    "--config", type=click.Path(exists=True, path_type=Path), default=None, help="Override config path"
+)
+@click.option("--output", type=click.Path(path_type=Path), default=None, help="Export output directory")
 @click.option("--all", "reset_all", is_flag=True, help="Reset all chats")
 @click.option("--delete-messages", is_flag=True, help="Also delete messages from DB")
+@click.option("--yes", is_flag=True, help="Skip confirmation")
 @click.argument("chat_id", type=int, required=False)
-def state_reset(account, config, output, reset_all, delete_messages, chat_id):
+def state_reset(account, config, output, reset_all, delete_messages, yes, chat_id):
     """Reset export state to force re-download. Specify chat_id or --all."""
     if chat_id is None and not reset_all:
         _error("Specify chat_id or --all")
         raise click.exceptions.Exit(1)
-    exit_code = asyncio.run(_state_reset(account, config, output, reset_all, delete_messages, chat_id))
+    exit_code = asyncio.run(
+        _state_reset(account, config, output, reset_all, delete_messages, chat_id, skip_confirm=yes)
+    )
     if exit_code:
         raise click.exceptions.Exit(exit_code)
 
 
-async def _state_reset(account, config_override, output_override, reset_all, delete_messages, chat_id):
+async def _state_reset(
+    account,
+    config_override,
+    output_override,
+    reset_all,
+    delete_messages,
+    chat_id,
+    *,
+    skip_confirm: bool = False,
+):
     async with _opened_state(account, config_override, output_override) as (st, _, account):
         if reset_all:
+            # essential: the question below authorises rewinding -- and with
+            # --delete-messages, emptying -- the whole account. A prompt whose
+            # subject was hidden by --quiet is a prompt nobody can answer.
+            counts = await st.count_all_rows()
+            _diag(f"Account: {account}", essential=True)
+            _diag(
+                f"  DB: messages={counts['messages']}, files={counts['files']}, "
+                f"export_state={counts['export_state']}, catalog_cache={counts['catalog_cache']}",
+                essential=True,
+            )
+            what = (
+                "Delete every message and file record and rewind all chats?"
+                if delete_messages
+                else ("Rewind export progress of all chats?")
+            )
+            if not skip_confirm and not click.confirm(what):
+                _diag("Cancelled.", essential=True)
+                return EXIT_OK
             await st.reset_chat_progress(delete_messages=delete_messages)
             _diag("Reset all chats.")
         else:

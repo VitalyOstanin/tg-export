@@ -129,15 +129,15 @@ tg-export account default myaccount
 Получить каталог всех чатов аккаунта:
 
 ```bash
-tg-export list --output catalog.yaml
-tg-export list --format json --output catalog.json
+tg-export list --output-file catalog.yaml
+tg-export list --json --output-file catalog.json
 ```
 
 Посмотреть информацию о конкретных чатах (количество сообщений, последние сообщения):
 
 ```bash
 tg-export tg info 123456789 987654321
-tg-export tg info --from-catalog catalog.json --type personal --last 3
+tg-export tg info --from-catalog catalog.json --type personal -n 3
 ```
 
 Посмотреть последние сообщения чата. Текст по умолчанию обрезается до 200 символов; `--truncate N` задаёт другую длину, `--truncate 0` и `--no-truncate` печатают текст целиком:
@@ -316,7 +316,7 @@ export_output/
 
 Логи самих библиотек (telethon пишет каждый пакет MTProto, aiosqlite -- каждый запрос) держатся на уровне `WARNING` независимо от собственного: иначе `--debug` тонет в их выводе. Включаются суффиксом `:all` -- `--log-level DEBUG:all` или `LOG_LEVEL=DEBUG:all`.
 
-Потоки вывода: машиночитаемый вывод команд `list`, `state show`, `tg info`, `tg messages` идёт в stdout; прогресс, статусы, диагностика и ошибки — в stderr. Это позволяет безопасно использовать пайпинг, например `tg-export list --format json | jq ...`.
+Потоки вывода: машиночитаемый вывод команд `list`, `state show`, `tg info`, `tg messages` идёт в stdout; прогресс, статусы, диагностика и ошибки — в stderr. Это позволяет безопасно использовать пайпинг, например `tg-export list --json | jq ...`.
 
 Флаг `--json` для машиночитаемого вывода поддерживают команды `account list`, `auth check`, `state show` и `tg info`. В этом режиме в stdout печатается только JSON.
 
