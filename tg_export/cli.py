@@ -44,6 +44,17 @@ def _diag(message: str, *, essential: bool = False, **kwargs) -> None:
     click.echo(message, err=True, **kwargs)
 
 
+def _error(message: str, **kwargs) -> None:
+    """Print a message the user must see even under --quiet.
+
+    Every reason a command refuses to do its job goes through here. Marking
+    such messages one by one on _diag proved unreliable: of 94 call sites only
+    20 carried the flag and 17 of those were summary lines, so `--quiet` turned
+    a refusal into an empty output with a non-zero exit code.
+    """
+    _diag(message, essential=True, **kwargs)
+
+
 # Exit codes. 0 -- success, 1 -- the command reported a failure, 2 -- Click's
 # own usage error, 128 + N -- terminated by signal N (130 for SIGINT, 143 for
 # SIGTERM), the convention every shell already understands.
@@ -154,7 +165,7 @@ def auth_add(name):
     mgr = _mgr()
     cred_path = mgr.config_dir / "api_credentials.yaml"
     if not cred_path.exists():
-        _diag("No API credentials found. Run 'tg-export auth credentials' first.")
+        _error("No API credentials found. Run 'tg-export auth credentials' first.")
         raise click.exceptions.Exit(1)
     asyncio.run(mgr.add_account(name))
     _diag(f"Account '{name}' added successfully.")
@@ -191,7 +202,7 @@ async def _auth_check(name, as_json=False):
         if not session.exists():
             results.append({"account": acc, "status": "session_missing"})
             if not as_json:
-                _diag(f"  {acc}: session file missing")
+                _error(f"  {acc}: session file missing")
             continue
         proxy = mgr.load_proxy()
         api = TgApi(session, api_id, api_hash, proxy=proxy)
@@ -215,11 +226,11 @@ async def _auth_check(name, as_json=False):
             else:
                 results.append({"account": acc, "status": "not_authorized"})
                 if not as_json:
-                    _diag(f"  {acc}: not authorized")
+                    _error(f"  {acc}: not authorized")
         except Exception as e:
             results.append({"account": acc, "status": "error", "error": str(e)})
             if not as_json:
-                _diag(f"  {acc}: error - {e}")
+                _error(f"  {acc}: error - {e}")
         finally:
             await api.disconnect()
 
@@ -265,7 +276,7 @@ def account_default(name):
     mgr = _mgr()
     if name:
         if name not in mgr.list_accounts():
-            _diag(f"Account '{name}' not found.")
+            _error(f"Account '{name}' not found.")
             raise click.exceptions.Exit(1)
         mgr.set_default_account(name)
         _diag(f"Default account set to '{name}'.")
@@ -468,7 +479,7 @@ async def _takeout_clear(name):
         try:
             finished = await api.client.end_takeout(success=True)
         except Exception as e:
-            _diag(f"  {account}: could not finish takeout on the server ({e}); clearing locally")
+            _error(f"  {account}: could not finish takeout on the server ({e}); clearing locally")
         if session.takeout_id is not None:
             session.takeout_id = None
             session.save()
@@ -1184,7 +1195,7 @@ def _open_state(account, config_override, output_override):
     account = mgr.resolve_account(account)
     config_path = mgr.resolve_config(account, config_override)
     if not config_path.exists():
-        _diag(f"Config not found: {config_path}")
+        _error(f"Config not found: {config_path}")
         raise click.exceptions.Exit(1)
 
     cfg = load_config(config_path)
@@ -1192,7 +1203,7 @@ def _open_state(account, config_override, output_override):
     state_path = output_base / ".tg-export-state.db"
 
     if not state_path.exists():
-        _diag("No state database found.")
+        _error("No state database found.")
         raise click.exceptions.Exit(1)
 
     return ExportState(state_path), output_base, account
@@ -1288,7 +1299,7 @@ async def _state_show(account, config_override, output_override, chat_id, as_jso
 def state_reset(account, config, output, reset_all, delete_messages, chat_id):
     """Reset export state to force re-download. Specify chat_id or --all."""
     if not chat_id and not reset_all:
-        _diag("Specify chat_id or --all")
+        _error("Specify chat_id or --all")
         raise click.exceptions.Exit(1)
     exit_code = asyncio.run(_state_reset(account, config, output, reset_all, delete_messages, chat_id))
     if exit_code:
@@ -1341,7 +1352,7 @@ async def _purge_chat(chat_arg, account, config_override, output_override, skip_
     account = mgr.resolve_account(account)
     config_path = mgr.resolve_config(account, config_override)
     if not config_path.exists():
-        _diag(f"Config not found: {config_path}")
+        _error(f"Config not found: {config_path}")
         raise click.exceptions.Exit(1)
 
     cfg = load_config(config_path)
@@ -1349,7 +1360,7 @@ async def _purge_chat(chat_arg, account, config_override, output_override, skip_
     state_path = output_base / ".tg-export-state.db"
 
     if not state_path.exists():
-        _diag("No state database found.")
+        _error("No state database found.")
         raise click.exceptions.Exit(1)
 
     state = ExportState(state_path)
@@ -1364,13 +1375,13 @@ async def _purge_chat(chat_arg, account, config_override, output_override, skip_
         except ValueError:
             matches = await state.find_chat_by_name(chat_arg)
             if not matches:
-                _diag(f"No chats found matching '{chat_arg}'")
+                _error(f"No chats found matching '{chat_arg}'")
                 raise click.exceptions.Exit(1) from None
             if len(matches) > 1:
-                _diag(f"Multiple chats match '{chat_arg}':")
+                _error(f"Multiple chats match '{chat_arg}':")
                 for m in matches:
-                    _diag(f"  {m['chat_id']}  {m['name']}  ({m['type']})")
-                _diag("Specify exact chat ID.")
+                    _error(f"  {m['chat_id']}  {m['name']}  ({m['type']})")
+                _error("Specify exact chat ID.")
                 raise click.exceptions.Exit(1) from None
             chat_id = matches[0]["chat_id"]
             chat_name = matches[0]["name"]
@@ -1418,22 +1429,26 @@ async def _purge_chat(chat_arg, account, config_override, output_override, skip_
                 continue
             chat_dirs.append(d)
 
-        _diag(f"Chat: {chat_name} (id={chat_id})")
+        # essential: the confirmation below asks to authorise an irreversible
+        # deletion, so the description of what it covers must not be suppressed.
+        # A prompt with the subject hidden is a prompt the user cannot answer.
+        _diag(f"Chat: {chat_name} (id={chat_id})", essential=True)
         _diag(
             f"  DB: messages={counts['messages']}, files={counts['files']}, "
-            f"export_state={counts['export_state']}, catalog_cache={counts['catalog_cache']}"
+            f"export_state={counts['export_state']}, catalog_cache={counts['catalog_cache']}",
+            essential=True,
         )
         if chat_dirs:
             for d in chat_dirs:
                 size = sum(f.stat().st_size for f in d.rglob("*") if f.is_file())
                 from tg_export.exporter import _format_size
 
-                _diag(f"  Dir: {d} ({_format_size(size)})")
+                _diag(f"  Dir: {d} ({_format_size(size)})", essential=True)
         else:
-            _diag("  Dir: not found")
+            _diag("  Dir: not found", essential=True)
 
         if not skip_confirm and not click.confirm("Delete all data for this chat?"):
-            _diag("Cancelled.")
+            _diag("Cancelled.", essential=True)
             return
 
         # Purge from DB
@@ -1499,7 +1514,7 @@ async def _redownload_broken_file(api, state, entry: dict) -> bool:
     tl_messages = await api.client.get_messages(chat_id, ids=msg_id)
     tl_msg = tl_messages if not isinstance(tl_messages, list) else (tl_messages[0] if tl_messages else None)
     if tl_msg is None or tl_msg.media is None:
-        _diag(f"  [skip] msg {msg_id}: not found or no media")
+        _error(f"  [skip] msg {msg_id}: not found or no media")
         return False
 
     target_dir = local_path.parent
@@ -1509,7 +1524,7 @@ async def _redownload_broken_file(api, state, entry: dict) -> bool:
     with tempfile.TemporaryDirectory(dir=target_dir, prefix=VERIFY_STAGING_PREFIX) as staging:
         downloaded = await api.download_media(tl_msg, Path(staging))
         if not downloaded:
-            _diag(f"  [fail] {local_path}")
+            _error(f"  [fail] {local_path}")
             return False
 
         downloaded = Path(str(downloaded))
@@ -1543,7 +1558,7 @@ async def _verify_files(account, config_override, output_override):
     account = mgr.resolve_account(account)
     config_path = mgr.resolve_config(account, config_override)
     if not config_path.exists():
-        _diag(f"Config not found: {config_path}")
+        _error(f"Config not found: {config_path}")
         raise click.exceptions.Exit(1)
 
     cfg = load_config(config_path)
@@ -1647,7 +1662,7 @@ def tg_send(account, files, text, as_document, recipients):
     recipients, including those who already received the message.
     """
     if not text and not files:
-        _diag("Error: specify --text and/or --file")
+        _error("Error: specify --text and/or --file")
         raise click.exceptions.Exit(1)
 
     parsed = []
@@ -1772,7 +1787,7 @@ async def _tg_send(account_name, recipients, text, files, as_document=False):
                 _diag(f"  sent to {recipient}")
                 sent_count += 1
             except Exception as e:
-                _diag(f"  error sending to {recipient}: {e}")
+                _error(f"  error sending to {recipient}: {e}")
                 failed.append((recipient, str(e)))
 
         if failed:

@@ -87,6 +87,65 @@ def test_every_telegram_client_is_built_on_the_fixed_session():
     assert not offenders, f"TelegramClient должен получать FixedSQLiteSession: {offenders}"
 
 
+def _exit_is_a_failure(node) -> bool:
+    """True for `raise click.exceptions.Exit(<non-zero>)`."""
+    import ast
+
+    if not isinstance(node, ast.Raise) or not isinstance(node.exc, ast.Call):
+        return False
+    func = node.exc.func
+    name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+    if name != "Exit":
+        return False
+    if not node.exc.args:
+        # `Exit()` defaults to code 1 -- a failure like any other.
+        return True
+    arg = node.exc.args[0]
+    return not (isinstance(arg, ast.Constant) and arg.value == 0)
+
+
+def _is_suppressible_diag(node) -> bool:
+    """True for a `_diag(...)` call that --quiet would swallow."""
+    import ast
+
+    if not isinstance(node, ast.Expr) or not isinstance(node.value, ast.Call):
+        return False
+    func = node.value.func
+    name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+    if name != "_diag":
+        return False
+    return not any(kw.arg == "essential" for kw in node.value.keywords)
+
+
+def test_messages_before_a_failure_exit_survive_quiet():
+    """Сообщение, за которым команда завершается ошибкой, обязано пережить --quiet.
+
+    Признак essential проставлялся вручную у отдельных вызовов, и из 94 вызовов
+    _diag его получили 20, из которых 17 -- строки итоговой сводки. Поэтому
+    `--quiet tg send 123` печатал пустоту и возвращал 1: причина отказа
+    оставалась невидимой. Проверка статическая -- поведенческий тест на каждый
+    путь отказа пришлось бы писать отдельно, а новый путь появляется с каждой
+    командой.
+    """
+    import ast
+
+    tree = ast.parse(_read("cli.py"))
+    offenders = []
+    for node in ast.walk(tree):
+        for field in ("body", "orelse", "finalbody"):
+            block = getattr(node, field, None)
+            if not isinstance(block, list):
+                continue
+            for i, stmt in enumerate(block):
+                if not _exit_is_a_failure(stmt):
+                    continue
+                j = i - 1
+                while j >= 0 and _is_suppressible_diag(block[j]):
+                    offenders.append(block[j].lineno)
+                    j -= 1
+    assert not offenders, f"под --quiet потеряются сообщения об отказе на строках: {sorted(offenders)}"
+
+
 def test_no_manual_async_context_calls_in_api():
     """Takeout-контекст должен вестись через AsyncExitStack, а не ручными
     __aenter__/__aexit__: при ручном вызове выход из контекста не привязан к
