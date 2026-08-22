@@ -1441,7 +1441,82 @@ async def _purge_chat(chat_arg, account, config_override, output_override, skip_
 @click.option("--output", type=click.Path(), help="Export output directory")
 def verify_files(account, config, output):
     """Verify integrity of previously downloaded files."""
-    asyncio.run(_verify_files(account, config, output))
+    exit_code = asyncio.run(_verify_files(account, config, output))
+    if exit_code:
+        raise click.exceptions.Exit(exit_code)
+
+
+VERIFY_STAGING_PREFIX = ".tg-export-verify-"
+
+
+def _clean_verify_staging(root: Path) -> None:
+    """Remove staging directories left behind by a killed verify run.
+
+    A SIGKILL/SIGTERM in the middle of a download skips TemporaryDirectory
+    cleanup. The leftovers are harmless but accumulate next to the media, so
+    sweep them at the start of the next run.
+    """
+    import shutil
+
+    for path in root.rglob(f"{VERIFY_STAGING_PREFIX}*"):
+        if path.is_dir():
+            shutil.rmtree(path, ignore_errors=True)
+
+
+async def _redownload_broken_file(api, state, entry: dict) -> bool:
+    """Re-download one broken file, replacing it only after the download succeeded.
+
+    Returns True when the file was replaced, False when the message no longer
+    carries media or the download produced nothing. Download failures propagate.
+
+    The old file stays untouched until the new one is fully on disk: deleting
+    first meant that an interruption -- a dropped connection, Ctrl+C -- left
+    nothing behind while the database still pointed at the vanished path.
+    """
+    import os
+    import tempfile
+
+    chat_id = entry["chat_id"]
+    msg_id = entry["msg_id"]
+    local_path = Path(entry["local_path"])
+
+    tl_messages = await api.client.get_messages(chat_id, ids=msg_id)
+    tl_msg = tl_messages if not isinstance(tl_messages, list) else (tl_messages[0] if tl_messages else None)
+    if tl_msg is None or tl_msg.media is None:
+        _diag(f"  [skip] msg {msg_id}: not found or no media")
+        return False
+
+    target_dir = local_path.parent
+    target_dir.mkdir(parents=True, exist_ok=True)
+    # dir=target_dir keeps the staging area on the same filesystem, so the final
+    # move is an atomic rename rather than a copy.
+    with tempfile.TemporaryDirectory(dir=target_dir, prefix=VERIFY_STAGING_PREFIX) as staging:
+        downloaded = await api.download_media(tl_msg, Path(staging))
+        if not downloaded:
+            _diag(f"  [fail] {local_path}")
+            return False
+
+        downloaded = Path(str(downloaded))
+        final_path = target_dir / downloaded.name
+        os.replace(downloaded, final_path)
+
+    # Telethon may pick a different name than the one recorded earlier; drop the
+    # stale file only now, once its replacement is in place.
+    if local_path != final_path and local_path.exists():
+        local_path.unlink()
+
+    await state.register_file(
+        file_id=entry["file_id"],
+        chat_id=chat_id,
+        msg_id=msg_id,
+        expected_size=entry["expected_size"],
+        actual_size=final_path.stat().st_size,
+        local_path=str(final_path),
+        status="done",
+    )
+    await state.commit()
+    _diag(f"  [ok] {final_path}")
+    return True
 
 
 async def _verify_files(account, config_override, output_override):
@@ -1461,7 +1536,7 @@ async def _verify_files(account, config_override, output_override):
 
     if not state_path.exists():
         _diag("No state database found. Nothing to verify.")
-        return
+        return EXIT_OK
 
     state = ExportState(state_path)
     await state.open()
@@ -1470,7 +1545,7 @@ async def _verify_files(account, config_override, output_override):
         broken = await state.get_files_to_verify()
         if not broken:
             _diag("All files OK.")
-            return
+            return EXIT_OK
 
         _diag(f"Found {len(broken)} files with issues:")
         for f in broken:
@@ -1488,48 +1563,19 @@ async def _verify_files(account, config_override, output_override):
         await api.connect()
 
         try:
+            _clean_verify_staging(output_base)
             redownloaded = 0
             for f in broken:
-                chat_id = f["chat_id"]
-                msg_id = f["msg_id"]
-                local_path = Path(f["local_path"])
                 try:
-                    tl_messages = await api.client.get_messages(chat_id, ids=msg_id)
-                    tl_msg = (
-                        tl_messages
-                        if not isinstance(tl_messages, list)
-                        else (tl_messages[0] if tl_messages else None)
-                    )
-                    if tl_msg is None or tl_msg.media is None:
-                        _diag(f"  [skip] msg {msg_id}: not found or no media")
-                        continue
-
-                    if local_path.exists():
-                        local_path.unlink()
-
-                    target_dir = local_path.parent
-                    target_dir.mkdir(parents=True, exist_ok=True)
-                    path = await api.download_media(tl_msg, target_dir)
-                    if path:
-                        actual_size = Path(str(path)).stat().st_size
-                        await state.register_file(
-                            file_id=f["file_id"],
-                            chat_id=chat_id,
-                            msg_id=msg_id,
-                            expected_size=f["expected_size"],
-                            actual_size=actual_size,
-                            local_path=str(path),
-                            status="done",
-                        )
-                        await state.commit()
+                    if await _redownload_broken_file(api, state, f):
                         redownloaded += 1
-                        _diag(f"  [ok] {path}")
-                    else:
-                        _diag(f"  [fail] {local_path}")
                 except Exception as e:
-                    _diag(f"  [error] {local_path}: {e}")
+                    _diag(f"  [error] {f['local_path']}: {e}", essential=True)
 
-            _diag(f"\nRe-downloaded: {redownloaded}/{len(broken)}")
+            _diag(f"\nRe-downloaded: {redownloaded}/{len(broken)}", essential=True)
+            if redownloaded < len(broken):
+                return EXIT_FAILURE
+            return EXIT_OK
         finally:
             await api.disconnect()
     finally:
