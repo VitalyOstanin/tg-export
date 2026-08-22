@@ -2,21 +2,44 @@
 
 from __future__ import annotations
 
-import contextlib
 import logging
 import os
+import re
 from pathlib import Path
 
 import click
 import yaml
 
 from tg_export.errors import TgExportError
+from tg_export.privacy import tighten_if_loose
 
 logger = logging.getLogger(__name__)
 
 
+class AccountNameError(TgExportError, ValueError):
+    """Raised when an account alias cannot be used as a file name."""
+
+
 class CredentialsError(TgExportError, ValueError):
     """Raised when api_credentials.yaml is missing required fields or has bad types."""
+
+
+_ACCOUNT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+def validate_account_name(name: str) -> str:
+    """Return the name if it is safe to put into a file path, else raise.
+
+    The alias goes straight into the session and config file names, so a name
+    with a separator or a parent reference would place -- or delete -- files
+    outside the configuration directory.
+    """
+    if not isinstance(name, str) or not _ACCOUNT_NAME_RE.match(name) or name in {".", ".."}:
+        raise AccountNameError(
+            f"Invalid account name {name!r}: use letters, digits, dot, dash and underscore, "
+            f"starting with a letter or a digit."
+        )
+    return name
 
 
 class AccountManager:
@@ -39,10 +62,10 @@ class AccountManager:
         return self.config_dir / "sessions"
 
     def session_path(self, name: str) -> Path:
-        return self.sessions_dir / f"{name}.session"
+        return self.sessions_dir / f"{validate_account_name(name)}.session"
 
     def config_path(self, name: str) -> Path:
-        return self.config_dir / f"{name}.yaml"
+        return self.config_dir / f"{validate_account_name(name)}.yaml"
 
     def resolve_config(self, account: str, config_override: str | None = None) -> Path:
         """Return config path: explicit override or convention-based."""
@@ -100,18 +123,7 @@ class AccountManager:
                 f"Run 'tg-export auth credentials' to create it."
             )
         # Warn if permissions are too loose; does not block to keep CI fixtures simple.
-        try:
-            mode = cred_path.stat().st_mode & 0o077
-            if mode != 0:
-                logger.warning(
-                    "%s has too-permissive mode %o; tightening to 0o600",
-                    cred_path,
-                    mode,
-                )
-                with contextlib.suppress(OSError):
-                    os.chmod(cred_path, 0o600)
-        except OSError:
-            pass
+        tighten_if_loose(cred_path)
         try:
             data = yaml.safe_load(cred_path.read_text())
         except yaml.YAMLError as e:
@@ -127,10 +139,16 @@ class AccountManager:
         return api_id, api_hash
 
     def load_global_config(self) -> dict:
-        """Load global config from config.yaml. Returns raw dict."""
+        """Load global config from config.yaml. Returns raw dict.
+
+        The file carries the proxy login and password, so it gets the same
+        treatment as api_credentials.yaml -- until now its mode was never
+        looked at.
+        """
         config_path = self.config_dir / "config.yaml"
         if not config_path.exists():
             return {}
+        tighten_if_loose(config_path)
         return yaml.safe_load(config_path.read_text()) or {}
 
     def load_proxy(self) -> tuple | None:

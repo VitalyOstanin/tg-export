@@ -32,6 +32,7 @@ from tg_export.models import (
     _media_from_dict,
     _media_to_dict,
 )
+from tg_export.privacy import restrict_file
 
 # Python 3.12+ removed default datetime adapters from sqlite3.
 # Why module-level: register_* are global to the process; once loaded, all
@@ -262,6 +263,10 @@ class ExportState:
             self.db.row_factory = aiosqlite.Row
             await self._apply_pragmas()
             await self._create_tables()
+            # The database holds the text of every exported message, phone
+            # numbers and session addresses; SQLite creates it with the umask.
+            for suffix in ("", "-wal", "-shm"):
+                restrict_file(Path(f"{self.db_path}{suffix}"))
         except Exception:
             self._release_lock()
             raise

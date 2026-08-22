@@ -14,6 +14,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import quote
 
 from tg_export.config import MediaConfig
 from tg_export.errors import TgExportError
@@ -89,7 +90,9 @@ def _lookup_file_in_db(db_path: Path, file_id: int) -> str | None:
     Why timeout: a busy writer in the sibling can hold a SHARED lock for
     seconds during a batch commit; default 5s is short for big batches.
     """
-    db = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=30.0)
+    # quote: the path goes into a URI, so a `?` in it would start the query
+    # string and silently drop mode=ro, opening the sibling database for writing.
+    db = sqlite3.connect(f"file:{quote(str(db_path))}?mode=ro", uri=True, timeout=30.0)
     try:
         row = db.execute(
             "SELECT local_path FROM files WHERE file_id=? AND status='done' LIMIT 1",

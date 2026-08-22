@@ -53,6 +53,8 @@ from pathlib import Path
 from telethon.crypto import AuthKey
 from telethon.sessions import SQLiteSession
 
+from tg_export.privacy import restrict_file
+
 logger = logging.getLogger(__name__)
 
 BACKUP_TABLE = "tg_export_session_backup"
@@ -89,6 +91,10 @@ class FixedSQLiteSession(SQLiteSession):
         if saved_tmp_auth_key:
             self.tmp_auth_key = AuthKey(data=saved_tmp_auth_key)
         self._drop_backup()
+        # The file carries the authorisation key; Telethon creates it with the
+        # process umask, which normally leaves it readable by everyone.
+        if self.filename != ":memory:":
+            restrict_file(Path(self.filename))
 
     def _drop_backup(self) -> None:
         """Discard the staged copy once the values are back in the session table.

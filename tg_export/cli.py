@@ -10,6 +10,7 @@ import yaml
 
 from tg_export.auth import AccountManager
 from tg_export.errors import TakeoutUnavailableError, TgExportError
+from tg_export.privacy import ensure_private_dir
 
 logger = logging.getLogger(__name__)
 
@@ -150,7 +151,14 @@ def auth():
 
 @auth.command("credentials")
 @click.option("--api-id", prompt="API ID (from https://my.telegram.org)", type=int, help="Telegram API ID")
-@click.option("--api-hash", prompt="API Hash", help="Telegram API Hash")
+@click.option(
+    "--api-hash",
+    prompt="API Hash",
+    # hide_input: the hash authenticates the application the same way a
+    # password does; typed in the open it stays in the shell history.
+    hide_input=True,
+    help="Telegram API Hash (input is hidden; passing it as an option puts it in the shell history)",
+)
 def auth_credentials(api_id, api_hash):
     """Set Telegram API credentials (api_id and api_hash)."""
     mgr = _mgr()
@@ -900,8 +908,10 @@ async def _run_export(
     _diag(f"Account: {account}")
     _diag(f"Output: {output_base.resolve()}")
 
-    # Ensure output dir exists (needed for state DB)
-    output_base.mkdir(parents=True, exist_ok=True)
+    # Ensure output dir exists (needed for state DB). Created private: the tree
+    # holds every exported message and file. An existing directory keeps the
+    # mode the user gave it.
+    ensure_private_dir(output_base)
 
     # State DB next to output
     state_path = output_base / ".tg-export-state.db"
