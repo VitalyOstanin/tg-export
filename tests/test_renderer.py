@@ -62,6 +62,42 @@ def renderer(tmp_path):
     return r
 
 
+def _chat(chat_id=1, name="Chat"):
+    return Chat(
+        id=chat_id,
+        name=name,
+        type=ChatType.personal,
+        username=None,
+        folder=None,
+        members_count=None,
+        last_message_date=None,
+        messages_count=0,
+        is_left=False,
+        is_archived=False,
+        is_forum=False,
+        migrated_to_id=None,
+        migrated_from_id=None,
+        is_monoforum=False,
+    )
+
+
+def _render(renderer, tmp_path, messages):
+    """Отрендерить сообщения рабочим путём и вернуть готовый HTML.
+
+    Разметку собирают шаблоны; отдельной сборки строк на Python больше нет,
+    поэтому проверки идут по тому же выводу, который получает пользователь.
+    """
+    chat_dir = tmp_path / "rendered"
+    renderer.render_chat_streaming(
+        chat=_chat(),
+        month_keys=["2024-01"],
+        load_month=lambda key: messages,
+        chat_dir=chat_dir,
+    )
+    pages = [p for p in sorted(chat_dir.glob("messages*.html")) if p.name != "messages.html"]
+    return "\n".join(p.read_text(encoding="utf-8") for p in pages)
+
+
 def test_setup_copies_static(renderer, tmp_path):
     output = tmp_path / "output"
     assert (output / "css" / "style.css").exists()
@@ -69,18 +105,18 @@ def test_setup_copies_static(renderer, tmp_path):
     assert (output / "images").is_dir()
 
 
-def test_render_message_plain_text(renderer):
+def test_render_message_plain_text(renderer, tmp_path):
     msg = _make_msg(from_name="Иван", text="Привет")
-    html = renderer.render_message(msg, prev_msg=None)
+    html = _render(renderer, tmp_path, [msg])
     assert "Привет" in html
     assert "Иван" in html
     assert 'class="message' in html
 
 
-def test_render_message_joined(renderer):
+def test_render_message_joined(renderer, tmp_path):
     msg1 = _make_msg(id=1, date=datetime(2024, 1, 1, 10, 0), text="First")
     msg2 = _make_msg(id=2, date=datetime(2024, 1, 1, 10, 5), text="Second")
-    html = renderer.render_message(msg2, prev_msg=msg1)
+    html = _render(renderer, tmp_path, [msg1, msg2])
     assert "joined" in html
 
 
@@ -249,7 +285,7 @@ def test_render_chat_escapes_xss_in_chat_name(renderer, tmp_path):
     assert "&lt;script&gt;" in html or "&#34;xss&#34;" in html or "&#x27;xss&#x27;" in html
 
 
-def test_render_album(renderer):
+def test_render_album(renderer, tmp_path):
     msgs = []
     for i in range(3):
         msgs.append(
@@ -267,27 +303,26 @@ def test_render_album(renderer):
                 grouped_id=12345,
             )
         )
-    html = renderer.render_album(msgs)
+    html = _render(renderer, tmp_path, msgs)
     assert 'class="message"' in html
     assert "Album" in html
 
 
-def test_inline_button_url_goes_through_the_scheme_filter(renderer):
-    """URL кнопки подставлялся в готовый HTML без проверки схемы, тогда как
-    шаблонный путь такую проверку делает: javascript: в кнопке выполнялся при
-    нажатии на неё в открытой странице выгрузки."""
+def test_inline_button_url_goes_through_the_scheme_filter(renderer, tmp_path):
+    """URL кнопки должен проходить проверку схемы: javascript: в кнопке иначе
+    выполняется при нажатии на неё в открытой странице выгрузки."""
     from tg_export.models import InlineButton, InlineButtonType
 
     msg = _make_msg(text="see below")
     msg.inline_buttons = [[InlineButton(type=InlineButtonType.url, text="Click", data="javascript:alert(1)")]]
 
-    html = renderer._render_buttons(msg)
+    html = _render(renderer, tmp_path, [msg])
 
     assert "javascript:" not in html, html
     assert 'href="#"' in html, html
 
 
-def test_inline_button_keeps_an_ordinary_url(renderer):
+def test_inline_button_keeps_an_ordinary_url(renderer, tmp_path):
     from tg_export.models import InlineButton, InlineButtonType
 
     msg = _make_msg(text="see below")
@@ -295,14 +330,13 @@ def test_inline_button_keeps_an_ordinary_url(renderer):
         [InlineButton(type=InlineButtonType.url, text="Click", data="https://example.com/a?b=1")]
     ]
 
-    html = renderer._render_buttons(msg)
+    html = _render(renderer, tmp_path, [msg])
 
-    assert 'href="https://example.com/a?b=1"' in html, html
+    assert "https://example.com/a?b=1" in html, html
 
 
-def test_reaction_label_is_escaped(renderer):
-    """Текст реакции -- единственная неэкранированная подстановка модуля.
-    Пользовательские эмодзи приходят из Telegram и подставлялись как есть."""
+def test_reaction_label_is_escaped(renderer, tmp_path):
+    """Эмодзи реакции приходит из Telegram и может быть произвольной строкой."""
     from tg_export.models import Reaction, ReactionType
 
     msg = _make_msg()
@@ -310,7 +344,7 @@ def test_reaction_label_is_escaped(renderer):
         Reaction(type=ReactionType.emoji, emoji="<img src=x onerror=alert(1)>", document_id=None, count=2)
     ]
 
-    html = renderer._render_reactions(msg)
+    html = _render(renderer, tmp_path, [msg])
 
-    assert "<img" not in html, html
+    assert "<img src=x" not in html, html
     assert "&lt;img" in html, html
