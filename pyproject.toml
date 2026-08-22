@@ -10,6 +10,22 @@ license = "MIT"
 requires-python = ">=3.11"
 readme = "README.md"
 authors = [{name = "Vitaly Ostanin", email = "vitaly.ostanin@gmail.com"}]
+# Заявляется то, что проверяется на CI: Linux и версии Python из матрицы.
+# На Windows блокировка файла сессии вырождается в no-op (нет fcntl), а
+# обработчики сигналов не регистрируются -- работа возможна, но не проверяется.
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS :: MacOS X",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Communications :: Chat",
+    "Topic :: System :: Archiving :: Backup",
+]
 dependencies = [
     # Upper bound: Telethon v2 rewrites the session layer, and SQLiteSession --
     # which FixedSQLiteSession subclasses to work around the column-order bug --

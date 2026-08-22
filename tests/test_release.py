@@ -86,3 +86,32 @@ def test_the_publish_workflow_runs_the_release_gate_before_publishing(step):
     assert workflow.index(step) < workflow.index("gh-action-pypi-publish"), (
         f"шаг {step!r} стоит после необратимой публикации на PyPI"
     )
+
+
+def test_declared_python_versions_match_the_ci_matrix():
+    """Классификаторы обещают ровно те версии Python, на которых идут тесты.
+
+    `requires-python = ">=3.11"` без верхней границы обещает и те версии, которых
+    ещё нет; классификаторы -- единственное место, где обещание конкретно, и
+    расходиться с матрицей CI оно не должно: несовместимость обнаружилась бы у
+    пользователя, а не на прогоне.
+    """
+    import re
+    import tomllib
+
+    root = Path(__file__).resolve().parent.parent
+    manifest = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    declared = {
+        c.rsplit(" :: ", 1)[1]
+        for c in manifest["project"]["classifiers"]
+        if c.startswith("Programming Language :: Python :: 3.")
+    }
+
+    workflow = (root / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    match = re.search(r"python-version:\s*\[([^\]]*)\]", workflow)
+    assert match, "в ci.yml не найдена матрица python-version"
+    tested = set(re.findall(r'"([^"]+)"', match.group(1)))
+
+    assert declared == tested, (
+        f"классификаторы обещают {sorted(declared)}, а CI проверяет {sorted(tested)}"
+    )
