@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from tg_export.auth import AccountManager
@@ -279,3 +281,58 @@ async def test_login_status_goes_to_stderr(tmp_path, monkeypatch, capsys):
     captured = capsys.readouterr()
     assert captured.out == "", f"в stdout попал статус входа: {captured.out!r}"
     assert "Logged in as" in captured.err
+
+
+@pytest.mark.asyncio
+async def test_a_failed_login_keeps_the_previous_session(tmp_path, monkeypatch):
+    """Файл сессии удалялся до входа: сбой оставлял без старой сессии и без новой.
+
+    Неверный код, обрыв связи или Ctrl+C на приглашении -- и восстановление
+    возможно только новым полным входом с кодом из Telegram.
+    """
+    mgr = AccountManager(config_dir=tmp_path)
+    mgr.ensure_dirs()
+    mgr.save_credentials(1, "hash")
+    session = mgr.session_path("acc")
+    session.write_bytes(b"working session")
+
+    client = _login_client([RuntimeError("code invalid")], monkeypatch)
+    monkeypatch.setattr("click.prompt", lambda *a, **k: "123")
+
+    with pytest.raises(RuntimeError):
+        await mgr.add_account("acc")
+
+    assert session.read_bytes() == b"working session", "прежняя сессия уничтожена неудачным входом"
+    assert client.disconnect.called, "соединение осталось открытым после сбоя"
+    leftovers = [p.name for p in mgr.sessions_dir.iterdir() if p.name != session.name]
+    assert not leftovers, f"после сбоя остались файлы неудачного входа: {leftovers}"
+
+
+@pytest.mark.asyncio
+async def test_a_successful_login_replaces_the_session_file(tmp_path, monkeypatch):
+    """Успешный вход занимает штатный путь сессии, а не остаётся во временном."""
+    mgr = AccountManager(config_dir=tmp_path)
+    mgr.ensure_dirs()
+    mgr.save_credentials(1, "hash")
+    session = mgr.session_path("acc")
+    session.write_bytes(b"old session")
+
+    def fake_client(session_obj, api_id, api_hash, *args, **kwargs):
+        from unittest.mock import AsyncMock, MagicMock
+
+        # Telethon создаёт файл сессии при подключении -- подставной клиент тоже.
+        Path(session_obj.filename).write_bytes(b"new session")
+        client = MagicMock()
+        client.connect = AsyncMock()
+        client.is_user_authorized = AsyncMock(return_value=True)
+        client.get_me = AsyncMock(return_value=MagicMock(first_name="Test", id=1))
+        client.disconnect = MagicMock(return_value=None)
+        return client
+
+    monkeypatch.setattr("telethon.TelegramClient", fake_client)
+
+    await mgr.add_account("acc")
+
+    assert session.read_bytes() == b"new session"
+    assert sorted(p.name for p in mgr.sessions_dir.iterdir()) == [session.name]
+    assert session.stat().st_mode & 0o777 == 0o600

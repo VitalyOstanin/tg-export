@@ -11,7 +11,7 @@ import click
 import yaml
 
 from tg_export.errors import TgExportError
-from tg_export.privacy import tighten_if_loose
+from tg_export.privacy import restrict_file, tighten_if_loose
 
 logger = logging.getLogger(__name__)
 
@@ -258,41 +258,64 @@ class AccountManager:
         from tg_export.session import FixedSQLiteSession
 
         api_id, api_hash = self.load_credentials()
-        session_path = str(self.session_path(name))
-
-        # Remove the old session if present (it may be corrupted)
-        old = self.session_path(name)
-        if old.exists():
-            old.unlink()
-        journal = old.with_suffix(".session-journal")
-        if journal.exists():
-            journal.unlink()
+        target = self.session_path(name)
+        # The login writes to a file of its own and takes the place of the
+        # working session only once it succeeded. Deleting the old file first --
+        # as this did -- meant a wrong code, a dropped connection or Ctrl+C at
+        # the prompt left the account with no session at all, recoverable only
+        # by another full login.
+        staging = target.with_name(f".{target.name}.new.session")
+        self._remove_session_files(staging)
 
         # FixedSQLiteSession, not the path: a bare path makes Telethon build a
         # plain SQLiteSession, which addresses the session columns by name while
         # they are written positionally. Login is the only writer outside the
         # subclass, so leaving it out keeps the file a source of corruption.
-        client = TelegramClient(FixedSQLiteSession(session_path), api_id, api_hash)
-        await client.connect()
+        client = TelegramClient(FixedSQLiteSession(str(staging)), api_id, api_hash)
+        try:
+            await client.connect()
 
-        if not await client.is_user_authorized():
-            phone = click.prompt("Phone number (with +)", type=str)
-            sent = await client.send_code_request(phone)
-            _notify(f"Code type: {type(sent.type).__name__}")
-            _notify(f"Next type: {sent.next_type.__class__.__name__ if sent.next_type else 'none'}")
-            _notify(f"Timeout: {sent.timeout}s" if sent.timeout else "No timeout")
+            if not await client.is_user_authorized():
+                phone = click.prompt("Phone number (with +)", type=str)
+                sent = await client.send_code_request(phone)
+                _notify(f"Code type: {type(sent.type).__name__}")
+                _notify(f"Next type: {sent.next_type.__class__.__name__ if sent.next_type else 'none'}")
+                _notify(f"Timeout: {sent.timeout}s" if sent.timeout else "No timeout")
 
-            code = click.prompt("Enter code", type=str)
-            try:
-                await client.sign_in(phone, code)
-            except SessionPasswordNeededError:
-                await self._sign_in_with_password(client)
+                code = click.prompt("Enter code", type=str)
+                try:
+                    await client.sign_in(phone, code)
+                except SessionPasswordNeededError:
+                    await self._sign_in_with_password(client)
 
-        me = await client.get_me()
+            me = await client.get_me()
+        except BaseException:
+            # Ctrl+C at a prompt arrives as KeyboardInterrupt, hence BaseException:
+            # the staging file must not survive it either.
+            await self._disconnect(client)
+            self._remove_session_files(staging)
+            raise
+        await self._disconnect(client)
+
+        self._remove_session_files(target)
+        staging.replace(target)
+        restrict_file(target)
         _notify(f"Logged in as: {getattr(me, 'first_name', '?')} (id={getattr(me, 'id', '?')})")
+
+    @staticmethod
+    async def _disconnect(client) -> None:
+        """Close the client; disconnect() is sync on an unconnected client."""
         disc = client.disconnect()
         if disc is not None:
             await disc
+
+    @staticmethod
+    def _remove_session_files(path: Path) -> None:
+        """Delete a session file together with the SQLite sidecars it may have."""
+        for suffix in ("", "-journal", "-wal", "-shm"):
+            candidate = Path(f"{path}{suffix}")
+            if candidate.exists():
+                candidate.unlink()
 
     @staticmethod
     async def _sign_in_with_password(client) -> None:
@@ -317,7 +340,4 @@ class AccountManager:
                     _notify(f"Wrong password. {remaining} attempts left.")
                     continue
                 _notify("Too many wrong attempts.")
-                disc = client.disconnect()
-                if disc is not None:
-                    await disc
                 raise
