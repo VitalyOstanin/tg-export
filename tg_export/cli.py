@@ -1715,6 +1715,8 @@ async def _send_files(client, recipient, file_paths, text, as_document):
     and progress is counted in bytes. Compressed photos keep the album grouping
     Telethon does in chunks of 10; there the callback counts files, not bytes.
     """
+    from tg_export.exporter import file_progress_description
+
     caption = text or ""
     by_bytes = as_document or len(file_paths) == 1
 
@@ -1742,7 +1744,13 @@ async def _send_files(client, recipient, file_paths, text, as_document):
         done_bytes = 0
 
         for index, path in enumerate(file_paths):
-            task = progress.add_task(path.name, total=sizes[index]) if progress else None
+            # rich parses the description as markup, so an unescaped name is
+            # printed mangled: [draft]report.txt comes out as report.txt.
+            task = (
+                progress.add_task(file_progress_description(path.name), total=sizes[index])
+                if progress
+                else None
+            )
 
             def file_progress(sent, total, task=task, done=done_bytes):
                 if progress is None or task is None:

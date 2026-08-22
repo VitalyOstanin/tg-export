@@ -334,3 +334,64 @@ class TestTgSend:
         send_file = self._run_send(tmp_path, 2, True)
 
         assert all(callable(call.kwargs["progress_callback"]) for call in send_file.await_args_list)
+
+
+@pytest.mark.asyncio
+async def test_send_files_escapes_the_file_name_for_rich(tmp_path, monkeypatch):
+    """Имя файла попадает в описание задачи rich, а rich разбирает его как
+    разметку: `[draft]report.txt` печатается как report.txt -- квадратные скобки
+    съедаются вместе с содержимым. В проекте для этого есть
+    file_progress_description() с escape(), которой пользуется загрузчик
+    экспорта.
+    """
+    import contextlib
+    from unittest.mock import AsyncMock, MagicMock
+
+    import tg_export.cli as cli
+
+    tricky = tmp_path / "[draft]report.txt"
+    tricky.write_bytes(b"data")
+
+    descriptions = []
+
+    class _Progress:
+        def add_task(self, description, **kwargs):
+            descriptions.append(description)
+            return len(descriptions)
+
+        def update(self, *a, **k):
+            pass
+
+        def remove_task(self, *a, **k):
+            pass
+
+    @contextlib.contextmanager
+    def fake_progress(by_bytes):
+        yield _Progress()
+
+    monkeypatch.setattr(cli, "_upload_progress", fake_progress)
+
+    client = MagicMock()
+    client.send_file = AsyncMock()
+
+    await cli._send_files(client, 1, [tricky], "text", True)
+
+    assert descriptions == ["\\[draft]report.txt"], descriptions
+
+
+def test_rich_swallows_an_unescaped_file_name():
+    """Проверка того, что экранирование действительно требуется: без него имя
+    печатается искажённым, с ним -- дословно."""
+    import io
+
+    from rich.console import Console
+
+    from tg_export.exporter import file_progress_description
+
+    console = Console(file=io.StringIO(), width=80, force_terminal=False)
+    console.print("[draft]report.txt")
+    assert console.file.getvalue() == "report.txt\n"
+
+    console = Console(file=io.StringIO(), width=80, force_terminal=False)
+    console.print(file_progress_description("[draft]report.txt"))
+    assert console.file.getvalue() == "[draft]report.txt\n"
