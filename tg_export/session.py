@@ -25,6 +25,11 @@ files in the wild come with both physical layouts:
 Reading by name therefore picks up the wrong value on swapped files and
 destroys the real ``takeout_id``; this class reads by position instead.
 
+Older files need the same care. A v7 file has no ``tmp_auth_key`` column at
+all: ``_upgrade_database`` appends it on open and the very next ``select *``
+reads the surviving ``takeout_id`` as ``tmp_key``, so an untouched v7 file with
+an active Takeout crashes on start rather than merely losing the id.
+
 Strategy: before calling ``super().__init__()``, read positions 5 and 6, copy
 them into a backup table, NULL them out on disk so the buggy positional unpack
 sees a clean slate, then call ``super().__init__()``. After it returns, restore
@@ -58,6 +63,9 @@ _TAKEOUT_ID_POS = 4
 _TMP_AUTH_KEY_POS = 5
 _SESSION_COLUMN_COUNT = 6
 _SWAPPABLE_COLUMNS = {"takeout_id", "tmp_auth_key"}
+# A v7 file has no tmp_auth_key column yet -- Telethon adds it while upgrading
+# to v8 and then immediately misreads the takeout_id sitting in position 5.
+_V7_COLUMN_COUNT = 5
 
 
 class FixedSQLiteSession(SQLiteSession):
@@ -169,13 +177,19 @@ class FixedSQLiteSession(SQLiteSession):
                 conn.execute("BEGIN IMMEDIATE")
                 info = conn.execute("PRAGMA table_info(sessions)").fetchall()
                 names = [row[1] for row in info]
-                if len(names) != _SESSION_COLUMN_COUNT or set(names[_TAKEOUT_ID_POS:]) != _SWAPPABLE_COLUMNS:
+                has_tmp_column = (
+                    len(names) == _SESSION_COLUMN_COUNT and set(names[_TAKEOUT_ID_POS:]) == _SWAPPABLE_COLUMNS
+                )
+                is_v7 = len(names) == _V7_COLUMN_COUNT and names[_TAKEOUT_ID_POS] == "takeout_id"
+                if not has_tmp_column and not is_v7:
+                    # Either a pre-v5 file with no takeout_id at all, or a shape
+                    # Telethon itself could not have written positionally.
                     conn.rollback()
                     return None, None
 
                 row = conn.execute("SELECT * FROM sessions").fetchone()
                 takeout_id_raw = row[_TAKEOUT_ID_POS] if row else None
-                tmp_auth_key_raw = row[_TMP_AUTH_KEY_POS] if row else None
+                tmp_auth_key_raw = row[_TMP_AUTH_KEY_POS] if row and has_tmp_column else None
                 # Why `is not None` rather than bool(): Telethon writes b'' into
                 # position 6 when store_tmp_auth_key_on_disk is False. That is
                 # falsy, but on the next read the swap bug turns it into
@@ -216,10 +230,13 @@ class FixedSQLiteSession(SQLiteSession):
                 )
                 # Clear even if every value turned out anomalous: on the next
                 # super().__init__() Telethon, with the same swap bug, would read
-                # them back into the wrong slots again. Both physical layouts put
-                # these two columns at positions 5 and 6, so naming them here is
-                # unambiguous.
-                conn.execute("UPDATE sessions SET takeout_id = NULL, tmp_auth_key = NULL")
+                # them back into the wrong slots again. Naming the columns here is
+                # unambiguous -- both v8 layouts hold exactly these two at positions
+                # 5 and 6, and a v7 file has only the first of them.
+                if has_tmp_column:
+                    conn.execute("UPDATE sessions SET takeout_id = NULL, tmp_auth_key = NULL")
+                else:
+                    conn.execute("UPDATE sessions SET takeout_id = NULL")
                 conn.commit()
                 return takeout_id, tmp_auth_key
             except BaseException:

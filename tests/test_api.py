@@ -48,6 +48,34 @@ def _make_session_v8(path, takeout_id=None, tmp_auth_value=None, *, with_version
     conn.close()
 
 
+def _make_session_v7(path, takeout_id=None):
+    """Create a v7-shaped sessions table: takeout_id exists, tmp_auth_key does not.
+
+    Telethon adds tmp_auth_key only when upgrading a v7 file (`old == 7` in
+    `_upgrade_database`), so before that the table has five columns and the
+    takeout_id sits in the last one.
+    """
+    conn = sqlite3.connect(str(path))
+    conn.executescript(
+        "CREATE TABLE sessions (dc_id integer primary key, server_address text,"
+        " port integer, auth_key blob, takeout_id integer);"
+        "CREATE TABLE entities (id integer primary key, hash integer not null,"
+        " username text, phone integer, name text, date integer);"
+        "CREATE TABLE sent_files (md5_digest blob, file_size integer, type integer,"
+        " id integer, hash integer, primary key(md5_digest, file_size, type));"
+        "CREATE TABLE update_state (id integer primary key, pts integer, qts integer,"
+        " date integer, seq integer);"
+        "CREATE TABLE version (version integer primary key);"
+        "INSERT INTO version VALUES (7);"
+    )
+    conn.execute(
+        "INSERT INTO sessions VALUES (?, ?, ?, ?, ?)",
+        (2, "localhost", 443, b"x" * 256, takeout_id),
+    )
+    conn.commit()
+    conn.close()
+
+
 def test_fixed_sqlite_session_restores_takeout_id_and_survives_open(tmp_path):
     """The whole point of FixedSQLiteSession.
 
@@ -159,6 +187,36 @@ def test_fixed_sqlite_session_restores_takeout_id_with_swapped_columns(tmp_path)
     sess = FixedSQLiteSession(str(sp))
     try:
         assert sess.takeout_id == 12345
+        assert sess.auth_key is not None and sess.auth_key.key == b"x" * 256
+    finally:
+        sess.close()
+
+
+def test_fixed_sqlite_session_handles_v7_schema(tmp_path):
+    # Регрессия: на схеме version = 7 колонок пять, tmp_auth_key ещё нет.
+    # Обход пропускал такой файл, Telethon доводил схему до 8 и тут же читал
+    # takeout_id как tmp_key -- AuthKey(data=int) -> sha1(int) ->
+    # TypeError: object supporting the buffer API required.
+    sp = tmp_path / "v7.session"
+    _make_session_v7(sp, takeout_id=4242)
+
+    sess = FixedSQLiteSession(str(sp))
+    try:
+        assert sess.takeout_id == 4242
+        assert sess.auth_key is not None and sess.auth_key.key == b"x" * 256
+    finally:
+        sess.close()
+
+
+def test_fixed_sqlite_session_handles_v7_schema_without_takeout(tmp_path):
+    # Тот же файл без takeout_id: обход не должен ничего менять и мешать
+    # штатному апгрейду схемы силами Telethon.
+    sp = tmp_path / "v7_clean.session"
+    _make_session_v7(sp, takeout_id=None)
+
+    sess = FixedSQLiteSession(str(sp))
+    try:
+        assert sess.takeout_id is None
         assert sess.auth_key is not None and sess.auth_key.key == b"x" * 256
     finally:
         sess.close()
