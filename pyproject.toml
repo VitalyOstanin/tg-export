@@ -90,7 +90,7 @@ fail_under = 50
 [tool.ruff]
 target-version = "py311"
 line-length = 110
-extend-exclude = ["export_output", "docs/reviews"]
+extend-exclude = ["export_output", "docs/reviews", "docs/__check"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
@@ -104,7 +104,7 @@ ignore = [
 
 [tool.pyright]
 include = ["tg_export", "tests"]
-exclude = ["export_output", "docs/reviews", ".venv"]
+exclude = ["export_output", "docs/reviews", "docs/__check", ".venv"]
 pythonVersion = "3.11"
 venvPath = "."
 venv = ".venv"
