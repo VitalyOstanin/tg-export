@@ -1249,25 +1249,14 @@ async def _state_reset(account, config_override, output_override, reset_all, del
     await st.open()
     try:
         if reset_all:
-            await st.db.execute("UPDATE export_state SET last_msg_id=0, oldest_msg_id=0, full_history=0")
-            if delete_messages:
-                await st.db.execute("DELETE FROM messages")
-                await st.db.execute("DELETE FROM files")
-            await st.db.commit()
+            await st.reset_chat_progress(delete_messages=delete_messages)
             _diag("Reset all chats.")
         else:
             chat_state = await st.get_chat_state(chat_id)
             if not chat_state:
                 _diag(f"No state for chat {chat_id}")
                 return
-            await st.db.execute(
-                "UPDATE export_state SET last_msg_id=0, oldest_msg_id=0, full_history=0 WHERE chat_id=?",
-                (chat_id,),
-            )
-            if delete_messages:
-                await st.db.execute("DELETE FROM messages WHERE chat_id=?", (chat_id,))
-                await st.db.execute("DELETE FROM files WHERE chat_id=?", (chat_id,))
-            await st.db.commit()
+            await st.reset_chat_progress(chat_id, delete_messages=delete_messages)
             msg = f"Reset chat {chat_id}."
             if delete_messages:
                 msg += " Messages and files records deleted."

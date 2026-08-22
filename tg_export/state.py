@@ -444,11 +444,21 @@ class ExportState:
         update_cols = [*fields.keys(), "updated_at"]
         update_values = {**fields, "updated_at": now}
 
+        # last_msg_id only ever grows: "everything above this id is exported".
+        # Callers write it from a copy read at the start of a chat export, so a
+        # plain assignment would roll the pointer back whenever something else
+        # advanced it meanwhile -- phase 1 of the same run, or a parallel
+        # process -- and the messages in between would be re-fetched forever.
+        def _assignment(column: str) -> str:
+            if column == "last_msg_id":
+                return "last_msg_id=MAX(export_state.last_msg_id, ?)"
+            return f"{column}=?"
+
         sql = (
             f"INSERT INTO export_state ({', '.join(insert_cols)}) "
             f"VALUES ({', '.join('?' * len(insert_cols))}) "
             f"ON CONFLICT(chat_id) DO UPDATE SET "
-            f"{', '.join(f'{c}=?' for c in update_cols)}"
+            f"{', '.join(_assignment(c) for c in update_cols)}"
         )
         params = [insert_values[c] for c in insert_cols] + [update_values[c] for c in update_cols]
         await self.db.execute(sql, params)
@@ -488,6 +498,24 @@ class ExportState:
             full_history=int(full_history),
             messages_count=messages_count,
         )
+
+    async def reset_chat_progress(self, chat_id: int | None = None, *, delete_messages: bool = False):
+        """Rewind export progress for one chat, or for every chat when chat_id is None.
+
+        The regular writers may only move last_msg_id forward (see
+        _upsert_chat_state), so a deliberate rewind cannot go through them --
+        it belongs here, where the intent is explicit.
+        """
+        where = "" if chat_id is None else " WHERE chat_id=?"
+        params: tuple = () if chat_id is None else (chat_id,)
+        await self.db.execute(
+            f"UPDATE export_state SET last_msg_id=0, oldest_msg_id=0, full_history=0{where}",
+            params,
+        )
+        if delete_messages:
+            await self.db.execute(f"DELETE FROM messages{where}", params)
+            await self.db.execute(f"DELETE FROM files{where}", params)
+        await self.commit()
 
     async def get_last_msg_id(self, chat_id: int) -> int | None:
         async with self.db.execute("SELECT last_msg_id FROM export_state WHERE chat_id=?", (chat_id,)) as cur:

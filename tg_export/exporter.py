@@ -772,7 +772,16 @@ class Exporter:
             if batch:
                 await self.state.store_messages_batch(batch)
                 batch.clear()
-            if new_max_id > last_msg_id:
+            # Only a phase 1 that ran to the end may move the pointer. It walks
+            # from the newest message down to last_msg_id, so "everything above
+            # this id is exported" holds only once the walk finished. On a
+            # shutdown mid-walk the untouched interval between the old pointer
+            # and the interruption point would never be fetched again: phase 2
+            # descends from oldest_msg_id and never enters it. Leaving the
+            # pointer alone costs a re-fetch of the messages already stored --
+            # store_messages_batch upserts them and their media is recognised as
+            # already downloaded.
+            if new_max_id > last_msg_id and not self._shutdown:
                 await self.state.set_last_msg_id(chat.id, new_max_id)
             logger.debug("  %s: phase 1 done", chat.name)
 
