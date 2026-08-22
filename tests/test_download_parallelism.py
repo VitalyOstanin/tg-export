@@ -11,6 +11,7 @@ import asyncio
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -122,7 +123,7 @@ async def test_media_downloads_overlap_within_a_chat(state, tmp_path, monkeypatc
         state=state,
         config=MagicMock(),
         renderer=MagicMock(),
-        downloader=downloader,
+        downloader=cast(Any, downloader),
         account="test",
     )
     chat_config = MagicMock()
@@ -181,7 +182,7 @@ async def test_every_message_is_stored_despite_parallel_downloads(state, tmp_pat
         state=state,
         config=MagicMock(),
         renderer=MagicMock(),
-        downloader=_Downloader(limit=4),
+        downloader=cast(Any, _Downloader(limit=4)),
         account="test",
     )
     original_store = state.store_messages_batch

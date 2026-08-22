@@ -388,13 +388,15 @@ def test_rich_swallows_an_unescaped_file_name():
 
     from tg_export.exporter import file_progress_description
 
-    console = Console(file=io.StringIO(), width=80, force_terminal=False)
-    console.print("[draft]report.txt")
-    assert console.file.getvalue() == "report.txt\n"
+    raw = io.StringIO()
+    Console(file=raw, width=80, force_terminal=False).print("[draft]report.txt")
+    assert raw.getvalue() == "report.txt\n"
 
-    console = Console(file=io.StringIO(), width=80, force_terminal=False)
-    console.print(file_progress_description("[draft]report.txt"))
-    assert console.file.getvalue() == "[draft]report.txt\n"
+    escaped = io.StringIO()
+    Console(file=escaped, width=80, force_terminal=False).print(
+        file_progress_description("[draft]report.txt")
+    )
+    assert escaped.getvalue() == "[draft]report.txt\n"
 
 
 def test_upload_progress_is_silent_without_a_terminal(monkeypatch):
@@ -428,6 +430,7 @@ def test_upload_progress_shows_percentage_in_both_modes(monkeypatch):
 
     for by_bytes in (True, False):
         with cli._upload_progress(by_bytes=by_bytes) as progress:
+            assert progress is not None
             kinds = [type(c) for c in progress.columns]
             assert TaskProgressColumn in kinds, (by_bytes, kinds)
 
@@ -474,6 +477,7 @@ async def test_album_progress_never_passes_the_file_count(tmp_path, monkeypatch)
 
     async def send_file(recipient, paths, caption=None, force_document=False, progress_callback=None):
         # Воспроизводит нарезку Telethon: sent -- сквозной, total -- остаток.
+        assert progress_callback is not None
         sent_count = 0
         remaining = len(paths)
         while remaining:

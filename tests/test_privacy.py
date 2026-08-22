@@ -11,6 +11,7 @@ import sqlite3
 import stat
 from pathlib import Path
 
+import click
 import pytest
 
 from tg_export.auth import AccountManager
@@ -92,6 +93,7 @@ def test_api_hash_prompt_hides_input():
     from tg_export.cli import auth_credentials
 
     option = next(p for p in auth_credentials.params if p.name == "api_hash")
+    assert isinstance(option, click.Option)
     assert option.hide_input is True
 
 
