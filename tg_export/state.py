@@ -7,7 +7,7 @@ import json
 import logging
 import sqlite3
 from dataclasses import asdict
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +36,25 @@ from tg_export.models import (
 from tg_export.privacy import restrict_file
 
 logger = logging.getLogger(__name__)
+
+# How long any connection waits for a lock held by another one. The default of
+# sqlite3 is 5 seconds, and the reader that looks up files in a neighbour's
+# database already considered that too little: a writer holds the lock for
+# seconds on a large batch. One constant so every connection waits the same.
+DB_TIMEOUT_SECONDS = 30.0
+
+
+def _now() -> datetime:
+    """Timestamp for the service columns, in UTC with an explicit offset.
+
+    Message dates arrive from Telegram as aware moments, while the service
+    columns used to be filled with a naive local `datetime.now()`: columns
+    declared alike held two different formats, and moving the database between
+    time zones made them incomparable. Rows written by earlier versions keep
+    their local-time values.
+    """
+    return datetime.now(UTC)
+
 
 # Python 3.12+ removed default datetime adapters from sqlite3.
 # Why module-level: register_* are global to the process; once loaded, all
@@ -189,7 +208,7 @@ def _load_messages_for_month_sync(db_path: Path, chat_id: int, month_key: str) -
     loop. Reusing the aiosqlite connection from another thread is unsafe;
     open a short-lived read-only sqlite3 connection per month instead.
     """
-    db = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    db = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=DB_TIMEOUT_SECONDS)
     try:
         db.row_factory = sqlite3.Row
         if month_key == "0000-00":
@@ -241,6 +260,14 @@ CHAT_TABLES = ("messages", "files", "export_state", "catalog_cache")
 # on its own (a dropped column, a changed type, a rebuilt index). Plain column
 # additions are reconciled from the DDL and need no bump.
 SCHEMA_VERSION = 1
+
+# Values the `files.status` column takes. 'done' -- the file is on disk and its
+# size matches; 'partial' -- it is on disk but shorter than announced; the two
+# skipped statuses mean no file was fetched at all, by decision of the config.
+# The set is declared here because the column carries no CHECK: it cannot be
+# added to databases that already exist without rebuilding the table.
+SKIPPED_FILE_STATUSES = ("skipped_by_size", "skipped_by_type")
+FILE_STATUSES = ("done", "partial", *SKIPPED_FILE_STATUSES)
 
 SCHEMA_SQL = """
             CREATE TABLE IF NOT EXISTS export_state (
@@ -355,7 +382,7 @@ class ExportState:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._acquire_lock()
         try:
-            self._db = await aiosqlite.connect(self.db_path)
+            self._db = await aiosqlite.connect(self.db_path, timeout=DB_TIMEOUT_SECONDS)
             self.db.row_factory = aiosqlite.Row
             await self._apply_pragmas()
             await self._create_tables()
@@ -371,13 +398,17 @@ class ExportState:
         # WAL allows concurrent readers and one writer without escalation.
         # synchronous=NORMAL avoids fsync on every commit (durable enough with WAL).
         # cache_size negative = KiB; mmap_size in bytes.
+        # No PRAGMA foreign_keys: the schema declares no FOREIGN KEY, so the
+        # pragma only suggested a protection that does not exist. Integrity
+        # between the tables is kept by the application -- see CHAT_TABLES and
+        # purge_chat, which delete a chat from every table by hand.
         for pragma in (
+            f"PRAGMA busy_timeout = {int(DB_TIMEOUT_SECONDS * 1000)}",
             "PRAGMA journal_mode = WAL",
             "PRAGMA synchronous = NORMAL",
             "PRAGMA temp_store = MEMORY",
             "PRAGMA cache_size = -65536",
             "PRAGMA mmap_size = 268435456",
-            "PRAGMA foreign_keys = ON",
         ):
             await self.db.execute(pragma)
 
@@ -498,7 +529,7 @@ class ExportState:
         if not fields:
             raise ValueError("commit_phase_progress requires at least one field")
 
-        now = datetime.now()
+        now = _now()
         # The INSERT branch must provide values for all NOT NULL columns.
         insert_values = {
             "chat_id": chat_id,
@@ -600,7 +631,7 @@ class ExportState:
         local_path: str,
         status: str = "done",
     ):
-        now = datetime.now()
+        now = _now()
         await self.db.execute(
             """INSERT INTO files (file_id, chat_id, msg_id, expected_size, actual_size, local_path, status, downloaded_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -651,9 +682,20 @@ class ExportState:
         # Why expected_size > 0: when expected_size is 0 (Telegram didn't report
         # a size up-front), actual_size != expected_size will always be true and
         # we'd needlessly re-download every file.
+        # Why the skipped statuses are excluded: such a file was never
+        # downloaded on purpose (too large, or a type the config leaves out), so
+        # `status != 'done'` used to hand verify the very files the
+        # configuration told it to leave alone.
+        # Why the NULL branch: in SQLite a comparison with NULL yields NULL, not
+        # true, so a row of unknown size never reached verification at all.
+        placeholders = ", ".join("?" for _ in SKIPPED_FILE_STATUSES)
         async with self.db.execute(
-            "SELECT * FROM files WHERE status != 'done' "
-            "OR (expected_size > 0 AND actual_size != expected_size)"
+            f"SELECT * FROM files WHERE status NOT IN ({placeholders}) AND ("
+            "  status != 'done'"
+            "  OR (expected_size > 0 AND actual_size IS NULL)"
+            "  OR (expected_size > 0 AND actual_size != expected_size)"
+            ")",
+            tuple(SKIPPED_FILE_STATUSES),
         ) as cur:
             rows = await cur.fetchall()
             return [dict(r) for r in rows]
@@ -888,7 +930,7 @@ class ExportState:
         is_forum: bool,
         is_monoforum: bool,
     ):
-        now = datetime.now()
+        now = _now()
         await self.db.execute(
             """INSERT INTO catalog_cache
                (chat_id, name, type, folder, members_count, messages_count,

@@ -21,6 +21,7 @@ from telethon.errors import FloodWaitError, ServerError, TimedOutError
 from tg_export.config import MediaConfig
 from tg_export.errors import TgExportError
 from tg_export.models import Media, MediaType
+from tg_export.state import DB_TIMEOUT_SECONDS
 
 logger = logging.getLogger(__name__)
 
@@ -112,7 +113,7 @@ def _lookup_file_in_db(db_path: Path, file_id: int) -> str | None:
     """
     # quote: the path goes into a URI, so a `?` in it would start the query
     # string and silently drop mode=ro, opening the sibling database for writing.
-    db = sqlite3.connect(f"file:{quote(str(db_path))}?mode=ro", uri=True, timeout=30.0)
+    db = sqlite3.connect(f"file:{quote(str(db_path))}?mode=ro", uri=True, timeout=DB_TIMEOUT_SECONDS)
     try:
         row = db.execute(
             "SELECT local_path FROM files WHERE file_id=? AND status='done' LIMIT 1",

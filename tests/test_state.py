@@ -461,3 +461,92 @@ async def test_a_fresh_database_records_its_schema_version(tmp_path):
         row = await cur.fetchone()
     assert row is not None and row[0] == SCHEMA_VERSION
     assert SCHEMA_VERSION >= 1
+
+
+@pytest.mark.asyncio
+async def test_a_deliberately_skipped_file_is_not_offered_for_verification(tmp_path):
+    """`status != 'done'` смешивал «пропущено намеренно» и «не докачано».
+
+    Файл, пропущенный по размеру или по типу, физически не скачивался -- verify
+    пытался бы его «перекачать», хотя конфигурация прямо это запретила.
+    """
+    from tg_export.state import ExportState
+
+    async with ExportState(tmp_path / "state.db") as state:
+        await state.register_file(
+            file_id=1,
+            chat_id=10,
+            msg_id=1,
+            expected_size=100,
+            actual_size=0,
+            local_path="<skipped_by_size>",
+            status="skipped_by_size",
+        )
+        await state.register_file(
+            file_id=2,
+            chat_id=10,
+            msg_id=2,
+            expected_size=100,
+            actual_size=40,
+            local_path="/tmp/partial.jpg",
+            status="partial",
+        )
+        await state.commit()
+
+        to_verify = await state.get_files_to_verify()
+
+    assert [row["file_id"] for row in to_verify] == [2]
+
+
+@pytest.mark.asyncio
+async def test_a_file_of_unknown_size_is_offered_for_verification(tmp_path):
+    """Сравнение с NULL даёт NULL, и такая строка не попадала в проверку никогда."""
+    from tg_export.state import ExportState
+
+    db_path = tmp_path / "state.db"
+    async with ExportState(db_path) as state:
+        await state.db.execute(
+            "INSERT INTO files (file_id, chat_id, msg_id, expected_size, actual_size, local_path, status) "
+            "VALUES (3, 10, 3, 100, NULL, '/tmp/unknown.jpg', 'done')"
+        )
+        await state.commit()
+
+        to_verify = await state.get_files_to_verify()
+
+    assert [row["file_id"] for row in to_verify] == [3]
+
+
+@pytest.mark.asyncio
+async def test_the_lock_wait_is_set_explicitly(tmp_path):
+    """Ожидание блокировки зависело от умолчания stdlib (5 с).
+
+    Соседний код считает это недостаточным: чтение из соседней базы открывается
+    с таймаутом 30 с, потому что пишущий процесс удерживает блокировку секундами
+    на большом батче.
+    """
+    from tg_export.state import DB_TIMEOUT_SECONDS, ExportState
+
+    async with ExportState(tmp_path / "state.db") as state, state.db.execute("PRAGMA busy_timeout") as cur:
+        row = await cur.fetchone()
+
+    assert row is not None and row[0] == int(DB_TIMEOUT_SECONDS * 1000)
+
+
+@pytest.mark.asyncio
+async def test_service_timestamps_carry_their_offset(tmp_path):
+    """Служебные метки писались наивным локальным временем, даты сообщений -- со смещением.
+
+    Одинаково объявленные колонки хранили значения двух форматов, и перенос базы
+    между часовыми поясами делал их несравнимыми.
+    """
+    from tg_export.state import ExportState
+
+    async with ExportState(tmp_path / "state.db") as state:
+        await state.set_last_msg_id(10, 5)
+        await state.commit()
+        async with state.db.execute("SELECT updated_at FROM export_state WHERE chat_id=10") as cur:
+            row = await cur.fetchone()
+
+    assert row is not None
+    stamp = datetime.fromisoformat(row[0])
+    assert stamp.tzinfo is not None, f"метка без смещения: {row[0]}"
