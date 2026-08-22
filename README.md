@@ -19,6 +19,7 @@
 - [Автодополнение командной строки](#автодополнение-командной-строки)
 - [Тесты](#тесты)
 - [Разработка](#разработка)
+- [Лицензия](#лицензия)
 
 ## Возможности
 
@@ -190,7 +191,7 @@ chats:
 
 # Что делать с чатами, не попавшими ни в одно правило
 unmatched:
-  action: skip    # skip | export_with_defaults | ask
+  action: skip    # skip | export_with_defaults
 ```
 
 ### 6. Запустить экспорт
@@ -254,7 +255,18 @@ export_output/
 export_output/
   myaccount/
     .tg-export-state.db      # SQLite: состояние экспорта, сообщения, файлы
-    unfiled/
+    index.html               # Оглавление выгрузки
+    personal_info.html       # Профиль (флаг personal_info)
+    contacts.html            # Контакты (флаг contacts)
+    sessions.html            # Активные сессии (флаг sessions)
+    userpics.html            # Фото профиля (флаг userpics)
+    stories.html             # Истории (флаг stories)
+    other_data.html          # Сохранённые рингтоны (флаг profile_music)
+    profile_photos/          # Файлы фото профиля
+    stories/                 # Файлы историй
+    ringtones/               # Файлы рингтонов
+    css/, js/, images/       # Оформление страниц
+    unfiled/                 # Чаты вне папок
       Chat_Name_123456/
         messages.html         # Redirect на первый месяц
         messages_2024-01.html # Сообщения за январь 2024
@@ -262,10 +274,19 @@ export_output/
         photos/               # Скачанные фото
         videos/               # Скачанные видео
         files/                # Скачанные документы
-    folders/
+      Channel_Name_222/       # Канал с монофорумом
+        Monoforum_Name_333/   # Монофорум вложен в каталог своего канала
+    folders/                  # Чаты, разложенные по папкам Telegram
       Work/
-        ...
+        Chat_Name_444/
+    archived/                 # Чаты только из архива Telegram
+      Chat_Name_555/
+    left/                     # Покинутые каналы и группы
+      Channel_Name_666/
 ```
+
+Подкаталог с медиа создаётся только при наличии соответствующих файлов; полный
+перечень подкаталогов по типам медиа -- в [docs/configuration.md](docs/configuration.md#типы-медиа).
 
 ## Глобальные опции
 
@@ -297,9 +318,10 @@ export_output/
 
 ## Документация
 
+- [docs/cli.md](docs/cli.md) -- справочник команд: назначение, опции и коды возврата всех девятнадцати команд.
 - [docs/configuration.md](docs/configuration.md) -- подробное описание YAML-конфигурации экспорта (правила, фильтры, типы медиа, настройки выгрузки).
 - [CHANGELOG.md](CHANGELOG.md) -- список изменений между версиями.
-- [CONTRIBUTING.md](CONTRIBUTING.md) -- руководство для контрибьюторов: установка dev-окружения, запуск тестов, формат коммитов.
+- [CONTRIBUTING.md](CONTRIBUTING.md) -- руководство для контрибьюторов: карта модулей пакета («Устройство пакета»), установка dev-окружения, запуск тестов, формат коммитов.
 - [docs/adr/](docs/adr/) -- архитектурные решения (ADR) в формате MADR.
 - [RELEASING.md](RELEASING.md) -- процесс выпуска версий и конвенции тегов.
 

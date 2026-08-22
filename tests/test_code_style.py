@@ -389,3 +389,26 @@ def test_every_text_file_is_read_as_utf8():
                 continue
             offenders.append((path.name, node.lineno, name))
     assert not offenders, f"добавь encoding='utf-8': {offenders}"
+
+
+def test_every_command_is_described_in_the_cli_reference():
+    """Новая команда должна попасть в docs/cli.md вместе с кодом.
+
+    Справочник разошёлся с интерфейсом однажды -- восемь команд из двадцати не
+    были описаны нигде, и найти их можно было только через --help.
+    """
+    import click
+
+    from tg_export.cli import main
+
+    reference = (PROJECT.parent / "docs" / "cli.md").read_text(encoding="utf-8")
+
+    def names(cmd, prefix=""):
+        if isinstance(cmd, click.Group):
+            for sub in cmd.commands.values():
+                yield from names(sub, f"{prefix}{cmd.name} " if prefix or cmd.name != "main" else "")
+        else:
+            yield (prefix + cmd.name).strip()
+
+    missing = [name for name in names(main) if f"`{name}`" not in reference]
+    assert not missing, f"команды не описаны в docs/cli.md: {missing}"
