@@ -143,7 +143,7 @@ def _resolve_output(account, config_override, output_override, *, missing_config
         raise click.exceptions.Exit(EXIT_FAILURE)
 
     cfg = load_config(config_path)
-    output_base = Path(output_override) if output_override else Path(cfg.output.path)
+    output_base = Path(output_override).expanduser() if output_override else Path(cfg.output.path)
     return account, cfg, output_base
 
 
@@ -427,7 +427,9 @@ def show_config(verbose):
             click.echo("  proxy: none")
         import shutil
 
-        mfs = data.get("min_free_space", "20GB")
+        from tg_export.auth import DEFAULT_MIN_FREE_SPACE
+
+        mfs = data.get("min_free_space", DEFAULT_MIN_FREE_SPACE)
         # Check free space on the output partition, not cwd
         disk_check_path = Path.cwd()
         default_name = mgr.get_default_account()
@@ -435,7 +437,7 @@ def show_config(verbose):
             try:
                 cfg_path = mgr.config_path(default_name)
                 if cfg_path.exists():
-                    acc_cfg = yaml.safe_load(cfg_path.read_text()) or {}
+                    acc_cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
                     output_path = Path(acc_cfg.get("output", {}).get("path", "."))
                     if output_path.exists():
                         disk_check_path = output_path
@@ -449,7 +451,7 @@ def show_config(verbose):
 
     click.echo(f"\n# Credentials: {cred_path}")
     if cred_path.exists():
-        creds = yaml.safe_load(cred_path.read_text())
+        creds = yaml.safe_load(cred_path.read_text(encoding="utf-8"))
         click.echo(f"  api_id: {creds.get('api_id')}")
         click.echo(f"  api_hash: {creds.get('api_hash', '')[:4]}...")
     else:
@@ -679,7 +681,7 @@ async def _tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_fi
     # Collect IDs
     ids = list(chat_ids)
     if catalog_file:
-        with open(catalog_file) as f:
+        with open(catalog_file, encoding="utf-8") as f:
             catalog = json.load(f)
         for entry in catalog:
             if chat_type and entry.get("type") != chat_type:
@@ -752,7 +754,7 @@ async def _tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_fi
                     _diag(f"[{idx}/{total}] id={cid}: ERROR {e}", essential=True)
 
         if output_file:
-            with open(output_file, "w") as f:
+            with open(output_file, "w", encoding="utf-8") as f:
                 json.dump(results, f, ensure_ascii=False, indent=2)
             _diag(f"Saved {len(results)} entries to {output_file}")
         # A chat that could not be queried is a failure even when the rest
@@ -803,7 +805,7 @@ async def _init_config(account, from_catalog, output):
     if from_catalog:
         import yaml
 
-        with open(from_catalog) as f:
+        with open(from_catalog, encoding="utf-8") as f:
             yaml.safe_load(f)
         # Simple passthrough — generate template
         _diag(f"Generating config from catalog: {from_catalog}")
@@ -949,7 +951,7 @@ def _build_downloader(api, state, cfg, output_base: Path):
         names = [s.parent.name for s in sibling_dbs]
         _diag(f"Sibling exports for file dedup: {', '.join(names)}")
 
-    min_free = _mgr().load_min_free_space() or 20 * 1024**3  # default 20GB
+    min_free = _mgr().load_min_free_space()
     return MediaDownloader(
         api=api,
         state=state,

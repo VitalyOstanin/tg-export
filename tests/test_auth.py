@@ -114,3 +114,68 @@ async def test_add_account_opens_the_session_through_the_fixed_subclass(tmp_path
         "клиент логина должен строиться на FixedSQLiteSession, а не на пути-строке"
     )
     created["session"].close()
+
+
+def _global_config(tmp_path, content: str) -> AccountManager:
+    cfg_dir = tmp_path / "tg-export"
+    mgr = AccountManager(config_dir=cfg_dir)
+    mgr.ensure_dirs()
+    (cfg_dir / "config.yaml").write_text(content, encoding="utf-8")
+    return mgr
+
+
+def test_typo_in_the_proxy_section_is_reported_not_ignored(tmp_path):
+    """Опечатка в имени секции давала прямое соединение без единого сообщения.
+
+    Это ровно тот исход, ради предотвращения которого TgApi отказывается
+    работать без python-socks: Telethon подключился бы напрямую, раскрыв
+    настоящий адрес.
+    """
+    from tg_export.config import ConfigError
+
+    mgr = _global_config(tmp_path, "proxi:\n  type: socks5\n  host: 127.0.0.1\n  port: 1080\n")
+    with pytest.raises(ConfigError) as e:
+        mgr.load_proxy()
+    assert "proxi" in str(e.value)
+
+
+def test_proxy_written_as_a_string_is_reported(tmp_path):
+    """`proxy: socks5://...` строкой вместо словаря молча означало «прокси нет»."""
+    from tg_export.config import ConfigError
+
+    mgr = _global_config(tmp_path, "proxy: socks5://127.0.0.1:1080\n")
+    with pytest.raises(ConfigError) as e:
+        mgr.load_proxy()
+    assert "proxy" in str(e.value)
+
+
+def test_unknown_proxy_type_raises_a_domain_error(tmp_path):
+    """Класс ValueError не входил в семейство ошибок tg-export -- вывод шёл трассировкой."""
+    from tg_export.errors import TgExportError
+
+    mgr = _global_config(tmp_path, "proxy:\n  type: socks9\n  host: 127.0.0.1\n  port: 1080\n")
+    with pytest.raises(TgExportError):
+        mgr.load_proxy()
+
+
+def test_min_free_space_zero_disables_the_check(tmp_path):
+    """`min_free_space: 0` -- осознанное отключение проверки свободного места.
+
+    Значение подставлялось через `or`, поэтому ноль заменялся на 20 ГБ и
+    отключить проверку было нельзя.
+    """
+    mgr = _global_config(tmp_path, "min_free_space: 0\n")
+    assert mgr.load_min_free_space() == 0
+
+
+def test_config_dir_follows_xdg_config_home(tmp_path, monkeypatch):
+    """Каталог был зашит в ~/.config/tg-export мимо стандарта XDG."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.delenv("TG_EXPORT_CONFIG_DIR", raising=False)
+    assert AccountManager().config_dir == tmp_path / "xdg" / "tg-export"
+
+
+def test_config_dir_can_be_overridden_by_the_environment(tmp_path, monkeypatch):
+    """Отдельные наборы аккаунтов (рабочий и личный) задать было нечем."""
+    monkeypatch.setenv("TG_EXPORT_CONFIG_DIR", str(tmp_path / "work"))
+    assert AccountManager().config_dir == tmp_path / "work"

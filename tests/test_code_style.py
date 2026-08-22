@@ -351,3 +351,41 @@ def test_cli_takes_formatting_helpers_from_their_own_module():
     """`_format_size` в exporter.py -- лишь псевдоним для format.format_size."""
     src = _read("cli.py")
     assert "_format_size" not in src, "импортируй format_size из tg_export.format"
+
+
+def test_every_text_file_is_read_as_utf8():
+    """Чтение файлов идёт в UTF-8, а не в кодировке локали.
+
+    Запись почти везде выполнялась явно в UTF-8, а чтение -- в
+    `locale.getpreferredencoding`. Конфиг содержит имена папок и чатов на
+    кириллице, поэтому на системе с не-UTF-8 локалью это либо падение, либо
+    искажённые имена, из-за которых правила молча не срабатывают.
+    """
+    import ast
+
+    def _mode(node: ast.Call) -> str:
+        """Режим открытия: у open(path, mode) он второй, у Path.open(mode) -- первый."""
+        args = node.args[1:] if isinstance(node.func, ast.Name) else node.args
+        return getattr(args[0], "value", "") if args else ""
+
+    offenders = []
+    for path in sorted(PROJECT.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+            if name not in {"open", "read_text", "write_text"}:
+                continue
+            if name == "open":
+                target = getattr(node.func, "value", None)
+                # os.open отдаёт дескриптор, ExportState.open открывает БД --
+                # ни у того, ни у другого кодировки нет.
+                if isinstance(target, ast.Name) and target.id in {"os", "self"}:
+                    continue
+                if "b" in _mode(node):
+                    continue
+            if any(kw.arg == "encoding" for kw in node.keywords):
+                continue
+            offenders.append((path.name, node.lineno, name))
+    assert not offenders, f"добавь encoding='utf-8': {offenders}"

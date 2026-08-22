@@ -42,9 +42,32 @@ def validate_account_name(name: str) -> str:
     return name
 
 
+# Default amount of free disk space an export refuses to go below. Declared
+# once: the value used to be repeated as a literal in the caller and as a
+# string in the output of `tg-export config`.
+DEFAULT_MIN_FREE_SPACE = "20GB"
+
+# Keys the global config.yaml may carry.
+_KNOWN_GLOBAL_KEYS = {"proxy", "min_free_space"}
+
+
+def default_config_dir() -> Path:
+    """Where accounts, sessions and the global config live.
+
+    TG_EXPORT_CONFIG_DIR wins, so separate sets of accounts (work and personal)
+    can live side by side; otherwise the XDG Base Directory location is used.
+    """
+    override = os.environ.get("TG_EXPORT_CONFIG_DIR")
+    if override:
+        return Path(override).expanduser()
+    xdg = os.environ.get("XDG_CONFIG_HOME")
+    base = Path(xdg).expanduser() if xdg else Path.home() / ".config"
+    return base / "tg-export"
+
+
 class AccountManager:
     def __init__(self, config_dir: Path | None = None):
-        self.config_dir = config_dir or Path.home() / ".config" / "tg-export"
+        self.config_dir = Path(config_dir) if config_dir else default_config_dir()
 
     def ensure_dirs(self):
         self.config_dir.mkdir(parents=True, exist_ok=True)
@@ -89,13 +112,13 @@ class AccountManager:
     def set_default_account(self, name: str):
         """Set default account alias."""
         default_path = self.config_dir / "default_account"
-        default_path.write_text(name)
+        default_path.write_text(name, encoding="utf-8")
 
     def get_default_account(self) -> str | None:
         """Get default account alias, or None."""
         default_path = self.config_dir / "default_account"
         if default_path.exists():
-            return default_path.read_text().strip()
+            return default_path.read_text(encoding="utf-8").strip()
         return None
 
     def resolve_account(self, account: str | None) -> str:
@@ -112,7 +135,7 @@ class AccountManager:
     def save_credentials(self, api_id: int, api_hash: str):
         cred_path = self.config_dir / "api_credentials.yaml"
         data = {"api_id": api_id, "api_hash": api_hash}
-        cred_path.write_text(yaml.dump(data, default_flow_style=False))
+        cred_path.write_text(yaml.dump(data, default_flow_style=False), encoding="utf-8")
         os.chmod(cred_path, 0o600)
 
     def load_credentials(self) -> tuple[int, str]:
@@ -125,7 +148,7 @@ class AccountManager:
         # Warn if permissions are too loose; does not block to keep CI fixtures simple.
         tighten_if_loose(cred_path)
         try:
-            data = yaml.safe_load(cred_path.read_text())
+            data = yaml.safe_load(cred_path.read_text(encoding="utf-8"))
         except yaml.YAMLError as e:
             raise CredentialsError(f"Cannot parse {cred_path}: {e}") from e
         if not isinstance(data, dict):
@@ -145,40 +168,73 @@ class AccountManager:
         treatment as api_credentials.yaml -- until now its mode was never
         looked at.
         """
+        from tg_export.config import ConfigError
+
         config_path = self.config_dir / "config.yaml"
         if not config_path.exists():
             return {}
         tighten_if_loose(config_path)
-        return yaml.safe_load(config_path.read_text()) or {}
+        try:
+            data = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        except yaml.YAMLError as e:
+            raise ConfigError(f"Cannot parse {config_path}: {e}") from e
+        if not isinstance(data, dict):
+            raise ConfigError(f"{config_path} must contain a YAML mapping, got {type(data).__name__}")
+        # A typo in a section name used to be ignored in silence, and for the
+        # proxy section that means connecting directly instead -- exactly the
+        # outcome TgApi refuses to allow when python-socks is missing.
+        unknown = set(data) - _KNOWN_GLOBAL_KEYS
+        if unknown:
+            known = ", ".join(sorted(_KNOWN_GLOBAL_KEYS))
+            raise ConfigError(
+                f"Unknown key(s) in {config_path}: {', '.join(sorted(unknown))}. Known keys: {known}"
+            )
+        return data
 
     def load_proxy(self) -> tuple | None:
         """Load global proxy settings from config.yaml."""
+        from tg_export.config import ConfigError
+
         data = self.load_global_config()
-        proxy_raw = data.get("proxy")
-        if not proxy_raw or not isinstance(proxy_raw, dict):
+        if "proxy" not in data:
+            return None
+        proxy_raw = data["proxy"]
+        if not isinstance(proxy_raw, dict):
+            raise ConfigError(
+                f"proxy must be a mapping with type/host/port, got {type(proxy_raw).__name__} ({proxy_raw!r})"
+            )
+        if not proxy_raw:
             return None
         proxy_type = proxy_raw.get("type", "socks5")
         valid_types = ("socks5", "socks4", "http")
         if proxy_type not in valid_types:
-            raise ValueError(f"Unknown proxy type: {proxy_type!r}, expected one of {valid_types}")
+            raise ConfigError(f"Unknown proxy type: {proxy_type!r}, expected one of {valid_types}")
+        port = proxy_raw.get("port", 1080)
+        if isinstance(port, bool) or not isinstance(port, int):
+            raise ConfigError(f"proxy.port must be an integer, got {port!r}")
+        host = proxy_raw.get("host", "127.0.0.1")
+        if not isinstance(host, str) or not host:
+            raise ConfigError(f"proxy.host must be a non-empty string, got {host!r}")
         return (
             proxy_type,
-            proxy_raw.get("host", "127.0.0.1"),
-            proxy_raw.get("port", 1080),
+            host,
+            port,
             proxy_raw.get("rdns", True),
             proxy_raw.get("username"),
             proxy_raw.get("password"),
         )
 
-    def load_min_free_space(self) -> int | None:
-        """Load min_free_space from global config. Returns bytes or None."""
+    def load_min_free_space(self) -> int:
+        """Free space an export must keep, in bytes.
+
+        Returns the default when the key is absent. A caller-side ``or`` used
+        to swallow ``min_free_space: 0`` -- a deliberate way to switch the check
+        off -- and silently substitute the default instead.
+        """
         from tg_export.config import parse_size
 
         data = self.load_global_config()
-        val = data.get("min_free_space")
-        if val is None:
-            return None
-        return parse_size(val)
+        return parse_size(data.get("min_free_space", DEFAULT_MIN_FREE_SPACE))
 
     async def add_account(self, name: str):
         """Interactive Telethon login. Requires terminal interaction."""

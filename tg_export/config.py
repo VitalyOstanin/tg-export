@@ -11,6 +11,7 @@ from typing import Any
 import yaml
 
 from tg_export.errors import TgExportError
+from tg_export.models import ChatType, MediaType
 
 
 class ConfigError(TgExportError):
@@ -261,16 +262,68 @@ class Config:
 # ---------------------------------------------------------------------------
 
 
+# Media kinds accepted in `media.types`, plus the catch-all.
+_MEDIA_TYPE_NAMES = {t.value for t in MediaType} | {"all"}
+
+# Range documented for `concurrent_downloads`. Beyond it the value would reach
+# asyncio.Semaphore unchecked: zero produces an acquire nobody ever satisfies.
+MIN_CONCURRENT_DOWNLOADS = 1
+MAX_CONCURRENT_DOWNLOADS = 5
+
+
+def _parse_media_types(value: Any) -> list[str]:
+    """Validate `media.types`, which must be a list of known media kinds.
+
+    A scalar (`types: photo`) used to pass through as a string, turning the
+    membership test in the downloader into a substring search: with
+    `types: video_note` the check `"video" not in "video_note"` is false, so
+    ordinary videos were downloaded although only round ones were configured.
+    """
+    if value == "all":
+        return ["all"]
+    if isinstance(value, str) or not isinstance(value, list):
+        raise ConfigError(
+            f"media.types must be a list, got {type(value).__name__} ({value!r}); "
+            f"write it as [photo, video] or as the single word all"
+        )
+    allowed = ", ".join(sorted(_MEDIA_TYPE_NAMES))
+    for item in value:
+        if item not in _MEDIA_TYPE_NAMES:
+            raise ConfigError(f"Unknown media type {item!r} in media.types; allowed values: {allowed}")
+    return list(value)
+
+
+def _parse_concurrent_downloads(value: Any) -> int:
+    """Validate `concurrent_downloads` against the documented range."""
+    # bool is an int in Python, and `concurrent_downloads: true` means nothing.
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ConfigError(
+            f"media.concurrent_downloads must be an integer "
+            f"between {MIN_CONCURRENT_DOWNLOADS} and {MAX_CONCURRENT_DOWNLOADS}, got {value!r}"
+        )
+    if not MIN_CONCURRENT_DOWNLOADS <= value <= MAX_CONCURRENT_DOWNLOADS:
+        raise ConfigError(
+            f"media.concurrent_downloads must be between {MIN_CONCURRENT_DOWNLOADS} "
+            f"and {MAX_CONCURRENT_DOWNLOADS}, got {value}"
+        )
+    return value
+
+
 def _parse_media_config(d: dict) -> MediaConfig:
-    types = d.get("types", ["photo"])
-    if types == "all":
-        types = ["all"]
-    max_size = parse_size(d.get("max_file_size", "100MB"))
-    concurrent = d.get("concurrent_downloads", 3)
-    return MediaConfig(types=types, max_file_size_bytes=max_size, concurrent_downloads=concurrent)
+    return MediaConfig(
+        types=_parse_media_types(d.get("types", ["photo"])),
+        max_file_size_bytes=parse_size(d.get("max_file_size", "100MB")),
+        concurrent_downloads=_parse_concurrent_downloads(d.get("concurrent_downloads", 3)),
+    )
 
 
-def _parse_date(val: Any) -> date | None:
+def _parse_date(val: Any, field_name: str) -> date | None:
+    """Parse a date field, naming the field when the value is unusable.
+
+    A bare ValueError from date.fromisoformat named neither the field nor the
+    chat whose rule carried the typo, and any other type (`date_from: 2024`
+    reads as a YAML integer) used to be dropped without a word.
+    """
     if val is None:
         return None
     if isinstance(val, datetime):
@@ -278,8 +331,11 @@ def _parse_date(val: Any) -> date | None:
     if isinstance(val, date):
         return val
     if isinstance(val, str):
-        return date.fromisoformat(val)
-    return None
+        try:
+            return date.fromisoformat(val)
+        except ValueError as e:
+            raise ConfigError(f"Invalid date in {field_name}: {val!r}; expected YYYY-MM-DD") from e
+    raise ConfigError(f"Invalid date in {field_name}: {val!r}; expected YYYY-MM-DD")
 
 
 def _parse_chat_rule(d: dict) -> ChatRule:
@@ -288,8 +344,8 @@ def _parse_chat_rule(d: dict) -> ChatRule:
         id=d.get("id"),
         name=d.get("name"),
         media=media,
-        date_from=_parse_date(d.get("date_from")),
-        date_to=_parse_date(d.get("date_to")),
+        date_from=_parse_date(d.get("date_from"), "chats[].date_from"),
+        date_to=_parse_date(d.get("date_to"), "chats[].date_to"),
         skip=d.get("skip", False),
     )
 
@@ -300,8 +356,8 @@ def _parse_type_rule(d: dict) -> TypeRule:
     media = _parse_media_config(d["media"]) if "media" in d else None
     return TypeRule(
         media=media,
-        date_from=_parse_date(d.get("date_from")),
-        date_to=_parse_date(d.get("date_to")),
+        date_from=_parse_date(d.get("date_from"), "type_rules.*.date_from"),
+        date_to=_parse_date(d.get("date_to"), "type_rules.*.date_to"),
         skip=False,
     )
 
@@ -349,6 +405,33 @@ _KNOWN_TOP_LEVEL_KEYS = {
 }
 
 
+# Chat types and categories that may head a `type_rules` block. A typo here
+# used to disable the rule silently: matching is by exact key, so an unknown
+# one simply never matches.
+_TYPE_RULE_KEYS = {t.value for t in ChatType} | set(TYPE_CATEGORIES)
+
+# Sources `import_existing` can point at. Only tdesktop is read today; an entry
+# of any other type would be skipped by the consumer without a word.
+_IMPORT_TYPES = {"tdesktop"}
+
+
+def _parse_import_entry(entry: Any) -> ImportExistingEntry:
+    """Validate one `import_existing` record.
+
+    Both keys used to be read by direct indexing, so a missing one produced a
+    KeyError with a traceback instead of naming the section at fault.
+    """
+    if not isinstance(entry, dict):
+        raise ConfigError(f"import_existing entries must be mappings, got {type(entry).__name__}")
+    for key in ("path", "type"):
+        if key not in entry:
+            raise ConfigError(f"import_existing entry is missing the {key!r} key: {entry!r}")
+    allowed = ", ".join(sorted(_IMPORT_TYPES))
+    if entry["type"] not in _IMPORT_TYPES:
+        raise ConfigError(f"Unknown import_existing type {entry['type']!r}; supported values: {allowed}")
+    return ImportExistingEntry(path=entry["path"], type=entry["type"])
+
+
 def _validate_choice(value: str, allowed: set[str], field_name: str) -> str:
     if value not in allowed:
         allowed_str = ", ".join(sorted(allowed))
@@ -358,8 +441,10 @@ def _validate_choice(value: str, allowed: set[str], field_name: str) -> str:
 
 def load_config(path: Path) -> Config:
     """Load and validate YAML config file."""
-    with open(path) as f:
-        raw = yaml.safe_load(f)
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as e:
+        raise ConfigError(f"Cannot parse {path}: {e}") from e
 
     if not isinstance(raw, dict):
         raise ConfigError(f"Config must be a YAML mapping, got {type(raw).__name__}")
@@ -373,7 +458,10 @@ def load_config(path: Path) -> Config:
     # Output
     out_raw = raw.get("output", {})
     output = OutputConfig(
-        path=out_raw.get("path", "./export_output"),
+        # The shell expands ~ only for unquoted arguments, so a path written in
+        # YAML reaches us verbatim: without this a directory literally named ~
+        # would be created in the current working directory.
+        path=str(Path(out_raw.get("path", "./export_output")).expanduser()),
         format=_validate_choice(out_raw.get("format", "html"), _OUTPUT_FORMATS, "output.format"),
     )
 
@@ -382,20 +470,13 @@ def load_config(path: Path) -> Config:
     media_raw = def_raw.get("media", {})
     defaults = DefaultsConfig(
         media=_parse_media_config(media_raw),
-        date_from=_parse_date(def_raw.get("date_from")),
-        date_to=_parse_date(def_raw.get("date_to")),
+        date_from=_parse_date(def_raw.get("date_from"), "defaults.date_from"),
+        date_to=_parse_date(def_raw.get("date_to"), "defaults.date_to"),
         export_service_messages=def_raw.get("export_service_messages", True),
     )
 
     # Import existing
-    import_existing = []
-    for entry in raw.get("import_existing", []):
-        import_existing.append(
-            ImportExistingEntry(
-                path=entry["path"],
-                type=entry["type"],
-            )
-        )
+    import_existing = [_parse_import_entry(entry) for entry in raw.get("import_existing", [])]
 
     # Folders
     folders = {}
@@ -405,6 +486,9 @@ def load_config(path: Path) -> Config:
     # Type rules
     type_rules = {}
     for type_key, type_data in raw.get("type_rules", {}).items():
+        if type_key not in _TYPE_RULE_KEYS:
+            allowed = ", ".join(sorted(_TYPE_RULE_KEYS))
+            raise ConfigError(f"Unknown key {type_key!r} in type_rules; allowed values: {allowed}")
         type_rules[type_key] = _parse_type_rule(type_data)
 
     # Chats

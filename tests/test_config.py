@@ -247,3 +247,106 @@ def test_max_media_file_size_ignores_chats_of_a_skipped_folder(tmp_path):
     cfg = load_config(path)
 
     assert cfg.max_media_file_size() == 50 * 1024**2
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["0", "-1", "6", "'3'", "true"],
+    ids=["zero-hangs", "negative-raises", "above-range", "string", "bool"],
+)
+def test_concurrent_downloads_outside_the_documented_range_is_rejected(tmp_path, value):
+    """`concurrent_downloads: 0` подвешивал экспорт молча и без таймаута.
+
+    Значение уходило прямо в `asyncio.Semaphore`: ноль давал захват, который
+    никогда не будет удовлетворён, отрицательное -- ValueError уже в середине
+    настройки экспорта, строка -- TypeError там же. Документация при этом
+    обещает диапазон 1-5.
+    """
+    path = _write_config(tmp_path, f"defaults:\n  media:\n    concurrent_downloads: {value}\n")
+    with pytest.raises(ConfigError) as e:
+        load_config(path)
+    assert "concurrent_downloads" in str(e.value)
+
+
+def test_media_types_as_a_scalar_is_rejected(tmp_path):
+    """`types: photo` делал проверку вхождения поиском по подстроке.
+
+    При `types: video_note` условие `"video" not in "video_note"` ложно, и
+    обычные видео скачивались, хотя настроены были только кружки.
+    """
+    path = _write_config(tmp_path, "defaults:\n  media:\n    types: photo\n")
+    with pytest.raises(ConfigError) as e:
+        load_config(path)
+    assert "types" in str(e.value)
+
+
+def test_unknown_media_type_is_rejected(tmp_path):
+    """Опечатка `photos` не давала ошибки: файлы просто никогда не скачивались."""
+    path = _write_config(tmp_path, "defaults:\n  media:\n    types: [photos]\n")
+    with pytest.raises(ConfigError) as e:
+        load_config(path)
+    assert "photos" in str(e.value)
+    assert "photo" in str(e.value)
+
+
+def test_media_types_all_stays_valid(tmp_path):
+    """`types: all` -- документированная форма записи скаляром."""
+    path = _write_config(tmp_path, "defaults:\n  media:\n    types: all\n")
+    assert load_config(path).defaults.media.types == ["all"]
+
+
+def test_broken_yaml_reports_the_file_instead_of_a_traceback(tmp_path):
+    """Синтаксическая ошибка YAML выходила трассировкой мимо обработчика."""
+    path = _write_config(tmp_path, "output:\n  format: [html\n")
+    with pytest.raises(ConfigError) as e:
+        load_config(path)
+    assert str(path) in str(e.value)
+
+
+def test_invalid_date_names_the_field(tmp_path):
+    """`ValueError: Invalid isoformat string` не говорил, где именно ошибка."""
+    path = _write_config(tmp_path, "defaults:\n  date_from: 01.05.2024\n")
+    with pytest.raises(ConfigError) as e:
+        load_config(path)
+    assert "date_from" in str(e.value)
+    assert "01.05.2024" in str(e.value)
+
+
+def test_date_of_a_wrong_type_is_not_silently_dropped(tmp_path):
+    """`date_from: 2024` -- YAML-число; настройка молча терялась."""
+    path = _write_config(tmp_path, "defaults:\n  date_from: 2024\n")
+    with pytest.raises(ConfigError) as e:
+        load_config(path)
+    assert "date_from" in str(e.value)
+
+
+def test_import_existing_without_type_names_the_section(tmp_path):
+    """Пропущенный ключ давал KeyError с трассировкой."""
+    path = _write_config(tmp_path, "import_existing:\n  - path: /tmp/x\n")
+    with pytest.raises(ConfigError) as e:
+        load_config(path)
+    assert "import_existing" in str(e.value)
+    assert "type" in str(e.value)
+
+
+def test_unknown_import_existing_type_is_rejected(tmp_path):
+    """Опечатка `tdektop` молча пропускалась потребителем."""
+    path = _write_config(tmp_path, "import_existing:\n  - path: /tmp/x\n    type: tdektop\n")
+    with pytest.raises(ConfigError) as e:
+        load_config(path)
+    assert "tdektop" in str(e.value)
+
+
+def test_unknown_type_rule_key_is_rejected(tmp_path):
+    """Опечатка в имени типа чата отключала правило без единого сообщения."""
+    path = _write_config(tmp_path, "type_rules:\n  privat:\n    skip: true\n")
+    with pytest.raises(ConfigError) as e:
+        load_config(path)
+    assert "privat" in str(e.value)
+
+
+def test_output_path_expands_the_tilde(tmp_path):
+    """`output.path: ~/exports` создавал каталог с именем `~` в текущем каталоге."""
+    path = _write_config(tmp_path, "output:\n  path: ~/exports\n")
+    cfg = load_config(path)
+    assert not cfg.output.path.startswith("~"), cfg.output.path
