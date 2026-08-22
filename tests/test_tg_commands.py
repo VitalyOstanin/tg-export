@@ -499,3 +499,77 @@ async def test_album_progress_never_passes_the_file_count(tmp_path, monkeypatch)
 
     assert totals[1] == 25, totals
     assert max(updates) <= 25, max(updates)
+
+
+# ---------------------------------------------------------------------------
+# tg info: разделение потоков и машиночитаемый вывод
+# ---------------------------------------------------------------------------
+
+
+def _invoke_tg_info(args: list[str], *, chat_ids=("123",), fail_on=()):
+    """Запустить `tg info` на подставном API; чаты из fail_on отвечают ошибкой."""
+    from click.testing import CliRunner
+
+    from tg_export.cli import main
+
+    def get_entity(cid):
+        if cid in fail_on:
+            raise RuntimeError("chat unavailable")
+        entity = MagicMock()
+        entity.title = f"Chat {cid}"
+        return entity
+
+    history = MagicMock()
+    history.count = 7
+    history.messages = []
+
+    mock_api = AsyncMock()
+    mock_api.client.get_entity = AsyncMock(side_effect=get_entity)
+    mock_api.client = AsyncMock(return_value=history, get_entity=AsyncMock(side_effect=get_entity))
+    mock_api.connect = AsyncMock()
+    mock_api.disconnect = AsyncMock()
+
+    with patch("tg_export.cli._mgr") as mock_mgr, patch("tg_export.api.TgApi", return_value=mock_api):
+        mgr = MagicMock()
+        mgr.resolve_account.return_value = "test"
+        mgr.load_credentials.return_value = ("id", "hash")
+        mgr.load_proxy.return_value = None
+        mgr.session_path.return_value = "/tmp/test.session"
+        mock_mgr.return_value = mgr
+
+        return CliRunner().invoke(main, ["tg", "info", *chat_ids, *args])
+
+
+def test_tg_info_json_goes_to_stdout_alone():
+    """Единственный способ получить машинный результат -- запись в файл; в пайп ничего.
+
+    Остальные запросные команды (`account list`, `auth check`, `state show`)
+    отдают JSON в stdout по флагу --json.
+    """
+    import json
+
+    result = _invoke_tg_info(["--json"], chat_ids=("123", "456"))
+
+    assert result.exit_code == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert [entry["id"] for entry in payload] == [123, 456]
+    assert all(entry["messages"] == 7 for entry in payload)
+
+
+def test_tg_info_keeps_the_counter_out_of_the_data_stream():
+    """`tg info ... | grep` получал вперемешку данные и служебные строки."""
+    result = _invoke_tg_info([], chat_ids=("123", "456"))
+
+    assert result.exit_code == 0, result.stderr
+    assert "[1/2]" not in result.stdout, result.stdout
+    assert "Chat 123" in result.stdout
+    assert "[1/2]" in result.stderr
+
+
+def test_tg_info_reports_a_failed_chat_on_stderr():
+    """Строка ERROR в stdout ломала машинную обработку вывода."""
+    result = _invoke_tg_info([], chat_ids=("123", "456"), fail_on=(456,))
+
+    assert result.exit_code == 1
+    assert "ERROR" not in result.stdout
+    assert "chat unavailable" in result.stderr

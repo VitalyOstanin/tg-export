@@ -703,17 +703,20 @@ def _entity_name(entity) -> str:
 @click.option("--type", "chat_type", default=None, help="Filter by chat type (with --from-catalog)")
 @click.option("--last", "last_n", type=int, default=0, help="Show last N messages per chat")
 @click.option("--output", "output_file", type=click.Path(), default=None, help="Save results to JSON file")
-def tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_file):
+@click.option("--json", "as_json", is_flag=True, help="Output as machine-readable JSON")
+def tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_file, as_json):
     """Show chat info: message count, type, title.
 
     Accepts one or more CHAT_IDS, or use --from-catalog with --type to batch query.
     """
-    exit_code = asyncio.run(_tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_file))
+    exit_code = asyncio.run(
+        _tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_file, as_json)
+    )
     if exit_code:
         raise click.exceptions.Exit(exit_code)
 
 
-async def _tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_file):
+async def _tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_file, as_json=False):
     import json
 
     from telethon.tl.functions.messages import GetHistoryRequest
@@ -782,10 +785,12 @@ async def _tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_fi
                     entry["last_messages"] = messages
                 results.append(entry)
 
-                if not output_file:
-                    click.echo(f"[{idx}/{total}] {title} (id={cid}): {count} msgs, last: {last_date}")
-                elif idx % 50 == 0:
-                    _diag(f"  [{idx}/{total}]...")
+                # The counter is progress, not data: mixed into stdout it
+                # reached `tg info ... | grep` together with the results.
+                if total > 1:
+                    _diag(f"  [{idx}/{total}] {title} (id={cid})")
+                if not output_file and not as_json:
+                    click.echo(f"{title} (id={cid}): {count} msgs, last: {last_date}")
 
             except Exception as e:
                 entry = {"id": cid, "error": str(e), "messages": 0}
@@ -793,6 +798,8 @@ async def _tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_fi
                 if not output_file:
                     _diag(f"[{idx}/{total}] id={cid}: ERROR {e}", essential=True)
 
+        if as_json:
+            click.echo(json.dumps(results, ensure_ascii=False, indent=2))
         if output_file:
             with open(output_file, "w", encoding="utf-8") as f:
                 json.dump(results, f, ensure_ascii=False, indent=2)
