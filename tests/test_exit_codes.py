@@ -170,3 +170,41 @@ async def test_state_reset_unknown_chat_is_error(tmp_path, monkeypatch):
 
 def _unused(_: Path) -> None:
     """Ссылка на Path, чтобы импорт не выглядел лишним для линтера."""
+
+
+def test_domain_error_carries_its_own_exit_code(monkeypatch):
+    """Код возврата берётся из класса ошибки, а не назначается на месте перехвата.
+
+    Пока run_cli подставляет единицу сам, добавить ошибку с другим кодом
+    (например, «занято другим процессом») нельзя, не правя точку входа.
+    """
+    import click
+
+    from tg_export import cli
+    from tg_export.errors import TgExportError
+
+    class BusyError(TgExportError):
+        exit_code = 7
+
+    def boom(*args, **kwargs):
+        raise BusyError("resource is busy")
+
+    monkeypatch.setattr(cli.main, "main", boom)
+    monkeypatch.setattr(click, "echo", lambda *a, **k: None)
+
+    with pytest.raises(SystemExit) as excinfo:
+        cli.run_cli()
+    assert excinfo.value.code == 7
+
+
+def test_exit_codes_are_defined_once():
+    """Константы кодов возврата живут рядом с иерархией ошибок, а не в CLI."""
+    from tg_export import cli, errors
+
+    assert (errors.EXIT_OK, errors.EXIT_FAILURE, errors.EXIT_SIGINT) == (0, 1, 130)
+    # cli продолжает их экспортировать, но повторно не объявляет.
+    assert (cli.EXIT_OK, cli.EXIT_FAILURE, cli.EXIT_SIGINT) == (
+        errors.EXIT_OK,
+        errors.EXIT_FAILURE,
+        errors.EXIT_SIGINT,
+    )

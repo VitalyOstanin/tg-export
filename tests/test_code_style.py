@@ -478,3 +478,18 @@ def test_one_command_runs_everything_ci_runs():
     script = (PROJECT.parent / "scripts" / "check.sh").read_text(encoding="utf-8")
     missing = [key for key in _ci_check_commands() if key not in script]
     assert not missing, f"проверки CI отсутствуют в scripts/check.sh: {missing}"
+
+
+def test_cli_does_not_use_click_private_exit_exception():
+    """Завершение команды -- через ctx.exit(), а не через внутренний класс click.
+
+    `click.exceptions.Exit` не вынесен в публичное пространство имён (в 8.3.3
+    `hasattr(click, "Exit")` даёт False), то есть обращение к нему опирается на
+    деталь реализации зависимости. Документированный способ -- `ctx.exit(code)`.
+    """
+    offenders = []
+    for path in PROJECT.rglob("*.py"):
+        for ln_no, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+            if "click.exceptions." in line:
+                offenders.append((path.name, ln_no, line.strip()))
+    assert not offenders, f"использован внутренний API click: {offenders!r}"

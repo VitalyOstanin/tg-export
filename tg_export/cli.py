@@ -42,7 +42,13 @@ import click
 import yaml
 
 from tg_export.auth import AccountManager
-from tg_export.errors import TakeoutUnavailableError, TgExportError
+from tg_export.errors import (
+    EXIT_FAILURE,
+    EXIT_OK,
+    EXIT_SIGINT,
+    TakeoutUnavailableError,
+    TgExportError,
+)
 from tg_export.privacy import ensure_private_dir
 
 logger = logging.getLogger(__name__)
@@ -89,12 +95,28 @@ def _error(message: str, **kwargs) -> None:
     _diag(message, essential=True, **kwargs)
 
 
-# Exit codes. 0 -- success, 1 -- the command reported a failure, 2 -- Click's
-# own usage error, 128 + N -- terminated by signal N (130 for SIGINT, 143 for
-# SIGTERM), the convention every shell already understands.
-EXIT_OK = 0
-EXIT_FAILURE = 1
-EXIT_SIGINT = 130
+# EXIT_OK / EXIT_FAILURE / EXIT_SIGINT come from tg_export.errors, where they
+# sit next to the exception classes they belong to; they are imported above and
+# re-exported here because commands read them by these names.
+
+
+def _fail(message: str | None = None, code: int = EXIT_FAILURE):
+    """Report a refusal and end the command with ``code``.
+
+    One place decides how a command stops, instead of each site pairing its own
+    message with its own exception. ``ctx.exit`` is Click's documented way out;
+    the class it raises is not part of the public namespace, so reaching for it
+    directly tied the code to an implementation detail of the dependency.
+
+    Outside a Click invocation (a helper called straight from a test) there is
+    no context to exit, and SystemExit carries the same code.
+    """
+    if message:
+        _error(message)
+    ctx = click.get_current_context(silent=True)
+    if ctx is not None:
+        ctx.exit(code)
+    raise SystemExit(code)
 
 
 def _export_exit_code(*, signum: int | None, error_count: int) -> int:
@@ -155,7 +177,7 @@ def _resolve_output(
         _error(f"Config not found: {config_path}")
         if missing_config_hint:
             _error(missing_config_hint.format(account=account))
-        raise click.exceptions.Exit(EXIT_FAILURE)
+        _fail()
 
     cfg = load_config(config_path)
     if output_override:
@@ -196,8 +218,7 @@ async def _opened_state(account, config_override, output_override, *, required: 
 
     if not state_path.exists():
         if required:
-            _error("No state database found.")
-            raise click.exceptions.Exit(EXIT_FAILURE)
+            _fail("No state database found.")
         yield None, output_base, account
         return
 
@@ -322,8 +343,7 @@ def auth_add(name):
     mgr = _mgr()
     cred_path = mgr.config_dir / "api_credentials.yaml"
     if not cred_path.exists():
-        _error("No API credentials found. Run 'tg-export auth credentials' first.")
-        raise click.exceptions.Exit(1)
+        _fail("No API credentials found. Run 'tg-export auth credentials' first.")
     asyncio.run(mgr.add_account(name))
     _diag(f"Account '{name}' added successfully.")
 
@@ -335,7 +355,7 @@ def auth_check(name, as_json):
     """Check if account sessions are valid."""
     exit_code = asyncio.run(_auth_check(name, as_json))
     if exit_code:
-        raise click.exceptions.Exit(exit_code)
+        _fail(code=exit_code)
 
 
 async def _auth_check(name, as_json=False):
@@ -426,8 +446,7 @@ def account_default(name):
     mgr = _mgr()
     if name:
         if name not in mgr.list_accounts():
-            _error(f"Account '{name}' not found.")
-            raise click.exceptions.Exit(1)
+            _fail(f"Account '{name}' not found.")
         mgr.set_default_account(name)
         _diag(f"Default account set to '{name}'.")
     else:
@@ -444,8 +463,7 @@ def account_remove(name):
     """Remove a Telegram account."""
     mgr = _mgr()
     if name not in mgr.list_accounts():
-        _diag(f"Account '{name}' not found.", essential=True)
-        raise click.exceptions.Exit(EXIT_FAILURE)
+        _fail(f"Account '{name}' not found.")
     mgr.remove_account(name)
     _diag(f"Account '{name}' removed.")
 
@@ -734,7 +752,7 @@ def tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_file, as_
         _tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_file, as_json)
     )
     if exit_code:
-        raise click.exceptions.Exit(exit_code)
+        _fail(code=exit_code)
 
 
 async def _tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_file, as_json=False):
@@ -962,7 +980,7 @@ def run_export(account, config, output, verify, dry_run, require_takeout):
         )
     )
     if exit_code:
-        raise click.exceptions.Exit(exit_code)
+        _fail(code=exit_code)
 
 
 async def _start_takeout(api, cfg, *, require: bool) -> bool:
@@ -1429,13 +1447,12 @@ async def _state_show(account, config_override, output_override, chat_id, as_jso
 def state_reset(account, config, output, reset_all, delete_messages, yes, chat_id):
     """Reset export state to force re-download. Specify chat_id or --all."""
     if chat_id is None and not reset_all:
-        _error("Specify chat_id or --all")
-        raise click.exceptions.Exit(1)
+        _fail("Specify chat_id or --all")
     exit_code = asyncio.run(
         _state_reset(account, config, output, reset_all, delete_messages, chat_id, skip_confirm=yes)
     )
     if exit_code:
-        raise click.exceptions.Exit(exit_code)
+        _fail(code=exit_code)
 
 
 async def _state_reset(
@@ -1514,14 +1531,12 @@ async def _purge_chat(chat_arg, account, config_override, output_override, skip_
         except ValueError:
             matches = await state.find_chat_by_name(chat_arg)
             if not matches:
-                _error(f"No chats found matching '{chat_arg}'")
-                raise click.exceptions.Exit(1) from None
+                _fail(f"No chats found matching '{chat_arg}'")
             if len(matches) > 1:
                 _error(f"Multiple chats match '{chat_arg}':")
                 for m in matches:
                     _error(f"  {m['chat_id']}  {m['name']}  ({m['type']})")
-                _error("Specify exact chat ID.")
-                raise click.exceptions.Exit(1) from None
+                _fail("Specify exact chat ID.")
             chat_id = matches[0]["chat_id"]
             chat_name = matches[0]["name"]
 
@@ -1608,7 +1623,7 @@ def verify_files(account, config, output):
     """Verify integrity of previously downloaded files."""
     exit_code = asyncio.run(_verify_files(account, config, output))
     if exit_code:
-        raise click.exceptions.Exit(exit_code)
+        _fail(code=exit_code)
 
 
 VERIFY_STAGING_PREFIX = ".tg-export-verify-"
@@ -1753,8 +1768,7 @@ def tg_send(account, files, text, as_document, recipients):
     recipients, including those who already received the message.
     """
     if not text and not files:
-        _error("Error: specify --text and/or --file")
-        raise click.exceptions.Exit(1)
+        _fail("Error: specify --text and/or --file")
 
     parsed = []
     for r in recipients:
@@ -1765,7 +1779,7 @@ def tg_send(account, files, text, as_document, recipients):
 
     exit_code = asyncio.run(_tg_send(account, parsed, text, files, as_document))
     if exit_code:
-        raise click.exceptions.Exit(exit_code)
+        _fail(code=exit_code)
 
 
 @contextlib.contextmanager
@@ -1928,7 +1942,7 @@ def tg_download(account, output, chat_id, msg_id):
     """
     exit_code = asyncio.run(_tg_download(account, chat_id, msg_id, output))
     if exit_code:
-        raise click.exceptions.Exit(exit_code)
+        _fail(code=exit_code)
 
 
 def _file_head_sha256(path: Path, n_bytes: int = 64 * 1024) -> str:
@@ -2029,8 +2043,9 @@ def run_cli() -> None:
     """Console-script entry point.
 
     Wraps the Click app so that tg-export domain errors (TgExportError and its
-    subclasses) are reported as a short message on stderr with exit code 1,
-    instead of dumping a stack trace. The full traceback is shown only when
+    subclasses) are reported as a short message on stderr, instead of dumping a
+    stack trace. The exit code comes from the error class itself -- the table
+    lives in tg_export.errors -- and the full traceback is shown only when
     --debug is passed.
     """
     try:
@@ -2045,7 +2060,9 @@ def run_cli() -> None:
         if _DEBUG:
             raise
         click.echo(f"Error: {e}", err=True)
-        raise SystemExit(EXIT_FAILURE) from e
+        # The code comes from the error class (see tg_export.errors), so a new
+        # failure kind brings its own without touching this handler.
+        raise SystemExit(e.exit_code) from e
     except Exception as e:
         # Everything outside the domain hierarchy -- telethon, sqlite, sockets.
         # Such an exception used to print a full traceback, and during an export
