@@ -345,3 +345,36 @@ async def test_state_is_an_async_context_manager(tmp_path):
 
     assert state._db is None
     assert not state._lock.held
+
+
+@pytest.mark.asyncio
+async def test_chat_row_counts_cover_every_table_purge_deletes(tmp_path):
+    """Предпросмотр purge и само удаление обязаны смотреть на один список таблиц.
+
+    Кортеж таблиц был записан дважды -- в `purge_chat` и в команде CLI, которая
+    показывает, что будет удалено. Правка схемы в одном месте давала purge,
+    удаляющий не то, о чём предупредил.
+    """
+    from tg_export.state import CHAT_TABLES, ExportState
+
+    async with ExportState(db_path=tmp_path / "counts.db") as state:
+        counts = await state.count_chat_rows(42)
+        assert set(counts) == set(CHAT_TABLES)
+        assert all(v == 0 for v in counts.values()), counts
+
+
+@pytest.mark.asyncio
+async def test_list_chat_states_returns_progress_with_message_counts(tmp_path):
+    """`state show` без chat_id читает сводку по всем чатам через слой состояния."""
+    from tg_export.state import ExportState
+
+    async with ExportState(db_path=tmp_path / "list.db") as state:
+        await state.set_last_msg_id(7, 10)
+        await state.set_full_history(7, True)
+        rows = await state.list_chat_states()
+
+    assert len(rows) == 1
+    row = dict(rows[0])
+    assert row["chat_id"] == 7
+    assert row["last_msg_id"] == 10
+    assert row["msg_count"] == 0

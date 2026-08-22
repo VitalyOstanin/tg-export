@@ -294,3 +294,60 @@ def test_cli_helpers_are_context_managers():
             f"{name} должен быть @contextlib.asynccontextmanager, а не возвращать ресурс: {decorators}"
         )
     assert "Caller must call api.disconnect" not in src
+
+
+def test_no_function_is_longer_than_a_screenful():
+    """Ни одна функция пакета не длиннее ста строк.
+
+    Восемь функций были длиннее, и четыре крупнейшие складывались в один
+    сценарий «запустить экспорт»: `Exporter.run` (259 строк) держала в одном
+    теле установку обработчиков сигналов, отбор чатов, три замыкания
+    форматирования статуса, настройку Live и цикл по чатам. На таком объёме
+    побочные эффекты собственной правки перестают быть видны.
+    """
+    import ast
+
+    limit = 100
+    too_long = []
+    for path in sorted(PROJECT.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+                continue
+            length = (node.end_lineno or node.lineno) - node.lineno + 1
+            if length > limit:
+                too_long.append((length, f"{path.name}:{node.lineno}", node.name))
+    too_long.sort(reverse=True)
+    assert not too_long, f"функции длиннее {limit} строк: {too_long}"
+
+
+def test_cli_does_not_run_sql_of_its_own():
+    """Схема БД известна только слою состояния.
+
+    CLI выполнял девять запросов через `state.db.execute` мимо `ExportState`,
+    и кортеж таблиц чата был продублирован в двух местах: правка схемы в одном
+    из них давала purge, который удаляет не то, о чём предупредил.
+    """
+    src = _read("cli.py")
+    hits = [
+        (n, line.strip())
+        for n, line in enumerate(src.splitlines(), start=1)
+        if re.search(r"\b(?:state|st)\.db\.", line)
+    ]
+    assert not hits, f"обращайся к БД через методы ExportState: {hits}"
+
+
+def test_cli_has_a_module_docstring():
+    """Самый крупный модуль проекта -- единственный без строки назначения."""
+    import ast
+
+    tree = ast.parse(_read("cli.py"))
+    doc = ast.get_docstring(tree)
+    assert doc, "cli.py нужен модульный docstring с картой групп команд"
+    assert "import" in doc.lower(), "объясни в нём приём с отложенными импортами"
+
+
+def test_cli_takes_formatting_helpers_from_their_own_module():
+    """`_format_size` в exporter.py -- лишь псевдоним для format.format_size."""
+    src = _read("cli.py")
+    assert "_format_size" not in src, "импортируй format_size из tg_export.format"

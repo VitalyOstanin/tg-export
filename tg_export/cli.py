@@ -1,3 +1,27 @@
+"""Command-line interface: every tg-export command lives here.
+
+Command groups, in the order they appear below:
+
+===========  ======================================================
+``auth``     credentials, login, session check
+``account``  list accounts, set the default one, remove one
+``takeout``  inspect and clear the Telegram Takeout session
+``tg``       direct API calls: info, messages, send, download
+``state``    inspect and reset the export state of a chat
+top level    ``config``, ``list``, ``init``, ``run``, ``purge``, ``verify``
+===========  ======================================================
+
+The flow behind ``run`` is ``cli -> config -> api -> exporter ->
+state/media -> renderer``; see the "Устройство пакета" section of
+CONTRIBUTING.md for what each module owns.
+
+Imports of project modules are deliberately made inside the command bodies
+rather than at module level: the entry point is a console script, and
+importing telethon, jinja2 and the exporter on every ``--help`` costs about a
+second of startup. Keep them where they are unless the module is needed by
+the group definitions themselves.
+"""
+
 import asyncio
 import contextlib
 import logging
@@ -899,6 +923,91 @@ async def _start_takeout(api, cfg, *, require: bool) -> bool:
     return False
 
 
+def _build_downloader(api, state, cfg, output_base: Path):
+    """Assemble the media downloader together with its reuse sources.
+
+    Files already present in a Telegram Desktop export or in a sibling account's
+    export are linked instead of downloaded again, so both indexes are built
+    here rather than inside the download path.
+    """
+    from tg_export.importer import build_tdesktop_indexes
+    from tg_export.media import MediaDownloader
+
+    tdesktop_indexes = build_tdesktop_indexes(cfg.import_existing)
+    for idx in tdesktop_indexes:
+        _diag(f"tdesktop import: {idx.export_path}")
+
+    sibling_dbs = []
+    for sibling in output_base.parent.iterdir():
+        if sibling == output_base or not sibling.is_dir():
+            continue
+        sdb = sibling / STATE_DB_NAME
+        if sdb.exists():
+            sibling_dbs.append(sdb)
+            logger.debug("sibling state DB: %s", sdb)
+    if sibling_dbs:
+        names = [s.parent.name for s in sibling_dbs]
+        _diag(f"Sibling exports for file dedup: {', '.join(names)}")
+
+    min_free = _mgr().load_min_free_space() or 20 * 1024**3  # default 20GB
+    return MediaDownloader(
+        api=api,
+        state=state,
+        config=cfg.defaults.media,
+        min_free_bytes=min_free,
+        tdesktop_indexes=tdesktop_indexes,
+        sibling_db_paths=sibling_dbs,
+    )
+
+
+async def _print_export_summary(stats, state, output_base: Path, *, takeout_active: bool) -> None:
+    """Print the final report of an export.
+
+    Goes to stderr and is marked essential, so --quiet keeps it: the export
+    artifacts themselves are the files written to disk.
+    """
+    from tg_export.format import format_size
+
+    _diag("\nExport complete:", essential=True)
+    # Which API served the export decides how complete and how fast it was, so
+    # it belongs in the summary rather than only in a line printed at start-up
+    # and long scrolled away.
+    _diag(f"  API: {'takeout' if takeout_active else 'regular (no takeout)'}", essential=True)
+    _diag(
+        f"  Chats: {stats.chats_exported}/{stats.chats_included} (skipped {stats.chats_skipped})",
+        essential=True,
+    )
+    _diag(f"  Messages: {stats.messages_exported}", essential=True)
+    _diag(f"  Files downloaded: {stats.files_downloaded}", essential=True)
+    for label, value in (
+        ("Files existing", stats.files_existing),
+        ("Reused from chat", stats.files_reused_chat),
+        ("Reused from tdesktop", stats.files_reused_tdesktop),
+        ("Reused from sibling", stats.files_reused_sibling),
+        ("Skipped by size", stats.files_skipped_by_size),
+        ("Skipped by type", stats.files_skipped_by_type),
+    ):
+        if value:
+            _diag(f"  {label}: {value}", essential=True)
+    if stats.data_size:
+        _diag(f"  Downloaded: {format_size(stats.data_size)}", essential=True)
+
+    file_counts = await state.count_files()
+    _diag(
+        f"  Files: {file_counts['files_downloaded']}/{file_counts['expected_files']} "
+        f"(media messages: {file_counts['media_messages']})",
+        essential=True,
+    )
+    db_size = state.db_path.stat().st_size if state.db_path.exists() else 0
+    _diag(f"  DB size: {format_size(db_size)}", essential=True)
+    # Why to_thread: du can take seconds on a large export; don't block the loop.
+    total_disk = await asyncio.to_thread(_get_dir_size, output_base)
+    if total_disk is not None:
+        _diag(f"  Export size on disk: {format_size(total_disk)}", essential=True)
+    if stats.errors:
+        _diag(f"  Errors: {len(stats.errors)}", essential=True)
+
+
 async def _run_export(
     account,
     config_override,
@@ -911,7 +1020,6 @@ async def _run_export(
     from tg_export.catalog import fetch_catalog
     from tg_export.exporter import Exporter
     from tg_export.html.renderer import HtmlRenderer
-    from tg_export.media import MediaDownloader
     from tg_export.state import ExportState
 
     account, cfg, output_base = _resolve_output(
@@ -949,40 +1057,7 @@ async def _run_export(
         renderer = HtmlRenderer(output_dir=output_base, config=cfg.output)
         renderer.setup()
 
-        # Setup tdesktop import indexes
-        from tg_export.importer import build_tdesktop_indexes
-
-        tdesktop_indexes = build_tdesktop_indexes(cfg.import_existing)
-        if tdesktop_indexes:
-            for idx in tdesktop_indexes:
-                _diag(f"tdesktop import: {idx.export_path}")
-
-        # Auto-discover sibling account state DBs for file deduplication
-        import logging
-
-        logger = logging.getLogger(__name__)
-        sibling_dbs = []
-        for sibling in output_base.parent.iterdir():
-            if sibling == output_base or not sibling.is_dir():
-                continue
-            sdb = sibling / STATE_DB_NAME
-            if sdb.exists():
-                sibling_dbs.append(sdb)
-                logger.debug("sibling state DB: %s", sdb)
-        if sibling_dbs:
-            names = [s.parent.name for s in sibling_dbs]
-            _diag(f"Sibling exports for file dedup: {', '.join(names)}")
-
-        # Setup downloader
-        min_free = _mgr().load_min_free_space() or 20 * 1024**3  # default 20GB
-        downloader = MediaDownloader(
-            api=api,
-            state=state,
-            config=cfg.defaults.media,
-            min_free_bytes=min_free,
-            tdesktop_indexes=tdesktop_indexes,
-            sibling_db_paths=sibling_dbs,
-        )
+        downloader = _build_downloader(api, state, cfg, output_base)
 
         # Fetch chat list
         chats = await fetch_catalog(api, include_left=(cfg.left_channels_action != "skip"))
@@ -1006,54 +1081,7 @@ async def _run_export(
             if not dry_run:
                 await _render_index(renderer, chats, cfg, state, should_stop=lambda: exporter._shutdown)
 
-            # Summary (the final report -> stderr, marked essential so --quiet keeps it;
-            # the export artifacts themselves are the files written to disk)
-            from tg_export.exporter import _format_size
-
-            _diag("\nExport complete:", essential=True)
-            # Which API served the export decides how complete and how fast it
-            # was, so it belongs in the summary rather than only in a line
-            # printed at start-up and long scrolled away.
-            _diag(
-                f"  API: {'takeout' if takeout_active else 'regular (no takeout)'}",
-                essential=True,
-            )
-            _diag(
-                f"  Chats: {stats.chats_exported}/{stats.chats_included} (skipped {stats.chats_skipped})",
-                essential=True,
-            )
-            _diag(f"  Messages: {stats.messages_exported}", essential=True)
-            _diag(f"  Files downloaded: {stats.files_downloaded}", essential=True)
-            if stats.files_existing:
-                _diag(f"  Files existing: {stats.files_existing}", essential=True)
-            if stats.files_reused_chat:
-                _diag(f"  Reused from chat: {stats.files_reused_chat}", essential=True)
-            if stats.files_reused_tdesktop:
-                _diag(f"  Reused from tdesktop: {stats.files_reused_tdesktop}", essential=True)
-            if stats.files_reused_sibling:
-                _diag(f"  Reused from sibling: {stats.files_reused_sibling}", essential=True)
-            if stats.files_skipped_by_size:
-                _diag(f"  Skipped by size: {stats.files_skipped_by_size}", essential=True)
-            if stats.files_skipped_by_type:
-                _diag(f"  Skipped by type: {stats.files_skipped_by_type}", essential=True)
-            if stats.data_size:
-                _diag(f"  Downloaded: {_format_size(stats.data_size)}", essential=True)
-            # File counts from DB
-            file_counts = await state.count_files()
-            _diag(
-                f"  Files: {file_counts['files_downloaded']}/{file_counts['expected_files']} (media messages: {file_counts['media_messages']})",
-                essential=True,
-            )
-            # DB size
-            db_size = state.db_path.stat().st_size if state.db_path.exists() else 0
-            _diag(f"  DB size: {_format_size(db_size)}", essential=True)
-            # Total export size on disk (excluding DB).
-            # Why to_thread: du can take seconds on a large export; don't block the loop.
-            total_disk = await asyncio.to_thread(_get_dir_size, output_base)
-            if total_disk is not None:
-                _diag(f"  Export size on disk: {_format_size(total_disk)}", essential=True)
-            if stats.errors:
-                _diag(f"  Errors: {len(stats.errors)}", essential=True)
+            await _print_export_summary(stats, state, output_base, takeout_active=takeout_active)
 
     except asyncio.CancelledError:
         _diag("\nForce shutdown — saving state...", essential=True)
@@ -1071,28 +1099,21 @@ async def _run_export(
     )
 
 
-async def _render_index(renderer, chats, cfg, state, should_stop=None):
-    """Build and render the main index page.
+async def _group_chats_for_index(chats, cfg, state, should_stop):
+    """Split the exported chats into folders and unfiled, with message counts.
 
-    should_stop: optional callable. If returns True between chats or before
-    the final jinja render, abort early. Why: render_index runs synchronously
-    inside the event loop after the main export loop; without a checkpoint a
-    fresh SIGINT during this phase would still have to wait for the index
-    render to finish before asyncio.run() can exit.
+    Returns None when ``should_stop`` fires: the caller then skips the render.
     """
     from collections import defaultdict
 
     from tg_export.exporter import sanitize_name
-
-    if should_stop and should_stop():
-        return
 
     folders = defaultdict(list)
     unfiled = []
 
     for chat in chats:
         if should_stop and should_stop():
-            return
+            return None
         chat_cfg = cfg.resolve_chat_config(chat.id, chat.name, chat.folder, chat.type.value)
         if chat_cfg is None:
             continue
@@ -1127,43 +1148,46 @@ async def _render_index(renderer, chats, cfg, state, should_stop=None):
         else:
             unfiled.append(entry)
 
-    sections = []
-    if cfg.personal_info:
-        sections.append(
-            {
-                "title": "Personal Info",
-                "entries": [{"name": "Personal Information", "href": "personal_info.html", "meta": ""}],
-            }
-        )
-    if cfg.contacts:
-        sections.append(
-            {"title": "Contacts", "entries": [{"name": "Contacts", "href": "contacts.html", "meta": ""}]}
-        )
-    if cfg.sessions:
-        sections.append(
-            {
-                "title": "Sessions",
-                "entries": [{"name": "Active Sessions", "href": "sessions.html", "meta": ""}],
-            }
-        )
-    if cfg.userpics:
-        sections.append(
-            {
-                "title": "Profile Photos",
-                "entries": [{"name": "Profile Photos", "href": "userpics.html", "meta": ""}],
-            }
-        )
-    if cfg.stories:
-        sections.append(
-            {"title": "Stories", "entries": [{"name": "Stories", "href": "stories.html", "meta": ""}]}
-        )
-    if cfg.other_data or cfg.profile_music:
-        sections.append(
-            {
-                "title": "Other Data",
-                "entries": [{"name": "Other Data", "href": "other_data.html", "meta": ""}],
-            }
-        )
+    return folders, unfiled
+
+
+def _index_sections(cfg) -> list[dict]:
+    """Links to the global-data pages the config asked to export."""
+    pages = (
+        (cfg.personal_info, "Personal Info", "Personal Information", "personal_info.html"),
+        (cfg.contacts, "Contacts", "Contacts", "contacts.html"),
+        (cfg.sessions, "Sessions", "Active Sessions", "sessions.html"),
+        (cfg.userpics, "Profile Photos", "Profile Photos", "userpics.html"),
+        (cfg.stories, "Stories", "Stories", "stories.html"),
+        (cfg.other_data or cfg.profile_music, "Other Data", "Other Data", "other_data.html"),
+    )
+    return [
+        {"title": title, "entries": [{"name": name, "href": href, "meta": ""}]}
+        for enabled, title, name, href in pages
+        if enabled
+    ]
+
+
+async def _render_index(renderer, chats, cfg, state, should_stop=None):
+    """Build and render the main index page.
+
+    should_stop: optional callable. If returns True between chats or before
+    the final jinja render, abort early. Why: render_index runs synchronously
+    inside the event loop after the main export loop; without a checkpoint a
+    fresh SIGINT during this phase would still have to wait for the index
+    render to finish before asyncio.run() can exit.
+    """
+    from tg_export.exporter import sanitize_name
+
+    if should_stop and should_stop():
+        return
+
+    grouped = await _group_chats_for_index(chats, cfg, state, should_stop)
+    if grouped is None:
+        return
+    folders, unfiled = grouped
+
+    sections = _index_sections(cfg)
 
     # Build folders_list with hrefs for folder index pages
     folders_list = []
@@ -1251,11 +1275,7 @@ async def _state_show(account, config_override, output_override, chat_id, as_jso
             click.echo(f"  messages in DB: {msg_count}")
             click.echo(f"  updated_at:    {chat_state['updated_at']}")
         else:
-            async with st.db.execute(
-                "SELECT es.*, (SELECT COUNT(*) FROM messages m WHERE m.chat_id=es.chat_id) as msg_count "
-                "FROM export_state es ORDER BY es.updated_at DESC"
-            ) as cur:
-                rows = await cur.fetchall()
+            rows = await st.list_chat_states()
             if as_json:
                 payload = [
                     {
@@ -1362,11 +1382,7 @@ async def _purge_chat(chat_arg, account, config_override, output_override, skip_
             chat_name = matches[0]["name"]
 
         # Show what will be deleted
-        counts = {}
-        for table in ("messages", "files", "export_state", "catalog_cache"):
-            async with state.db.execute(f"SELECT COUNT(*) FROM {table} WHERE chat_id=?", (chat_id,)) as cur:
-                row = await cur.fetchone()
-                counts[table] = row[0] if row else 0
+        counts = await state.count_chat_rows(chat_id)
 
         # Find chat directory on disk: scan known prefixes only, never rglob
         # the whole output tree (would also follow into sibling/back-up trees).
@@ -1416,9 +1432,9 @@ async def _purge_chat(chat_arg, account, config_override, output_override, skip_
         if chat_dirs:
             for d in chat_dirs:
                 size = sum(f.stat().st_size for f in d.rglob("*") if f.is_file())
-                from tg_export.exporter import _format_size
+                from tg_export.format import format_size
 
-                _diag(f"  Dir: {d} ({_format_size(size)})", essential=True)
+                _diag(f"  Dir: {d} ({format_size(size)})", essential=True)
         else:
             _diag("  Dir: not found", essential=True)
 

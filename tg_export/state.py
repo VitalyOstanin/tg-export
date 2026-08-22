@@ -228,6 +228,12 @@ async def _shielded(coro):
         raise
 
 
+# Every table keyed by chat_id. Purging a chat means clearing all of them, and
+# the preview shown before a purge must count exactly the same set -- listing
+# them twice let the two drift apart.
+CHAT_TABLES = ("messages", "files", "export_state", "catalog_cache")
+
+
 class ExportState:
     def __init__(self, db_path: Path):
         self.db_path = db_path
@@ -665,6 +671,23 @@ class ExportState:
             rows = await cur.fetchall()
             return [r["m"] for r in rows]
 
+    async def count_chat_rows(self, chat_id: int) -> dict[str, int]:
+        """Count the rows a purge of this chat would delete, per table."""
+        counts = {}
+        for table in CHAT_TABLES:
+            async with self.db.execute(f"SELECT COUNT(*) FROM {table} WHERE chat_id=?", (chat_id,)) as cur:
+                row = await cur.fetchone()
+                counts[table] = row[0] if row else 0
+        return counts
+
+    async def list_chat_states(self) -> list:
+        """Return the export progress of every known chat, newest update first."""
+        async with self.db.execute(
+            "SELECT es.*, (SELECT COUNT(*) FROM messages m WHERE m.chat_id=es.chat_id) AS msg_count "
+            "FROM export_state es ORDER BY es.updated_at DESC"
+        ) as cur:
+            return list(await cur.fetchall())
+
     async def count_messages(self, chat_id: int) -> int:
         """Count messages for a chat."""
         async with self.db.execute("SELECT COUNT(*) FROM messages WHERE chat_id=?", (chat_id,)) as cur:
@@ -725,13 +748,8 @@ class ExportState:
         """
 
         async def _purge() -> dict[str, int]:
-            counts = {}
-            for table in ("messages", "files", "export_state", "catalog_cache"):
-                async with self.db.execute(
-                    f"SELECT COUNT(*) FROM {table} WHERE chat_id=?", (chat_id,)
-                ) as cur:
-                    row = await cur.fetchone()
-                    counts[table] = row[0] if row else 0
+            counts = await self.count_chat_rows(chat_id)
+            for table in CHAT_TABLES:
                 await self.db.execute(f"DELETE FROM {table} WHERE chat_id=?", (chat_id,))
             await self.db.commit()
             return counts

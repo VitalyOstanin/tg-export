@@ -42,6 +42,11 @@ from tg_export.state import ExportState
 
 logger = logging.getLogger(__name__)
 
+# How many messages accumulate before one write to the state database, and how
+# long between progress lines when the live display is off.
+BATCH_SIZE = 500
+LOG_INTERVAL = 3  # seconds
+
 # Progress, status tables, per-chat lines and diagnostic output go to stderr so
 # that stdout stays reserved for machine-readable output of query commands
 # (list / state show / tg info / tg messages). See cli.py for the stdout side.
@@ -91,15 +96,6 @@ def disk_space_error_line(error: BaseException) -> str:
 def file_progress_description(filename: str) -> str:
     """Build a Progress description for a file download (markup-safe)."""
     return escape(filename)
-
-
-# Re-exported for backward compatibility; the implementation lives in
-# tg_export.format so the renderer can share the same formatting.
-_format_size = format_size
-
-
-# Re-exported for backward compatibility; the same size ladder serves both.
-_format_speed = format_speed
 
 
 def _format_elapsed(elapsed_s: float) -> str:
@@ -357,6 +353,71 @@ class _MediaPipeline:
         return msg
 
 
+class StatusView:
+    """Two status lines of the live display, formatted from ExportStats.
+
+    Was three closures inside ``Exporter.run`` capturing ``stats``,
+    ``start_time`` and the progress widgets, which made them unreadable and
+    untestable apart from a 259-line body.
+    """
+
+    def __init__(self, stats: ExportStats, start_time: float):
+        self.stats = stats
+        self.start_time = start_time
+
+    def line1(self) -> str:
+        """Chats, messages, transferred bytes and elapsed time."""
+        stats = self.stats
+        elapsed = time.monotonic() - self.start_time
+        elapsed_str = _format_elapsed(elapsed)
+        chat_data = stats.chat_data_size
+        speed_str = format_speed(chat_data, elapsed) if chat_data > 0 else ""
+
+        # Per-chat message counts
+        chat_msgs = stats.chat_messages_new
+        msgs_done = stats.messages_in_db + chat_msgs
+        msgs_str = f"[cyan]{msgs_done}"
+        if stats.messages_total > 0:
+            msgs_str += f"/{stats.messages_total}"
+        msgs_str += "[/]"
+        if chat_msgs > 0:
+            msgs_str += f" ([green]+{chat_msgs}[/]"
+            if elapsed > 0:
+                msgs_str += f", [green]{chat_msgs / elapsed:.0f}/s[/]"
+            msgs_str += ")"
+
+        line = f"  chats: [cyan]{stats.chats_exported}/{stats.chats_included}[/] | msgs: {msgs_str}"
+        line += f" | data: [cyan]{format_size(chat_data)}[/]"
+        if speed_str:
+            line += f" ([green]{speed_str}[/])"
+        line += f" | elapsed: {elapsed_str}"
+        return line
+
+    def line2(self) -> str:
+        """Where the files of the current chat came from."""
+        stats = self.stats
+        parts = [f"  files: [cyan]{stats.chat_files_downloaded}[/] downloaded"]
+        if stats.chat_files_existing:
+            parts.append(f"[green]{stats.chat_files_existing}[/] existing")
+        if stats.chat_files_reused_chat:
+            parts.append(f"[green]{stats.chat_files_reused_chat}[/] from_chat")
+        if stats.chat_files_reused_tdesktop:
+            parts.append(f"[green]{stats.chat_files_reused_tdesktop}[/] from_tdesktop")
+        if stats.chat_files_reused_sibling:
+            parts.append(f"[green]{stats.chat_files_reused_sibling}[/] from_sibling")
+        skipped = []
+        if stats.chat_files_skipped_by_size:
+            skipped.append(f"[yellow]{stats.chat_files_skipped_by_size}[/] by_size")
+        if stats.chat_files_skipped_by_type:
+            skipped.append(f"[yellow]{stats.chat_files_skipped_by_type}[/] by_type")
+        if skipped:
+            parts.append(f"skipped: {', '.join(skipped)}")
+        return " | ".join(parts)
+
+    def lines(self) -> str:
+        return f"{self.line1()}\n{self.line2()}"
+
+
 class Exporter:
     def __init__(
         self,
@@ -462,15 +523,8 @@ class Exporter:
         table.add_row(file_progress)
         return table
 
-    async def run(
-        self,
-        dry_run: bool = False,
-        verify: bool = False,
-        chat_list: list[Chat] | None = None,
-    ) -> ExportStats:
-        """Main export loop."""
-        stats = ExportStats()
-
+    def _install_signal_handlers(self) -> None:
+        """Arrange for Ctrl+C and SIGTERM to stop the export gracefully."""
         # The task to cancel on a forced shutdown. Cancelling every task
         # instead would also cancel the inner tasks asyncio.shield creates,
         # undoing the protection exactly in the case it exists for.
@@ -485,13 +539,9 @@ class Exporter:
                 # as a KeyboardInterrupt, which the CLI turns into exit code 130.
                 logger.debug("signal handler for %s is not available on this platform", signum)
 
-        if chat_list is None:
-            return stats
-
-        output_base = Path(self.config.output.path)
-
-        # Pre-scan: count included vs skipped chats
-        included_chats: list[tuple[Chat, ChatExportConfig]] = []
+    def _select_chats(self, chat_list: list[Chat], stats: ExportStats) -> list[tuple[Chat, ChatExportConfig]]:
+        """Keep the chats the config asks for; count the rest as skipped."""
+        included: list[tuple[Chat, ChatExportConfig]] = []
         for chat in chat_list:
             # Check left/archived actions before resolve_chat_config
             if chat.is_left and self.config.left_channels_action == "skip":
@@ -510,12 +560,13 @@ class Exporter:
             if chat_config is None:
                 stats.chats_skipped += 1
             else:
-                included_chats.append((chat, chat_config))
+                included.append((chat, chat_config))
         stats.chats_total = len(chat_list)
-        stats.chats_included = len(included_chats)
+        stats.chats_included = len(included)
+        return included
 
-        start_time = time.monotonic()
-        start_dt = datetime.now()
+    def _announce_start(self, stats: ExportStats, *, dry_run: bool) -> None:
+        """Print what the run is about to do, before the live display starts."""
         mode_str = "[bold yellow]DRY-RUN[/]" if dry_run else "[bold green]EXPORT[/]"
         self._status_print(
             f"\n{mode_str}: {stats.chats_included} chats to export, "
@@ -525,8 +576,10 @@ class Exporter:
             df = self.config.defaults.date_from or "..."
             dt = self.config.defaults.date_to or "..."
             self._status_print(f"[dim]date range: {df} — {dt}[/]")
-        self._status_print(f"[dim]started at {start_dt.strftime('%H:%M:%S')}[/]\n")
+        self._status_print(f"[dim]started at {datetime.now().strftime('%H:%M:%S')}[/]\n")
 
+    def _make_progress_widgets(self):
+        """Build the two Progress widgets of the live display."""
         progress = Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
@@ -546,54 +599,109 @@ class Exporter:
         )
         # Track which msg_ids have progress tasks
         file_tasks: dict[int, TaskID] = {}  # msg_id -> task_id
+        return progress, main_task, file_progress, file_tasks
 
-        def _status_line1() -> str:
-            elapsed = time.monotonic() - start_time
-            elapsed_str = _format_elapsed(elapsed)
-            chat_data = stats.chat_data_size
-            speed_str = _format_speed(chat_data, elapsed) if chat_data > 0 else ""
+    async def _export_chat_entry(
+        self,
+        chat: Chat,
+        chat_config: ChatExportConfig,
+        output_base: Path,
+        stats: ExportStats,
+        progress: Progress,
+        main_task: TaskID,
+    ) -> bool:
+        """Export one chat. Returns False when the whole run must stop.
 
-            # Per-chat message counts
-            chat_msgs = stats.chat_messages_new
-            msgs_done = stats.messages_in_db + chat_msgs
-            msgs_str = f"[cyan]{msgs_done}"
-            if stats.messages_total > 0:
-                msgs_str += f"/{stats.messages_total}"
-            msgs_str += "[/]"
-            if chat_msgs > 0:
-                msgs_str += f" ([green]+{chat_msgs}[/]"
-                if elapsed > 0:
-                    msgs_str += f", [green]{chat_msgs / elapsed:.0f}/s[/]"
-                msgs_str += ")"
+        A failure of a single chat is recorded and the run goes on; running out
+        of disk space or a forced shutdown ends it.
+        """
+        chat_dir = resolve_chat_dir(
+            base=output_base,
+            chat_name=chat.name,
+            chat_id=chat.id,
+            folder=chat.folder,
+            is_left=chat.is_left,
+            is_archived=chat.is_archived,
+        )
 
-            line1 = f"  chats: [cyan]{stats.chats_exported}/{stats.chats_included}[/] | msgs: {msgs_str}"
-            line1 += f" | data: [cyan]{_format_size(chat_data)}[/]"
-            if speed_str:
-                line1 += f" ([green]{speed_str}[/])"
-            line1 += f" | elapsed: {elapsed_str}"
-            return line1
+        # Save chat metadata to DB for future renderers
+        await self.state.cache_catalog(
+            chat_id=chat.id,
+            name=chat.name,
+            chat_type=chat.type.value,
+            folder=chat.folder,
+            members_count=chat.members_count,
+            messages_count=chat.messages_count or 0,
+            last_message_date=chat.last_message_date,
+            is_left=chat.is_left,
+            is_archived=chat.is_archived,
+            is_forum=chat.is_forum,
+            is_monoforum=getattr(chat, "is_monoforum", False),
+        )
 
-        def _status_line2() -> str:
-            parts = [f"  files: [cyan]{stats.chat_files_downloaded}[/] downloaded"]
-            if stats.chat_files_existing:
-                parts.append(f"[green]{stats.chat_files_existing}[/] existing")
-            if stats.chat_files_reused_chat:
-                parts.append(f"[green]{stats.chat_files_reused_chat}[/] from_chat")
-            if stats.chat_files_reused_tdesktop:
-                parts.append(f"[green]{stats.chat_files_reused_tdesktop}[/] from_tdesktop")
-            if stats.chat_files_reused_sibling:
-                parts.append(f"[green]{stats.chat_files_reused_sibling}[/] from_sibling")
-            skipped = []
-            if stats.chat_files_skipped_by_size:
-                skipped.append(f"[yellow]{stats.chat_files_skipped_by_size}[/] by_size")
-            if stats.chat_files_skipped_by_type:
-                skipped.append(f"[yellow]{stats.chat_files_skipped_by_type}[/] by_type")
-            if skipped:
-                parts.append(f"skipped: {', '.join(skipped)}")
-            return " | ".join(parts)
+        try:
+            progress.update(main_task, description=chat_progress_description(chat.name))
+            logger.debug(
+                "start chat %s (id=%d, type=%s, msgs~%d)",
+                chat.name,
+                chat.id,
+                chat.type.value,
+                chat.messages_count or 0,
+            )
 
-        def _status_lines() -> str:
-            return f"{_status_line1()}\n{_status_line2()}"
+            # Remove orphaned files (on disk but not in DB)
+            await self._cleanup_orphaned_files(chat.id, chat_dir)
+
+            # Load tdesktop index for this chat (off the loop -- regex/HTML parsing).
+            for idx in self.downloader.tdesktop_indexes:
+                await asyncio.to_thread(idx.load_chat_index, chat.name)
+
+            chat_t0 = time.monotonic()
+            msgs_before = stats.messages_exported
+            await self.export_chat(chat, chat_config, chat_dir, stats)
+            chat_msgs = stats.messages_exported - msgs_before
+            logger.debug("done chat %s in %.1fs: %d msgs", chat.name, time.monotonic() - chat_t0, chat_msgs)
+            stats.chats_exported += 1
+
+            # Unload tdesktop index to free memory
+            for idx in self.downloader.tdesktop_indexes:
+                idx.unload_chat_index()
+
+        except DiskSpaceError as e:
+            console.print(disk_space_error_line(e))
+            stats.errors.append(str(e))
+            return False
+        except asyncio.CancelledError:
+            console.print("[yellow]Force shutdown during export...[/]")
+            return False
+        except Exception as e:
+            console.print(chat_error_line(chat.name, e, chat_id=chat.id))
+            stats.errors.append(f"{chat.name} (id={chat.id}): {e}")
+        return True
+
+    async def run(
+        self,
+        dry_run: bool = False,
+        verify: bool = False,
+        chat_list: list[Chat] | None = None,
+    ) -> ExportStats:
+        """Main export loop."""
+        stats = ExportStats()
+
+        self._install_signal_handlers()
+
+        if chat_list is None:
+            return stats
+
+        output_base = Path(self.config.output.path)
+
+        included_chats = self._select_chats(chat_list, stats)
+
+        start_time = time.monotonic()
+        self._announce_start(stats, dry_run=dry_run)
+
+        progress, main_task, file_progress, file_tasks = self._make_progress_widgets()
+        status = StatusView(stats, start_time)
 
         def _build_status_table_local() -> Table:
             return self._build_status_table(
@@ -602,8 +710,8 @@ class Exporter:
                 file_progress=file_progress,
                 file_tasks=file_tasks,
                 stats=stats,
-                line1=_status_line1(),
-                line2=_status_line2(),
+                line1=status.line1(),
+                line2=status.line2(),
             )
 
         # Quiet mode disables the Live progress display; non-TTY also disables it.
@@ -641,80 +749,20 @@ class Exporter:
                         stats.chats_exported += 1
                         continue
 
-                    chat_dir = resolve_chat_dir(
-                        base=output_base,
-                        chat_name=chat.name,
-                        chat_id=chat.id,
-                        folder=chat.folder,
-                        is_left=chat.is_left,
-                        is_archived=chat.is_archived,
-                    )
-
-                    # Save chat metadata to DB for future renderers
-                    await self.state.cache_catalog(
-                        chat_id=chat.id,
-                        name=chat.name,
-                        chat_type=chat.type.value,
-                        folder=chat.folder,
-                        members_count=chat.members_count,
-                        messages_count=chat.messages_count or 0,
-                        last_message_date=chat.last_message_date,
-                        is_left=chat.is_left,
-                        is_archived=chat.is_archived,
-                        is_forum=chat.is_forum,
-                        is_monoforum=getattr(chat, "is_monoforum", False),
-                    )
-
-                    try:
-                        progress.update(main_task, description=chat_progress_description(chat.name))
-                        logger.debug(
-                            "start chat %s (id=%d, type=%s, msgs~%d)",
-                            chat.name,
-                            chat.id,
-                            chat.type.value,
-                            chat.messages_count or 0,
-                        )
-
-                        # Remove orphaned files (on disk but not in DB)
-                        await self._cleanup_orphaned_files(chat.id, chat_dir)
-
-                        # Load tdesktop index for this chat (off the loop -- regex/HTML parsing).
-                        for idx in self.downloader.tdesktop_indexes:
-                            await asyncio.to_thread(idx.load_chat_index, chat.name)
-
-                        chat_t0 = time.monotonic()
-                        msgs_before = stats.messages_exported
-                        await self.export_chat(chat, chat_config, chat_dir, stats)
-                        chat_msgs = stats.messages_exported - msgs_before
-                        logger.debug(
-                            "done chat %s in %.1fs: %d msgs", chat.name, time.monotonic() - chat_t0, chat_msgs
-                        )
-                        stats.chats_exported += 1
-
-                        # Unload tdesktop index to free memory
-                        for idx in self.downloader.tdesktop_indexes:
-                            idx.unload_chat_index()
-
-                        # Log progress periodically for non-TTY (suppressed in quiet mode)
-                        now = time.monotonic()
-                        if (
-                            not use_live
-                            and not self.quiet
-                            and (now - last_log_time >= 10 or stats.chats_exported % 10 == 0)
-                        ):
-                            _log(Text.from_markup(_status_lines()).plain)
-                            last_log_time = now
-
-                    except DiskSpaceError as e:
-                        console.print(disk_space_error_line(e))
-                        stats.errors.append(str(e))
+                    if not await self._export_chat_entry(
+                        chat, chat_config, output_base, stats, progress, main_task
+                    ):
                         break
-                    except asyncio.CancelledError:
-                        console.print("[yellow]Force shutdown during export...[/]")
-                        break
-                    except Exception as e:
-                        console.print(chat_error_line(chat.name, e, chat_id=chat.id))
-                        stats.errors.append(f"{chat.name} (id={chat.id}): {e}")
+
+                    # Log progress periodically for non-TTY (suppressed in quiet mode)
+                    now = time.monotonic()
+                    if (
+                        not use_live
+                        and not self.quiet
+                        and (now - last_log_time >= 10 or stats.chats_exported % 10 == 0)
+                    ):
+                        _log(Text.from_markup(status.lines()).plain)
+                        last_log_time = now
 
         except asyncio.CancelledError:
             self._force_shutdown = True
@@ -748,26 +796,11 @@ class Exporter:
         2. Old messages: if not full_history, iter_messages(offset_id=oldest_msg_id)
            — continues fetching older messages from where we left off
         """
-        BATCH_SIZE = 500
-        LOG_INTERVAL = 3  # seconds between progress logs
         chat_start = time.monotonic()
-
-        # Date range filtering
         date_from = chat_config.date_from
         date_to = chat_config.date_to
-
-        # Get total message count for progress display
-        # Note: Telegram API does not support counting messages in a date range,
-        # so with date filters we show only current count without total
         has_date_filter = bool(date_from or date_to)
-        try:
-            if has_date_filter:
-                chat_total = 0  # unknown — API can't count by date range
-            else:
-                result = await self.api.client.get_messages(chat.id, limit=0)
-                chat_total = getattr(result, "total", 0) or 0
-        except Exception:
-            chat_total = chat.messages_count or 0
+        chat_total = await self._count_chat_messages(chat, has_date_filter=has_date_filter)
 
         chat_state = await self.state.get_chat_state(chat.id)
         last_msg_id = chat_state["last_msg_id"] if chat_state else 0
@@ -781,18 +814,14 @@ class Exporter:
             messages_total=chat_total if not has_date_filter else 0,
         )
 
-        def _chat_progress() -> str:
-            chat_msgs = stats.chat_messages_new
-            elapsed = time.monotonic() - chat_start
-            parts = [f"  {chat.name}: {chat_msgs}"]
-            if chat_total > 0:
-                parts[0] += f"/{chat_total}"
-            parts.append("msgs")
-            parts.append(f"{stats.chat_files_downloaded} files")
-            parts.append(_format_size(stats.chat_data_size))
-            if elapsed > 0 and chat_msgs > 0:
-                parts.append(f"({chat_msgs / elapsed:.0f} msg/s)")
-            return "  ".join(parts)
+        def progress_line() -> str:
+            return self._chat_progress_line(chat, stats, chat_total, chat_start)
+
+        def before_date_from(msg_date) -> bool:
+            """True if message is before date_from (should stop)."""
+            if not date_from or not msg_date:
+                return False
+            return msg_date.date() < date_from
 
         # Build iter_messages kwargs for date filtering
         iter_kwargs: dict = {}
@@ -800,134 +829,28 @@ class Exporter:
             # Start from messages at date_to end-of-day
             iter_kwargs["offset_date"] = datetime.combine(date_to + timedelta(days=1), datetime.min.time())
 
-        def _before_date_from(msg_date) -> bool:
-            """True if message is before date_from (should stop)."""
-            if not date_from or not msg_date:
-                return False
-            return msg_date.date() < date_from
-
-        # Phase 1: fetch new messages (id > last_msg_id)
         if last_msg_id > 0:
-            new_max_id = last_msg_id
-            batch: list[Message] = []
-            last_progress_time = time.monotonic()
-            p1_kwargs = {"min_id": last_msg_id}
-            if date_to:
-                p1_kwargs["offset_date"] = iter_kwargs["offset_date"]
-            async with _MediaPipeline(self, chat_dir, stats, chat.id, self._download_window()) as media:
-                async for tl_msg in self.api.iter_messages(chat.id, **p1_kwargs):
-                    if self._shutdown:
-                        break
-                    if _before_date_from(tl_msg.date):
-                        break
-                    msg = convert_message(tl_msg, chat_id=chat.id)
-                    # A message joins the batch only once its own media is on
-                    # disk, so the stored record carries the local path.
-                    batch.extend(await media.submit(msg, tl_msg))
-                    if msg.id > new_max_id:
-                        new_max_id = msg.id
-                    stats.messages_exported += 1
-                    if len(batch) >= BATCH_SIZE:
-                        await self.state.store_messages_batch(batch)
-                        logger.debug("  %s: %d new msgs stored", chat.name, stats.messages_exported)
-                        batch.clear()
-                    now = time.monotonic()
-                    if not self._use_live and now - last_progress_time >= LOG_INTERVAL:
-                        _log(_chat_progress())
-                        last_progress_time = now
-                batch.extend(await media.drain())
-            if batch:
-                await self.state.store_messages_batch(batch)
-                batch.clear()
-            # Only a phase 1 that ran to the end may move the pointer. It walks
-            # from the newest message down to last_msg_id, so "everything above
-            # this id is exported" holds only once the walk finished. On a
-            # shutdown mid-walk the untouched interval between the old pointer
-            # and the interruption point would never be fetched again: phase 2
-            # descends from oldest_msg_id and never enters it. Leaving the
-            # pointer alone costs a re-fetch of the messages already stored --
-            # store_messages_batch upserts them and their media is recognised as
-            # already downloaded.
-            if new_max_id > last_msg_id and not self._shutdown:
-                await self.state.set_last_msg_id(chat.id, new_max_id)
-            logger.debug("  %s: phase 1 done", chat.name)
-
-        # Phase 2: fetch old messages (continuing from oldest_msg_id downward)
-        if not full_history and not self._shutdown:
-            batch = []
-            current_oldest = oldest_msg_id
-            phase2_max_id = last_msg_id
-            p2_kwargs = dict(iter_kwargs)  # includes offset_date if set
-            if oldest_msg_id > 0:
-                # Telethon uses offset_id when both offset_id and offset_date are
-                # given (offset_date only applies when offset_id == 0). Passing
-                # both is redundant and confusing; drop offset_date here. The
-                # date_from/date_to bounds are still enforced per-message via
-                # _before_date_from below.
-                p2_kwargs.pop("offset_date", None)
-                p2_kwargs["offset_id"] = oldest_msg_id
-            elif last_msg_id > 0:
-                # Continue from where phase 1 left off (but not first run)
-                pass
-
-            reached_date_from = False
-            iterator_exhausted = False
-            last_progress_time = time.monotonic()
-            async with _MediaPipeline(self, chat_dir, stats, chat.id, self._download_window()) as media:
-                async for tl_msg in self.api.iter_messages(chat.id, **p2_kwargs):
-                    if self._shutdown:
-                        break
-                    if _before_date_from(tl_msg.date):
-                        reached_date_from = True
-                        break
-                    msg = convert_message(tl_msg, chat_id=chat.id)
-                    batch.extend(await media.submit(msg, tl_msg))
-                    if current_oldest == 0 or msg.id < current_oldest:
-                        current_oldest = msg.id
-                    if msg.id > phase2_max_id:
-                        phase2_max_id = msg.id
-                    stats.messages_exported += 1
-                    if len(batch) >= BATCH_SIZE:
-                        await self.state.store_messages_batch(batch)
-                        logger.debug(
-                            "  %s: %d msgs stored (oldest=%d)",
-                            chat.name,
-                            stats.messages_exported,
-                            current_oldest,
-                        )
-                        batch.clear()
-                    now = time.monotonic()
-                    if not self._use_live and now - last_progress_time >= LOG_INTERVAL:
-                        _log(_chat_progress())
-                        last_progress_time = now
-                else:
-                    # for/else: iterator exhausted naturally (no break)
-                    iterator_exhausted = True
-                batch.extend(await media.drain())
-
-            if batch:
-                await self.state.store_messages_batch(batch)
-                batch.clear()
-
-            # Why atomic commit: phase 2 used to issue 4 separate commits
-            # (last/oldest/full_history/messages_count). A network/process
-            # interruption between them left inconsistent state -- e.g.
-            # set_oldest_msg_id firing on a chat with no row and failing the
-            # INSERT with NOT NULL constraint failed: export_state.last_msg_id.
-            new_last = max(last_msg_id, phase2_max_id)
-            new_oldest = current_oldest if current_oldest > 0 else oldest_msg_id
-            new_full = not self._shutdown and (reached_date_from or iterator_exhausted)
-            msg_count = await self.state.count_messages(chat.id)
-            await self.state.commit_phase_progress(
-                chat_id=chat.id,
-                last_msg_id=new_last,
-                oldest_msg_id=new_oldest,
-                full_history=new_full,
-                messages_count=msg_count,
+            await self._fetch_new_messages(
+                chat,
+                chat_dir,
+                stats,
+                last_msg_id=last_msg_id,
+                iter_kwargs=iter_kwargs,
+                before_date_from=before_date_from,
+                progress_line=progress_line,
             )
-            last_msg_id = new_last
-            if new_full:
-                logger.debug("  %s: full history complete", chat.name)
+
+        if not full_history and not self._shutdown:
+            await self._fetch_old_messages(
+                chat,
+                chat_dir,
+                stats,
+                last_msg_id=last_msg_id,
+                oldest_msg_id=oldest_msg_id,
+                iter_kwargs=iter_kwargs,
+                before_date_from=before_date_from,
+                progress_line=progress_line,
+            )
         else:
             # Phase 2 skipped (full_history already True or shutdown). Still
             # refresh messages_count: phase 1 batches may have added new messages.
@@ -935,33 +858,202 @@ class Exporter:
             if msg_count > 0:
                 await self.state.update_messages_count(chat.id, msg_count)
 
-        # Render HTML streaming month-by-month from SQLite to avoid loading
-        # the full message list into memory.
-        month_keys = await self.state.list_message_months(chat.id)
-        if month_keys:
-            # Why: Jinja2 render is CPU-bound and blocks the event loop;
-            # _load_month_sync uses a sync sqlite connection inside the worker
-            # thread to avoid mixing aiosqlite with to_thread.
-            db_path = self.state.db_path
-            chat_id = chat.id
-
-            def _render():
-                from tg_export.state import _load_messages_for_month_sync
-
-                load_month = lambda key: _load_messages_for_month_sync(db_path, chat_id, key)  # noqa: E731
-                # Why should_stop: render runs inside asyncio.to_thread; the
-                # worker thread cannot be cancelled by task.cancel, so without
-                # a checkpoint between months the default executor blocks
-                # asyncio shutdown until the entire chat is rendered.
-                self.renderer.render_chat_streaming(
-                    chat, month_keys, load_month, chat_dir, should_stop=lambda: self._shutdown
-                )
-
-            await asyncio.to_thread(_render)
-        else:
-            logger.debug("  %s: no messages in DB, skipping render", chat.name)
-
+        await self._render_chat_html(chat, chat_dir)
         return stats
+
+    async def _count_chat_messages(self, chat: Chat, *, has_date_filter: bool) -> int:
+        """Total number of messages in the chat, for the progress bar.
+
+        Telegram cannot count messages inside a date range, so a filtered
+        export shows the running count without a total.
+        """
+        try:
+            if has_date_filter:
+                return 0
+            result = await self.api.client.get_messages(chat.id, limit=0)
+            return getattr(result, "total", 0) or 0
+        except Exception:
+            return chat.messages_count or 0
+
+    def _chat_progress_line(self, chat: Chat, stats: ExportStats, chat_total: int, chat_start: float) -> str:
+        """One progress line for a chat, used when the live display is off."""
+        chat_msgs = stats.chat_messages_new
+        elapsed = time.monotonic() - chat_start
+        parts = [f"  {chat.name}: {chat_msgs}"]
+        if chat_total > 0:
+            parts[0] += f"/{chat_total}"
+        parts.append("msgs")
+        parts.append(f"{stats.chat_files_downloaded} files")
+        parts.append(format_size(stats.chat_data_size))
+        if elapsed > 0 and chat_msgs > 0:
+            parts.append(f"({chat_msgs / elapsed:.0f} msg/s)")
+        return "  ".join(parts)
+
+    async def _fetch_new_messages(
+        self,
+        chat: Chat,
+        chat_dir: Path,
+        stats: ExportStats,
+        *,
+        last_msg_id: int,
+        iter_kwargs: dict,
+        before_date_from,
+        progress_line,
+    ) -> None:
+        """Phase 1: everything newer than the stored pointer, newest first."""
+        new_max_id = last_msg_id
+        batch: list[Message] = []
+        last_progress_time = time.monotonic()
+        p1_kwargs = {"min_id": last_msg_id}
+        if "offset_date" in iter_kwargs:
+            p1_kwargs["offset_date"] = iter_kwargs["offset_date"]
+        async with _MediaPipeline(self, chat_dir, stats, chat.id, self._download_window()) as media:
+            async for tl_msg in self.api.iter_messages(chat.id, **p1_kwargs):
+                if self._shutdown:
+                    break
+                if before_date_from(tl_msg.date):
+                    break
+                msg = convert_message(tl_msg, chat_id=chat.id)
+                # A message joins the batch only once its own media is on
+                # disk, so the stored record carries the local path.
+                batch.extend(await media.submit(msg, tl_msg))
+                if msg.id > new_max_id:
+                    new_max_id = msg.id
+                stats.messages_exported += 1
+                if len(batch) >= BATCH_SIZE:
+                    await self.state.store_messages_batch(batch)
+                    logger.debug("  %s: %d new msgs stored", chat.name, stats.messages_exported)
+                    batch.clear()
+                now = time.monotonic()
+                if not self._use_live and now - last_progress_time >= LOG_INTERVAL:
+                    _log(progress_line())
+                    last_progress_time = now
+            batch.extend(await media.drain())
+        if batch:
+            await self.state.store_messages_batch(batch)
+            batch.clear()
+        # Only a phase 1 that ran to the end may move the pointer. It walks
+        # from the newest message down to last_msg_id, so "everything above
+        # this id is exported" holds only once the walk finished. On a
+        # shutdown mid-walk the untouched interval between the old pointer
+        # and the interruption point would never be fetched again: phase 2
+        # descends from oldest_msg_id and never enters it. Leaving the
+        # pointer alone costs a re-fetch of the messages already stored --
+        # store_messages_batch upserts them and their media is recognised as
+        # already downloaded.
+        if new_max_id > last_msg_id and not self._shutdown:
+            await self.state.set_last_msg_id(chat.id, new_max_id)
+        logger.debug("  %s: phase 1 done", chat.name)
+
+    async def _fetch_old_messages(
+        self,
+        chat: Chat,
+        chat_dir: Path,
+        stats: ExportStats,
+        *,
+        last_msg_id: int,
+        oldest_msg_id: int,
+        iter_kwargs: dict,
+        before_date_from,
+        progress_line,
+    ) -> None:
+        """Phase 2: continue downward from the oldest message fetched so far."""
+        batch: list[Message] = []
+        current_oldest = oldest_msg_id
+        phase2_max_id = last_msg_id
+        p2_kwargs = dict(iter_kwargs)  # includes offset_date if set
+        if oldest_msg_id > 0:
+            # Telethon uses offset_id when both offset_id and offset_date are
+            # given (offset_date only applies when offset_id == 0). Passing
+            # both is redundant and confusing; drop offset_date here. The
+            # date_from/date_to bounds are still enforced per-message via
+            # before_date_from below.
+            p2_kwargs.pop("offset_date", None)
+            p2_kwargs["offset_id"] = oldest_msg_id
+
+        reached_date_from = False
+        iterator_exhausted = False
+        last_progress_time = time.monotonic()
+        async with _MediaPipeline(self, chat_dir, stats, chat.id, self._download_window()) as media:
+            async for tl_msg in self.api.iter_messages(chat.id, **p2_kwargs):
+                if self._shutdown:
+                    break
+                if before_date_from(tl_msg.date):
+                    reached_date_from = True
+                    break
+                msg = convert_message(tl_msg, chat_id=chat.id)
+                batch.extend(await media.submit(msg, tl_msg))
+                if current_oldest == 0 or msg.id < current_oldest:
+                    current_oldest = msg.id
+                if msg.id > phase2_max_id:
+                    phase2_max_id = msg.id
+                stats.messages_exported += 1
+                if len(batch) >= BATCH_SIZE:
+                    await self.state.store_messages_batch(batch)
+                    logger.debug(
+                        "  %s: %d msgs stored (oldest=%d)",
+                        chat.name,
+                        stats.messages_exported,
+                        current_oldest,
+                    )
+                    batch.clear()
+                now = time.monotonic()
+                if not self._use_live and now - last_progress_time >= LOG_INTERVAL:
+                    _log(progress_line())
+                    last_progress_time = now
+            else:
+                # for/else: iterator exhausted naturally (no break)
+                iterator_exhausted = True
+            batch.extend(await media.drain())
+
+        if batch:
+            await self.state.store_messages_batch(batch)
+            batch.clear()
+
+        # Why atomic commit: phase 2 used to issue 4 separate commits
+        # (last/oldest/full_history/messages_count). A network/process
+        # interruption between them left inconsistent state -- e.g.
+        # set_oldest_msg_id firing on a chat with no row and failing the
+        # INSERT with NOT NULL constraint failed: export_state.last_msg_id.
+        new_full = not self._shutdown and (reached_date_from or iterator_exhausted)
+        await self.state.commit_phase_progress(
+            chat_id=chat.id,
+            last_msg_id=max(last_msg_id, phase2_max_id),
+            oldest_msg_id=current_oldest if current_oldest > 0 else oldest_msg_id,
+            full_history=new_full,
+            messages_count=await self.state.count_messages(chat.id),
+        )
+        if new_full:
+            logger.debug("  %s: full history complete", chat.name)
+
+    async def _render_chat_html(self, chat: Chat, chat_dir: Path) -> None:
+        """Render the chat pages, one month at a time, off the event loop."""
+        # Streaming month-by-month from SQLite avoids loading the full message
+        # list into memory.
+        month_keys = await self.state.list_message_months(chat.id)
+        if not month_keys:
+            logger.debug("  %s: no messages in DB, skipping render", chat.name)
+            return
+
+        # Why: Jinja2 render is CPU-bound and blocks the event loop;
+        # _load_messages_for_month_sync uses a sync sqlite connection inside the
+        # worker thread to avoid mixing aiosqlite with to_thread.
+        db_path = self.state.db_path
+        chat_id = chat.id
+
+        def _render():
+            from tg_export.state import _load_messages_for_month_sync
+
+            load_month = lambda key: _load_messages_for_month_sync(db_path, chat_id, key)  # noqa: E731
+            # Why should_stop: render runs inside asyncio.to_thread; the
+            # worker thread cannot be cancelled by task.cancel, so without
+            # a checkpoint between months the default executor blocks
+            # asyncio shutdown until the entire chat is rendered.
+            self.renderer.render_chat_streaming(
+                chat, month_keys, load_month, chat_dir, should_stop=lambda: self._shutdown
+            )
+
+        await asyncio.to_thread(_render)
 
     def _download_window(self) -> int:
         """How many media downloads may be in flight at once.
@@ -1306,7 +1398,7 @@ class Exporter:
 
                     size_str = ""
                     if hasattr(doc, "size") and doc.size:
-                        size_str = _format_size(doc.size)
+                        size_str = format_size(doc.size)
 
                     ringtones.append(
                         {

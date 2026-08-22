@@ -143,6 +143,95 @@ def convert_entities(text: str, entities: list | None) -> list[TextPart]:
 # ---------------------------------------------------------------------------
 
 
+def _photo_media(tl_media: Any) -> Media | None:
+    """Build a PhotoMedia, taking the size from the largest variant."""
+    photo = tl_media.photo
+    if photo is None:
+        return None
+    sizes = getattr(photo, "sizes", []) or []
+    largest = sizes[-1] if sizes else None
+    w = getattr(largest, "w", 0) if largest else 0
+    h = getattr(largest, "h", 0) if largest else 0
+    # Extract file size from PhotoSize variant
+    file_size = 0
+    if largest is not None:
+        ls_cls = largest.__class__.__name__
+        if ls_cls == "PhotoSizeProgressive":
+            prog_sizes = getattr(largest, "sizes", []) or []
+            file_size = max(prog_sizes) if prog_sizes else 0
+        elif ls_cls == "PhotoCachedSize":
+            file_size = len(getattr(largest, "bytes", b""))
+        else:
+            file_size = getattr(largest, "size", 0) or 0
+    return PhotoMedia(
+        type=MediaType.photo,
+        file=FileInfo(
+            id=photo.id,
+            size=file_size,
+            name=None,
+            mime_type="image/jpeg",
+            local_path=None,
+        ),
+        width=w,
+        height=h,
+        spoilered=getattr(tl_media, "spoiler", False),
+    )
+
+
+def _document_media(tl_media: Any) -> Media | None:
+    """Build a DocumentMedia; the concrete kind comes from the attributes."""
+    doc = tl_media.document
+    if doc is None:
+        return None
+    attrs = {a.__class__.__name__: a for a in (doc.attributes or [])}
+    media_type, name, duration, w, h = _classify_document(attrs, doc.mime_type)
+    return DocumentMedia(
+        type=media_type,
+        file=FileInfo(
+            id=doc.id,
+            size=doc.size or 0,
+            name=name,
+            mime_type=doc.mime_type,
+            local_path=None,
+        ),
+        name=name,
+        mime_type=doc.mime_type,
+        duration=duration,
+        width=w,
+        height=h,
+        performer=getattr(attrs.get("DocumentAttributeAudio"), "performer", None),
+        song_title=getattr(attrs.get("DocumentAttributeAudio"), "title", None),
+        sticker_emoji=getattr(attrs.get("DocumentAttributeSticker"), "alt", None),
+        spoilered=getattr(tl_media, "spoiler", False),
+    )
+
+
+def _poll_media(tl_media: Any) -> Media | None:
+    """Build a PollMedia with the vote count of every answer."""
+    poll = tl_media.poll
+    results = tl_media.results
+    answers = []
+    for ans in poll.answers or []:
+        ans_text = [
+            TextPart(type=TextType.text, text=ans.text.text if hasattr(ans.text, "text") else str(ans.text))
+        ]
+        voters = 0
+        if results and results.results:
+            for r in results.results:
+                if r.option == ans.option:
+                    voters = r.voters or 0
+        answers.append(PollAnswer(text=ans_text, voters=voters))
+    question_text = poll.question.text if hasattr(poll.question, "text") else str(poll.question)
+    return PollMedia(
+        type=MediaType.poll,
+        file=None,
+        question=[TextPart(type=TextType.text, text=question_text)],
+        answers=answers,
+        total_votes=results.total_voters if results else 0,
+        closed=poll.closed or False,
+    )
+
+
 def convert_media(tl_media: Any) -> Media | None:
     """Convert Telethon media to models.Media subclass."""
     if tl_media is None:
@@ -151,63 +240,10 @@ def convert_media(tl_media: Any) -> Media | None:
     cls_name = tl_media.__class__.__name__
 
     if cls_name == "MessageMediaPhoto":
-        photo = tl_media.photo
-        if photo is None:
-            return None
-        sizes = getattr(photo, "sizes", []) or []
-        largest = sizes[-1] if sizes else None
-        w = getattr(largest, "w", 0) if largest else 0
-        h = getattr(largest, "h", 0) if largest else 0
-        # Extract file size from PhotoSize variant
-        file_size = 0
-        if largest is not None:
-            ls_cls = largest.__class__.__name__
-            if ls_cls == "PhotoSizeProgressive":
-                prog_sizes = getattr(largest, "sizes", []) or []
-                file_size = max(prog_sizes) if prog_sizes else 0
-            elif ls_cls == "PhotoCachedSize":
-                file_size = len(getattr(largest, "bytes", b""))
-            else:
-                file_size = getattr(largest, "size", 0) or 0
-        return PhotoMedia(
-            type=MediaType.photo,
-            file=FileInfo(
-                id=photo.id,
-                size=file_size,
-                name=None,
-                mime_type="image/jpeg",
-                local_path=None,
-            ),
-            width=w,
-            height=h,
-            spoilered=getattr(tl_media, "spoiler", False),
-        )
+        return _photo_media(tl_media)
 
     if cls_name == "MessageMediaDocument":
-        doc = tl_media.document
-        if doc is None:
-            return None
-        attrs = {a.__class__.__name__: a for a in (doc.attributes or [])}
-        media_type, name, duration, w, h = _classify_document(attrs, doc.mime_type)
-        return DocumentMedia(
-            type=media_type,
-            file=FileInfo(
-                id=doc.id,
-                size=doc.size or 0,
-                name=name,
-                mime_type=doc.mime_type,
-                local_path=None,
-            ),
-            name=name,
-            mime_type=doc.mime_type,
-            duration=duration,
-            width=w,
-            height=h,
-            performer=getattr(attrs.get("DocumentAttributeAudio"), "performer", None),
-            song_title=getattr(attrs.get("DocumentAttributeAudio"), "title", None),
-            sticker_emoji=getattr(attrs.get("DocumentAttributeSticker"), "alt", None),
-            spoilered=getattr(tl_media, "spoiler", False),
-        )
+        return _document_media(tl_media)
 
     if cls_name == "MessageMediaContact":
         return ContactMedia(
@@ -240,30 +276,7 @@ def convert_media(tl_media: Any) -> Media | None:
         )
 
     if cls_name == "MessageMediaPoll":
-        poll = tl_media.poll
-        results = tl_media.results
-        answers = []
-        for ans in poll.answers or []:
-            ans_text = [
-                TextPart(
-                    type=TextType.text, text=ans.text.text if hasattr(ans.text, "text") else str(ans.text)
-                )
-            ]
-            voters = 0
-            if results and results.results:
-                for r in results.results:
-                    if r.option == ans.option:
-                        voters = r.voters or 0
-            answers.append(PollAnswer(text=ans_text, voters=voters))
-        question_text = poll.question.text if hasattr(poll.question, "text") else str(poll.question)
-        return PollMedia(
-            type=MediaType.poll,
-            file=None,
-            question=[TextPart(type=TextType.text, text=question_text)],
-            answers=answers,
-            total_votes=results.total_voters if results else 0,
-            closed=poll.closed or False,
-        )
+        return _poll_media(tl_media)
 
     if cls_name == "MessageMediaGame":
         game = tl_media.game
@@ -328,27 +341,27 @@ def _classify_document(attrs: dict, mime_type: str | None) -> tuple:
 # ---------------------------------------------------------------------------
 
 
-def convert_action(tl_action: Any) -> ServiceAction | None:
-    """Convert Telethon action to ServiceAction subclass."""
-    if tl_action is None:
-        return None
+# Service actions that carry no data of their own beyond their kind.
+_PLAIN_ACTIONS: dict[str, type[ServiceAction]] = {
+    "MessageActionChatEditPhoto": ActionChatEditPhoto,
+    "MessageActionChatDeletePhoto": ActionChatDeletePhoto,
+    "MessageActionChatAddUser": ActionChatAddUser,
+    "MessageActionChatDeleteUser": ActionChatDeleteUser,
+    "MessageActionChatJoinedByLink": ActionChatJoinedByLink,
+    "MessageActionPinMessage": ActionPinMessage,
+    "MessageActionHistoryClear": ActionHistoryClear,
+    "MessageActionScreenshotTaken": ActionScreenshotTaken,
+    "MessageActionContactSignUp": ActionContactSignUp,
+    "MessageActionSecureValuesSent": ActionSecureValuesSent,
+}
 
-    cls_name = tl_action.__class__.__name__
 
+def _detailed_action(cls_name: str, tl_action: Any) -> ServiceAction | None:
+    """Service actions that carry fields of their own."""
     if cls_name == "MessageActionChatCreate":
         return ActionChatCreate(type="ActionChatCreate", title=tl_action.title or "")
     if cls_name == "MessageActionChatEditTitle":
         return ActionChatEditTitle(type="ActionChatEditTitle", title=tl_action.title or "")
-    if cls_name == "MessageActionChatEditPhoto":
-        return ActionChatEditPhoto(type="ActionChatEditPhoto")
-    if cls_name == "MessageActionChatDeletePhoto":
-        return ActionChatDeletePhoto(type="ActionChatDeletePhoto")
-    if cls_name == "MessageActionChatAddUser":
-        return ActionChatAddUser(type="ActionChatAddUser")
-    if cls_name == "MessageActionChatDeleteUser":
-        return ActionChatDeleteUser(type="ActionChatDeleteUser")
-    if cls_name == "MessageActionChatJoinedByLink":
-        return ActionChatJoinedByLink(type="ActionChatJoinedByLink")
     if cls_name == "MessageActionChannelCreate":
         return ActionChannelCreate(type="ActionChannelCreate", title=tl_action.title or "")
     if cls_name == "MessageActionChatMigrateTo":
@@ -359,10 +372,6 @@ def convert_action(tl_action: Any) -> ServiceAction | None:
             title=tl_action.title or "",
             chat_id=tl_action.chat_id,
         )
-    if cls_name == "MessageActionPinMessage":
-        return ActionPinMessage(type="ActionPinMessage")
-    if cls_name == "MessageActionHistoryClear":
-        return ActionHistoryClear(type="ActionHistoryClear")
     if cls_name == "MessageActionPhoneCall":
         return ActionPhoneCall(
             type="ActionPhoneCall",
@@ -374,10 +383,6 @@ def convert_action(tl_action: Any) -> ServiceAction | None:
             type="ActionGroupCall",
             duration=getattr(tl_action, "duration", None),
         )
-    if cls_name == "MessageActionScreenshotTaken":
-        return ActionScreenshotTaken(type="ActionScreenshotTaken")
-    if cls_name == "MessageActionContactSignUp":
-        return ActionContactSignUp(type="ActionContactSignUp")
     if cls_name == "MessageActionGameScore":
         return ActionGameScore(
             type="ActionGameScore",
@@ -421,13 +426,29 @@ def convert_action(tl_action: Any) -> ServiceAction | None:
             type="ActionBotAllowed",
             domain=getattr(tl_action, "domain", None),
         )
-    if cls_name == "MessageActionSecureValuesSent":
-        return ActionSecureValuesSent(type="ActionSecureValuesSent")
     if cls_name == "MessageActionCustomAction":
         return ActionCustomAction(
             type="ActionCustomAction",
             message=getattr(tl_action, "message", ""),
         )
+
+    return None
+
+
+def convert_action(tl_action: Any) -> ServiceAction | None:
+    """Convert Telethon action to ServiceAction subclass."""
+    if tl_action is None:
+        return None
+
+    cls_name = tl_action.__class__.__name__
+
+    plain = _PLAIN_ACTIONS.get(cls_name)
+    if plain is not None:
+        return plain(type=plain.__name__)
+
+    detailed = _detailed_action(cls_name, tl_action)
+    if detailed is not None:
+        return detailed
 
     # Normalise to "ActionXxx" so renderer's elif-chain matches consistently.
     normalised = (
@@ -487,6 +508,63 @@ def convert_reactions(tl_reactions: Any) -> list[Reaction]:
 # ---------------------------------------------------------------------------
 
 
+def _convert_reply(tl_msg: Any) -> tuple[int | None, int | None, int | None]:
+    """Return (reply_to_msg_id, reply_to_peer_id, topic_id) of a message."""
+    reply_to_msg_id = None
+    reply_to_peer_id = None
+    topic_id = None
+    if tl_msg.reply_to:
+        reply_to_msg_id = getattr(tl_msg.reply_to, "reply_to_msg_id", None)
+        reply_to_peer_id = getattr(tl_msg.reply_to, "reply_to_peer_id", None)
+        if reply_to_peer_id is not None:
+            if hasattr(reply_to_peer_id, "channel_id"):
+                reply_to_peer_id = reply_to_peer_id.channel_id
+            elif hasattr(reply_to_peer_id, "chat_id"):
+                reply_to_peer_id = reply_to_peer_id.chat_id
+            elif hasattr(reply_to_peer_id, "user_id"):
+                reply_to_peer_id = reply_to_peer_id.user_id
+        if getattr(tl_msg.reply_to, "forum_topic", False):
+            topic_id = reply_to_msg_id
+    return reply_to_msg_id, reply_to_peer_id, topic_id
+
+
+def _convert_forward(tl_msg: Any) -> ForwardInfo | None:
+    """Who the message was forwarded from, when Telegram discloses it."""
+    if not tl_msg.fwd_from:
+        return None
+    fwd = tl_msg.fwd_from
+    fwd_from_id = None
+    if hasattr(fwd, "from_id") and fwd.from_id:
+        if hasattr(fwd.from_id, "user_id"):
+            fwd_from_id = fwd.from_id.user_id
+        elif hasattr(fwd.from_id, "channel_id"):
+            fwd_from_id = fwd.from_id.channel_id
+    return ForwardInfo(
+        from_id=fwd_from_id,
+        from_name=getattr(fwd, "from_name", None),
+        date=getattr(fwd, "date", None),
+    )
+
+
+def _convert_inline_buttons(tl_msg: Any) -> list[list[InlineButton]] | None:
+    """Rows of inline buttons attached to a message."""
+    if not tl_msg.reply_markup or not hasattr(tl_msg.reply_markup, "rows"):
+        return None
+    rows = []
+    for row in tl_msg.reply_markup.rows:
+        rows.append(
+            [
+                InlineButton(
+                    type=_classify_button(btn),
+                    text=btn.text or "",
+                    data=_to_str(getattr(btn, "url", None) or getattr(btn, "data", None)),
+                )
+                for btn in row.buttons
+            ]
+        )
+    return rows
+
+
 def convert_message(tl_msg: Any, chat_id: int) -> Message:
     """Convert Telethon Message to models.Message."""
     # Sender
@@ -512,59 +590,14 @@ def convert_message(tl_msg: Any, chat_id: int) -> Message:
     # Action
     action = convert_action(tl_msg.action)
 
-    # Reply
-    reply_to_msg_id = None
-    reply_to_peer_id = None
-    topic_id = None
-    if tl_msg.reply_to:
-        reply_to_msg_id = getattr(tl_msg.reply_to, "reply_to_msg_id", None)
-        reply_to_peer_id = getattr(tl_msg.reply_to, "reply_to_peer_id", None)
-        if reply_to_peer_id is not None:
-            if hasattr(reply_to_peer_id, "channel_id"):
-                reply_to_peer_id = reply_to_peer_id.channel_id
-            elif hasattr(reply_to_peer_id, "chat_id"):
-                reply_to_peer_id = reply_to_peer_id.chat_id
-            elif hasattr(reply_to_peer_id, "user_id"):
-                reply_to_peer_id = reply_to_peer_id.user_id
-        if getattr(tl_msg.reply_to, "forum_topic", False):
-            topic_id = reply_to_msg_id
+    reply_to_msg_id, reply_to_peer_id, topic_id = _convert_reply(tl_msg)
 
-    # Forward
-    forwarded_from = None
-    if tl_msg.fwd_from:
-        fwd = tl_msg.fwd_from
-        fwd_from_id = None
-        fwd_from_name = getattr(fwd, "from_name", None)
-        if hasattr(fwd, "from_id") and fwd.from_id:
-            if hasattr(fwd.from_id, "user_id"):
-                fwd_from_id = fwd.from_id.user_id
-            elif hasattr(fwd.from_id, "channel_id"):
-                fwd_from_id = fwd.from_id.channel_id
-        forwarded_from = ForwardInfo(
-            from_id=fwd_from_id,
-            from_name=fwd_from_name,
-            date=getattr(fwd, "date", None),
-        )
+    forwarded_from = _convert_forward(tl_msg)
 
     # Reactions
     reactions = convert_reactions(tl_msg.reactions)
 
-    # Inline buttons
-    inline_buttons = None
-    if tl_msg.reply_markup and hasattr(tl_msg.reply_markup, "rows"):
-        inline_buttons = []
-        for row in tl_msg.reply_markup.rows:
-            btn_row = []
-            for btn in row.buttons:
-                btn_type = _classify_button(btn)
-                btn_row.append(
-                    InlineButton(
-                        type=btn_type,
-                        text=btn.text or "",
-                        data=_to_str(getattr(btn, "url", None) or getattr(btn, "data", None)),
-                    )
-                )
-            inline_buttons.append(btn_row)
+    inline_buttons = _convert_inline_buttons(tl_msg)
 
     return Message(
         id=tl_msg.id,

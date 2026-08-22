@@ -57,24 +57,16 @@ def test_quiet_keeps_what_purge_is_about_to_delete(tmp_path, account_env, monkey
     (out_dir / ".tg-export-state.db").write_bytes(b"")
     (account_env / "acc.yaml").write_text(f"output:\n  path: {out_dir}\n")
 
-    class _Cursor:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *exc):
-            return False
-
-        async def fetchone(self):
-            return (7,)
-
     state = MagicMock()
     # ExportState отдаётся через `async with`, поэтому вход в контекст должен
     # вернуть тот же объект, а не автосозданный мок.
     state.__aenter__ = AsyncMock(return_value=state)
     state.__aexit__ = AsyncMock(return_value=False)
     state.get_catalog_entry = AsyncMock(return_value={"name": "Chat"})
+    state.count_chat_rows = AsyncMock(
+        return_value={"messages": 7, "files": 0, "export_state": 1, "catalog_cache": 1}
+    )
     state.purge_chat = AsyncMock(return_value=7)
-    state.db.execute = lambda *a, **k: _Cursor()
     monkeypatch.setattr("tg_export.state.ExportState", lambda *a, **k: state)
 
     result = CliRunner().invoke(main, ["--quiet", "purge", "42"], input="n\n")
