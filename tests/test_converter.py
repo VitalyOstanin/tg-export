@@ -160,3 +160,51 @@ def test_convert_chat_unknown_entity_class_still_warns(caplog):
         chat = convert_chat(_make_dialog(entity))
     assert chat.type is ChatType.personal
     assert "Unknown entity class 'ChatEmpty'" in caplog.text
+
+
+def test_formatting_offsets_are_counted_in_utf16_units():
+    """Telegram считает offset/length в кодовых единицах UTF-16.
+
+    Код резал Python-строку по кодовым точкам, поэтому после первого же символа
+    вне BMP (любой цветной эмодзи, часть иероглифов) все офсеты сдвигались:
+    entity либо не проходила проверку границ и молча отбрасывалась вместе с
+    форматированием, либо вырезала не тот фрагмент.
+    """
+    from telethon.tl.types import MessageEntityBold
+
+    from tg_export.converter import convert_entities
+
+    # Эмодзи занимает две единицы UTF-16, поэтому «bold» начинается с офсета 3.
+    parts = convert_entities("\U0001f600 bold", [MessageEntityBold(offset=3, length=4)])
+
+    assert [(p.type, p.text) for p in parts] == [
+        (TextType.text, "\U0001f600 "),
+        (TextType.bold, "bold"),
+    ]
+
+
+def test_a_link_after_an_emoji_keeps_its_own_text():
+    """Сдвиг офсетов делал подписью ссылки соседний текст."""
+    from telethon.tl.types import MessageEntityTextUrl
+
+    from tg_export.converter import convert_entities
+
+    text = "\U0001f680\U0001f680 click here now"
+    # Два эмодзи -- четыре единицы UTF-16, затем пробел: «click» начинается с пятой.
+    entity = MessageEntityTextUrl(offset=5, length=5, url="https://example.com")
+
+    parts = convert_entities(text, [entity])
+
+    link = [p for p in parts if p.type == TextType.text_url]
+    assert len(link) == 1
+    assert link[0].text == "click"
+    assert link[0].href == "https://example.com"
+
+
+def test_text_without_entities_is_unchanged():
+    """Обычный текст не должен пострадать от перевода в единицы UTF-16."""
+    from tg_export.converter import convert_entities
+
+    parts = convert_entities("простой текст", None)
+
+    assert [(p.type, p.text) for p in parts] == [(TextType.text, "простой текст")]

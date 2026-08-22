@@ -101,12 +101,32 @@ ENTITY_MAP = {
 # ---------------------------------------------------------------------------
 
 
+def _utf16_slice(units: bytes, start: int, end: int) -> str:
+    """Cut a fragment addressed in UTF-16 code units out of the encoded text."""
+    # errors="replace": an offset landing inside a surrogate pair means the
+    # server sent boundaries this text does not have; a replacement character
+    # is a better outcome than losing the whole message to a decode error.
+    return units[start * 2 : end * 2].decode("utf-16-le", errors="replace")
+
+
 def convert_entities(text: str, entities: list | None) -> list[TextPart]:
-    """Parse Telethon entities into list[TextPart]."""
+    """Parse Telethon entities into list[TextPart].
+
+    Telegram counts ``offset`` and ``length`` in UTF-16 code units, not in
+    Python characters: every character outside the BMP (a colour emoji, part of
+    the CJK range, musical signs) takes two units. Indexing the Python string
+    directly shifted every offset after the first such character -- the entity
+    either failed the bounds check and was dropped together with its formatting,
+    or cut out the wrong fragment, leaving a link whose text no longer matched
+    its address. Hence the whole scan runs over the UTF-16 encoding.
+    """
     if not text:
         return []
     if not entities:
         return [TextPart(type=TextType.text, text=text)]
+
+    units = text.encode("utf-16-le")
+    total_units = len(units) // 2
 
     parts = []
     offset = 0
@@ -117,14 +137,14 @@ def convert_entities(text: str, entities: list | None) -> list[TextPart]:
         ent_length = entity.length
 
         # Skip overlapping entities (same approach as tdesktop)
-        if ent_offset < offset or ent_length <= 0 or ent_offset + ent_length > len(text):
+        if ent_offset < offset or ent_length <= 0 or ent_offset + ent_length > total_units:
             continue
 
         # Add plain text before this entity
         if ent_offset > offset:
-            parts.append(TextPart(type=TextType.text, text=text[offset:ent_offset]))
+            parts.append(TextPart(type=TextType.text, text=_utf16_slice(units, offset, ent_offset)))
 
-        ent_text = text[ent_offset : ent_offset + ent_length]
+        ent_text = _utf16_slice(units, ent_offset, ent_offset + ent_length)
         href = getattr(entity, "url", None)
         user_id = getattr(entity, "user_id", None)
         parts.append(TextPart(type=ent_type, text=ent_text, href=href, user_id=user_id))
@@ -132,8 +152,8 @@ def convert_entities(text: str, entities: list | None) -> list[TextPart]:
         offset = ent_offset + ent_length
 
     # Remaining text
-    if offset < len(text):
-        parts.append(TextPart(type=TextType.text, text=text[offset:]))
+    if offset < total_units:
+        parts.append(TextPart(type=TextType.text, text=_utf16_slice(units, offset, total_units)))
 
     return parts
 
