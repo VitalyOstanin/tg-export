@@ -44,6 +44,25 @@ def _diag(message: str, *, essential: bool = False, **kwargs) -> None:
     click.echo(message, err=True, **kwargs)
 
 
+# Exit codes. 0 -- success, 1 -- the command reported a failure, 2 -- Click's
+# own usage error, 128 + N -- terminated by signal N (130 for SIGINT, 143 for
+# SIGTERM), the convention every shell already understands.
+EXIT_OK = 0
+EXIT_FAILURE = 1
+EXIT_SIGINT = 130
+
+
+def _export_exit_code(*, signum: int | None, error_count: int) -> int:
+    """Turn the outcome of an export into an exit code.
+
+    An interrupted run outranks a failed one: the signal is what the caller
+    asked for, and 128 + signum tells the shell which one arrived.
+    """
+    if signum:
+        return 128 + signum
+    return EXIT_FAILURE if error_count else EXIT_OK
+
+
 _LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
 
 # Default cut length for message text in `tg messages`; 0 disables the cut.
@@ -146,7 +165,9 @@ def auth_add(name):
 @click.option("--json", "as_json", is_flag=True, help="Output as machine-readable JSON")
 def auth_check(name, as_json):
     """Check if account sessions are valid."""
-    asyncio.run(_auth_check(name, as_json))
+    exit_code = asyncio.run(_auth_check(name, as_json))
+    if exit_code:
+        raise click.exceptions.Exit(exit_code)
 
 
 async def _auth_check(name, as_json=False):
@@ -205,6 +226,10 @@ async def _auth_check(name, as_json=False):
     if as_json:
         click.echo(json.dumps(results, ensure_ascii=False, indent=2))
 
+    # An account that cannot be used is a failure, whatever the output format:
+    # a script wrapping `auth check` has no other way to learn about it.
+    return EXIT_FAILURE if any(r["status"] != "ok" for r in results) else EXIT_OK
+
 
 @main.group()
 def account():
@@ -258,8 +283,8 @@ def account_remove(name):
     """Remove a Telegram account."""
     mgr = _mgr()
     if name not in mgr.list_accounts():
-        _diag(f"Account '{name}' not found.")
-        return
+        _diag(f"Account '{name}' not found.", essential=True)
+        raise click.exceptions.Exit(EXIT_FAILURE)
     mgr.remove_account(name)
     _diag(f"Account '{name}' removed.")
 
@@ -539,7 +564,9 @@ def tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_file):
 
     Accepts one or more CHAT_IDS, or use --from-catalog with --type to batch query.
     """
-    asyncio.run(_tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_file))
+    exit_code = asyncio.run(_tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_file))
+    if exit_code:
+        raise click.exceptions.Exit(exit_code)
 
 
 async def _tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_file):
@@ -629,12 +656,15 @@ async def _tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_fi
                 entry = {"id": cid, "error": str(e), "messages": 0}
                 results.append(entry)
                 if not output_file:
-                    click.echo(f"[{idx}/{total}] id={cid}: ERROR {e}")
+                    _diag(f"[{idx}/{total}] id={cid}: ERROR {e}", essential=True)
 
         if output_file:
             with open(output_file, "w") as f:
                 json.dump(results, f, ensure_ascii=False, indent=2)
             _diag(f"Saved {len(results)} entries to {output_file}")
+        # A chat that could not be queried is a failure even when the rest
+        # succeeded: the JSON carries an "error" key the caller may miss.
+        return EXIT_FAILURE if any("error" in r for r in results) else EXIT_OK
     finally:
         await api.disconnect()
 
@@ -862,6 +892,7 @@ async def _run_export(
     await api.connect()
 
     exporter = None
+    stats = None
     try:
         takeout_active = await _start_takeout(api, cfg, require=require_takeout)
 
@@ -986,10 +1017,12 @@ async def _run_export(
         with contextlib.suppress(Exception, asyncio.CancelledError):
             await state.close()
 
-    # Map a signal-induced shutdown to a conventional exit code: 130 for SIGINT,
-    # 143 for SIGTERM (128 + signal number). A normal finish returns 0.
-    signum = exporter._shutdown_signal if exporter else None
-    return 128 + signum if signum else 0
+    # An export that logged errors did not do what it was asked to do, so it must
+    # not report success; a signal outranks that and maps to 128 + signum.
+    return _export_exit_code(
+        signum=exporter._shutdown_signal if exporter else None,
+        error_count=len(stats.errors) if stats else 0,
+    )
 
 
 async def _render_index(renderer, chats, cfg, state, should_stop=None):
@@ -1241,7 +1274,9 @@ def state_reset(account, config, output, reset_all, delete_messages, chat_id):
     if not chat_id and not reset_all:
         _diag("Specify chat_id or --all")
         raise click.exceptions.Exit(1)
-    asyncio.run(_state_reset(account, config, output, reset_all, delete_messages, chat_id))
+    exit_code = asyncio.run(_state_reset(account, config, output, reset_all, delete_messages, chat_id))
+    if exit_code:
+        raise click.exceptions.Exit(exit_code)
 
 
 async def _state_reset(account, config_override, output_override, reset_all, delete_messages, chat_id):
@@ -1254,13 +1289,14 @@ async def _state_reset(account, config_override, output_override, reset_all, del
         else:
             chat_state = await st.get_chat_state(chat_id)
             if not chat_state:
-                _diag(f"No state for chat {chat_id}")
-                return
+                _diag(f"No state for chat {chat_id}", essential=True)
+                return EXIT_FAILURE
             await st.reset_chat_progress(chat_id, delete_messages=delete_messages)
             msg = f"Reset chat {chat_id}."
             if delete_messages:
                 msg += " Messages and files records deleted."
             _diag(msg)
+        return EXIT_OK
     finally:
         await st.close()
 
@@ -1559,7 +1595,9 @@ def tg_send(account, files, text, as_document, recipients):
         except ValueError:
             parsed.append(r)
 
-    asyncio.run(_tg_send(account, parsed, text, files, as_document))
+    exit_code = asyncio.run(_tg_send(account, parsed, text, files, as_document))
+    if exit_code:
+        raise click.exceptions.Exit(exit_code)
 
 
 @contextlib.contextmanager
@@ -1679,8 +1717,11 @@ async def _tg_send(account_name, recipients, text, files, as_document=False):
             _diag(
                 f"\nDelivered to {sent_count}/{total} recipients. "
                 f"{len(failed)} failed. Re-running this command will resend "
-                f"to ALL {total} recipients (no idempotency)."
+                f"to ALL {total} recipients (no idempotency).",
+                essential=True,
             )
+            return EXIT_FAILURE
+        return EXIT_OK
     finally:
         await api.disconnect()
 
@@ -1695,7 +1736,9 @@ def tg_download(account, output, chat_id, msg_id):
 
     Saves message text to <msg_id>.txt and media files to the output directory.
     """
-    asyncio.run(_tg_download(account, chat_id, msg_id, output))
+    exit_code = asyncio.run(_tg_download(account, chat_id, msg_id, output))
+    if exit_code:
+        raise click.exceptions.Exit(exit_code)
 
 
 def _file_head_sha256(path: Path, n_bytes: int = 64 * 1024) -> str:
@@ -1755,8 +1798,8 @@ async def _tg_download(account_name, chat_id, msg_id, output_dir):
         if isinstance(tl_msg, list):
             tl_msg = tl_msg[0] if tl_msg else None
         if tl_msg is None:
-            _diag(f"Message {msg_id} not found in chat {chat_id}")
-            return
+            _diag(f"Message {msg_id} not found in chat {chat_id}", essential=True)
+            return EXIT_FAILURE
 
         # Save text
         msg_text = getattr(tl_msg, "text", None)
@@ -1794,6 +1837,7 @@ async def _tg_download(account_name, chat_id, msg_id, output_dir):
 
         if not msg_text and not tl_msg.media:
             _diag("  (empty message, no text or media)")
+        return EXIT_OK
     finally:
         await api.disconnect()
 
@@ -1808,8 +1852,14 @@ def run_cli() -> None:
     """
     try:
         main.main(standalone_mode=True)
+    except KeyboardInterrupt:
+        # Ctrl+C outside the export loop (during a prompt, a connect, a render)
+        # used to surface as 0 or 1 depending on where it landed. Report it the
+        # way `run` already reports an interrupted export: 128 + SIGINT.
+        click.echo("Interrupted.", err=True)
+        raise SystemExit(EXIT_SIGINT) from None
     except TgExportError as e:
         if _DEBUG:
             raise
         click.echo(f"Error: {e}", err=True)
-        raise SystemExit(1) from e
+        raise SystemExit(EXIT_FAILURE) from e
