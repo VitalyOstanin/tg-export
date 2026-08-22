@@ -527,18 +527,18 @@ proxy = [
 [package.metadata]
 requires-dist = [
     { name = "aiosqlite", specifier = ">=0.20" },
-    { name = "click", specifier = ">=8.0" },
-    { name = "jinja2", specifier = ">=3.1" },
+    { name = "click", specifier = ">=8.3.3" },
+    { name = "jinja2", specifier = ">=3.1.6" },
     { name = "pyright", marker = "extra == 'dev'", specifier = ">=1.1" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=5.0" },
     { name = "pytest-timeout", marker = "extra == 'dev'", specifier = ">=2.3" },
-    { name = "python-socks", extras = ["asyncio"], marker = "extra == 'proxy'", specifier = ">=2.0" },
+    { name = "python-socks", extras = ["asyncio"], marker = "extra == 'proxy'", specifier = ">=2.0,<3" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "rich", specifier = ">=15.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.7" },
-    { name = "telethon", specifier = ">=1.36" },
+    { name = "telethon", specifier = ">=1.36,<2" },
 ]
 provides-extras = ["proxy", "dev"]
 
