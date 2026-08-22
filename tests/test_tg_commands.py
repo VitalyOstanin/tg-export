@@ -409,11 +409,11 @@ def test_upload_progress_is_silent_without_a_terminal(monkeypatch):
     прогресс отправки такой проверки не имел: в конвейере и в файле журнала
     оседали перерисовки бара."""
     import tg_export.cli as cli
-    import tg_export.exporter as exporter
+    import tg_export.console as console_module
 
     fake_console = MagicMock()
     fake_console.is_terminal = False
-    monkeypatch.setattr(exporter, "console", fake_console)
+    monkeypatch.setattr(console_module, "console", fake_console)
 
     with cli._upload_progress(by_bytes=True) as progress:
         assert progress is None
@@ -429,9 +429,9 @@ def test_upload_progress_shows_percentage_in_both_modes(monkeypatch):
     from rich.progress import TaskProgressColumn
 
     import tg_export.cli as cli
-    import tg_export.exporter as exporter
+    import tg_export.console as console_module
 
-    monkeypatch.setattr(exporter, "console", Console(file=io.StringIO(), force_terminal=True))
+    monkeypatch.setattr(console_module, "console", Console(file=io.StringIO(), force_terminal=True))
 
     for by_bytes in (True, False):
         with cli._upload_progress(by_bytes=by_bytes) as progress:

@@ -295,7 +295,7 @@ def main(debug, log_level, quiet):
     """tg-export: Flexible Telegram data export tool."""
     from rich.logging import RichHandler
 
-    from tg_export.exporter import console as export_console
+    from tg_export.console import console as export_console
 
     level, include_libraries = _resolve_log_level(debug, log_level)
 
@@ -1804,7 +1804,7 @@ def _upload_progress(by_bytes: bool):
         TransferSpeedColumn,
     )
 
-    from tg_export.exporter import console
+    from tg_export.console import console
 
     if _QUIET or not console.is_terminal:
         yield None

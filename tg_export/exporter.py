@@ -16,7 +16,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 
-from rich.console import Console
 from rich.live import Live
 from rich.markup import escape
 from rich.progress import (
@@ -34,6 +33,11 @@ from rich.text import Text
 
 from tg_export.api import TgApi
 from tg_export.config import ChatExportConfig, Config
+
+# Bound here as a module global on purpose: exporter.console is what the
+# rest of the code and the tests reach for; the declaration is in
+# tg_export.console.
+from tg_export.console import console
 from tg_export.converter import convert_message
 from tg_export.format import format_size, format_speed
 from tg_export.html.renderer import HtmlRenderer
@@ -48,10 +52,6 @@ logger = logging.getLogger(__name__)
 BATCH_SIZE = 500
 LOG_INTERVAL = 3  # seconds
 
-# Progress, status tables, per-chat lines and diagnostic output go to stderr so
-# that stdout stays reserved for machine-readable output of query commands
-# (list / state show / tg info / tg messages). See cli.py for the stdout side.
-console = Console(stderr=True)
 
 
 def _log(msg: str):
