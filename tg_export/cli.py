@@ -1681,12 +1681,15 @@ def tg_send(account, files, text, as_document, recipients):
 def _upload_progress(by_bytes: bool):
     """Progress bars for an upload: current file plus overall total.
 
-    Yields None under --quiet so callers keep a single code path.
-    """
-    if _QUIET:
-        yield None
-        return
+    Yields None when there is nothing to draw on -- under --quiet, and when
+    the output is not a terminal. The export path makes the same call
+    (``console.is_terminal and not self.quiet``); without it a redirected run
+    collected bar redraws in the log.
 
+    The percentage column is present in both modes so that the same command
+    does not look different depending on how many files were passed; the byte
+    mode adds size and speed on top of it.
+    """
     from rich.progress import (
         BarColumn,
         DownloadColumn,
@@ -1698,11 +1701,17 @@ def _upload_progress(by_bytes: bool):
 
     from tg_export.exporter import console
 
-    columns = [TextColumn("[progress.description]{task.description}"), BarColumn()]
+    if _QUIET or not console.is_terminal:
+        yield None
+        return
+
+    columns = [
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+    ]
     if by_bytes:
         columns += [DownloadColumn(binary_units=True), TransferSpeedColumn()]
-    else:
-        columns.append(TaskProgressColumn())
 
     with Progress(*columns, console=console) as progress:
         yield progress
@@ -1722,11 +1731,19 @@ async def _send_files(client, recipient, file_paths, text, as_document):
 
     with _upload_progress(by_bytes) as progress:
         if not by_bytes:
-            task = progress.add_task(f"{len(file_paths)} files", total=len(file_paths)) if progress else None
+            task = (
+                progress.add_task(f"{len(file_paths)} files", total=len(file_paths))
+                if progress is not None
+                else None
+            )
 
             def album_progress(sent, total):
+                # `total` from Telethon is the tail of the album still to send:
+                # it slices the list into chunks of 10 and reports 25, then 15,
+                # then 5, while `sent` keeps counting from the start. Adopting
+                # that total pushed the bar past 100% for more than ten files.
                 if progress is not None and task is not None:
-                    progress.update(task, completed=sent, total=total)
+                    progress.update(task, completed=min(sent, len(file_paths)))
 
             await client.send_file(
                 recipient,
@@ -1739,7 +1756,7 @@ async def _send_files(client, recipient, file_paths, text, as_document):
 
         sizes = [p.stat().st_size for p in file_paths]
         total_task = None
-        if progress and len(file_paths) > 1:
+        if progress is not None and len(file_paths) > 1:
             total_task = progress.add_task(f"total 0/{len(file_paths)} files", total=sum(sizes))
         done_bytes = 0
 
@@ -1748,7 +1765,7 @@ async def _send_files(client, recipient, file_paths, text, as_document):
             # printed mangled: [draft]report.txt comes out as report.txt.
             task = (
                 progress.add_task(file_progress_description(path.name), total=sizes[index])
-                if progress
+                if progress is not None
                 else None
             )
 

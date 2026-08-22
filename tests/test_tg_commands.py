@@ -395,3 +395,98 @@ def test_rich_swallows_an_unescaped_file_name():
     console = Console(file=io.StringIO(), width=80, force_terminal=False)
     console.print(file_progress_description("[draft]report.txt"))
     assert console.file.getvalue() == "[draft]report.txt\n"
+
+
+def test_upload_progress_is_silent_without_a_terminal(monkeypatch):
+    """Экспортёр рисует живой прогресс только при `console.is_terminal`, а
+    прогресс отправки такой проверки не имел: в конвейере и в файле журнала
+    оседали перерисовки бара."""
+    import tg_export.cli as cli
+    import tg_export.exporter as exporter
+
+    fake_console = MagicMock()
+    fake_console.is_terminal = False
+    monkeypatch.setattr(exporter, "console", fake_console)
+
+    with cli._upload_progress(by_bytes=True) as progress:
+        assert progress is None
+
+
+def test_upload_progress_shows_percentage_in_both_modes(monkeypatch):
+    """Итоговый вид бара не должен зависеть от режима: побайтовый показывал
+    байты и скорость, альбомный -- проценты, и одна и та же команда выглядела
+    по-разному в зависимости от числа файлов."""
+    import io
+
+    from rich.console import Console
+    from rich.progress import TaskProgressColumn
+
+    import tg_export.cli as cli
+    import tg_export.exporter as exporter
+
+    monkeypatch.setattr(exporter, "console", Console(file=io.StringIO(), force_terminal=True))
+
+    for by_bytes in (True, False):
+        with cli._upload_progress(by_bytes=by_bytes) as progress:
+            kinds = [type(c) for c in progress.columns]
+            assert TaskProgressColumn in kinds, (by_bytes, kinds)
+
+
+@pytest.mark.asyncio
+async def test_album_progress_never_passes_the_file_count(tmp_path, monkeypatch):
+    """Telethon режет альбом на группы по 10 и передаёт в колбэк остаток списка
+    как total (25 -> 15 -> 5), тогда как sent считается от начала альбома.
+    Колбэк перетирал этим значением свой total, и для более чем десяти файлов
+    прогресс уходил за 100%."""
+    import contextlib
+    from unittest.mock import MagicMock
+
+    import tg_export.cli as cli
+
+    files = []
+    for i in range(25):
+        f = tmp_path / f"f{i}.jpg"
+        f.write_bytes(b"x")
+        files.append(f)
+
+    updates = []
+    totals = {}
+
+    class _Progress:
+        def add_task(self, description, total=None, **kwargs):
+            totals[1] = total
+            return 1
+
+        def update(self, task, completed=None, total=None, **kwargs):
+            if total is not None:
+                totals[task] = total
+            if completed is not None:
+                updates.append(completed)
+
+        def remove_task(self, *a, **k):
+            pass
+
+    @contextlib.contextmanager
+    def fake_progress(by_bytes):
+        yield _Progress()
+
+    monkeypatch.setattr(cli, "_upload_progress", fake_progress)
+
+    async def send_file(recipient, paths, caption=None, force_document=False, progress_callback=None):
+        # Воспроизводит нарезку Telethon: sent -- сквозной, total -- остаток.
+        sent_count = 0
+        remaining = len(paths)
+        while remaining:
+            chunk = min(10, remaining)
+            for i in range(1, chunk + 1):
+                progress_callback(sent_count + i, remaining)
+            sent_count += 10
+            remaining -= chunk
+
+    client = MagicMock()
+    client.send_file = send_file
+
+    await cli._send_files(client, 1, files, "text", False)
+
+    assert totals[1] == 25, totals
+    assert max(updates) <= 25, max(updates)
