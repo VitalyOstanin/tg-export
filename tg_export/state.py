@@ -26,12 +26,12 @@ from tg_export.models import (
     ServiceAction,
     TextPart,
     TextType,
-    _action_from_dict,
-    _action_to_dict,
-    _decode_hook,
-    _encode_default,
-    _media_from_dict,
-    _media_to_dict,
+    action_from_dict,
+    action_to_dict,
+    decode_hook,
+    encode_default,
+    media_from_dict,
+    media_to_dict,
 )
 from tg_export.privacy import restrict_file
 
@@ -69,7 +69,7 @@ def _plain_text(text_parts: list[TextPart]) -> str:
 
 
 def _text_parts_to_json(parts: list[TextPart]) -> str:
-    return json.dumps([asdict(tp) for tp in parts], default=_encode_default, ensure_ascii=False)
+    return json.dumps([asdict(tp) for tp in parts], default=encode_default, ensure_ascii=False)
 
 
 def _text_parts_from_json(s: str | None) -> list[TextPart]:
@@ -86,46 +86,46 @@ def _text_parts_from_json(s: str | None) -> list[TextPart]:
 def _media_to_json(media: Media | None) -> str | None:
     if media is None:
         return None
-    return json.dumps(_media_to_dict(media), default=_encode_default, ensure_ascii=False)
+    return json.dumps(media_to_dict(media), default=encode_default, ensure_ascii=False)
 
 
 def _media_from_json(s: str | None) -> Media | None:
     if not s:
         return None
-    d = json.loads(s, object_hook=_decode_hook)
-    return _media_from_dict(d)
+    d = json.loads(s, object_hook=decode_hook)
+    return media_from_dict(d)
 
 
 def _action_to_json(action: ServiceAction | None) -> str | None:
     if action is None:
         return None
-    return json.dumps(_action_to_dict(action), default=_encode_default, ensure_ascii=False)
+    return json.dumps(action_to_dict(action), default=encode_default, ensure_ascii=False)
 
 
 def _action_from_json(s: str | None) -> ServiceAction | None:
     if not s:
         return None
-    d = json.loads(s, object_hook=_decode_hook)
-    return _action_from_dict(d)
+    d = json.loads(s, object_hook=decode_hook)
+    return action_from_dict(d)
 
 
 def _forward_to_json(fwd: ForwardInfo | None) -> str | None:
     if fwd is None:
         return None
-    return json.dumps(asdict(fwd), default=_encode_default, ensure_ascii=False)
+    return json.dumps(asdict(fwd), default=encode_default, ensure_ascii=False)
 
 
 def _forward_from_json(s: str | None) -> ForwardInfo | None:
     if not s:
         return None
-    d = json.loads(s, object_hook=_decode_hook)
+    d = json.loads(s, object_hook=decode_hook)
     return ForwardInfo(**d)
 
 
 def _reactions_to_json(reactions: list[Reaction]) -> str | None:
     if not reactions:
         return None
-    return json.dumps([asdict(r) for r in reactions], default=_encode_default, ensure_ascii=False)
+    return json.dumps([asdict(r) for r in reactions], default=encode_default, ensure_ascii=False)
 
 
 def _reactions_from_json(s: str | None) -> list[Reaction]:
@@ -143,7 +143,7 @@ def _buttons_to_json(buttons: list[list[InlineButton]] | None) -> str | None:
     if buttons is None:
         return None
     return json.dumps(
-        [[asdict(btn) for btn in row] for row in buttons], default=_encode_default, ensure_ascii=False
+        [[asdict(btn) for btn in row] for row in buttons], default=encode_default, ensure_ascii=False
     )
 
 
@@ -175,7 +175,7 @@ def _month_range(month_key: str) -> tuple[str, str]:
     return start, end
 
 
-def _row_to_message(row: dict) -> Message:
+def _row_to_message(row: dict[str, Any]) -> Message:
     """Reconstruct Message from database row."""
     return Message(
         id=row["msg_id"],
@@ -201,7 +201,7 @@ def _row_to_message(row: dict) -> Message:
     )
 
 
-def _load_messages_for_month_sync(db_path: Path, chat_id: int, month_key: str) -> list:
+def _load_messages_for_month_sync(db_path: Path, chat_id: int, month_key: str) -> list[Message]:
     """Synchronous month loader for use inside asyncio.to_thread workers.
 
     Why: render_chat_streaming runs in a thread to avoid blocking the event
@@ -503,7 +503,7 @@ class ExportState:
 
     # -- export_state --
 
-    async def get_chat_state(self, chat_id: int) -> dict | None:
+    async def get_chat_state(self, chat_id: int) -> dict[str, Any] | None:
         """Get full export state for a chat."""
         async with self.db.execute("SELECT * FROM export_state WHERE chat_id=?", (chat_id,)) as cur:
             row = await cur.fetchone()
@@ -657,7 +657,7 @@ class ExportState:
         # it on next run, forcing a re-download.
         await self.commit()
 
-    async def get_file(self, file_id: int, chat_id: int) -> dict | None:
+    async def get_file(self, file_id: int, chat_id: int) -> dict[str, Any] | None:
         # Named columns, not *: this runs once per media file, and the callers
         # read only these two -- the rest (paths, hashes) would be materialised
         # into Python strings for nothing.
@@ -668,7 +668,7 @@ class ExportState:
             row = await cur.fetchone()
             return dict(row) if row else None
 
-    async def get_file_any_chat(self, file_id: int) -> dict | None:
+    async def get_file_any_chat(self, file_id: int) -> dict[str, Any] | None:
         """Find file_id in any chat (for intra-account deduplication)."""
         async with self.db.execute(
             "SELECT chat_id, local_path FROM files WHERE file_id=? AND status='done' LIMIT 1", (file_id,)
@@ -706,7 +706,7 @@ class ExportState:
 
     # -- messages --
 
-    def _msg_to_params(self, msg: Message) -> tuple:
+    def _msg_to_params(self, msg: Message) -> tuple[Any, ...]:
         """Convert Message to SQL parameter tuple (insert + update values)."""
         values = (
             msg.chat_id,
@@ -810,13 +810,13 @@ class ExportState:
                 counts[chat_id] = count
         return counts
 
-    async def list_chat_states(self) -> list:
+    async def list_chat_states(self) -> list[dict[str, Any]]:
         """Return the export progress of every known chat, newest update first."""
         async with self.db.execute(
             "SELECT es.*, (SELECT COUNT(*) FROM messages m WHERE m.chat_id=es.chat_id) AS msg_count "
             "FROM export_state es ORDER BY es.updated_at DESC"
         ) as cur:
-            return list(await cur.fetchall())
+            return [dict(row) for row in await cur.fetchall()]
 
     async def count_messages(self, chat_id: int) -> int:
         """Count messages for a chat."""
@@ -894,7 +894,7 @@ class ExportState:
             rows = await cur.fetchall()
             return [dict(r) for r in rows]
 
-    async def get_catalog_entry(self, chat_id: int) -> dict | None:
+    async def get_catalog_entry(self, chat_id: int) -> dict[str, Any] | None:
         """Direct lookup of a chat by id; avoids the LIKE '%%' full-table scan."""
         async with self.db.execute(
             "SELECT chat_id, name, type FROM catalog_cache WHERE chat_id=?",

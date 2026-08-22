@@ -309,7 +309,7 @@ def _parse_concurrent_downloads(value: Any) -> int:
     return value
 
 
-def _parse_media_config(d: dict) -> MediaConfig:
+def _parse_media_config(d: dict[str, Any]) -> MediaConfig:
     return MediaConfig(
         types=_parse_media_types(d.get("types", ["photo"])),
         max_file_size_bytes=parse_size(d.get("max_file_size", "100MB")),
@@ -338,7 +338,19 @@ def _parse_date(val: Any, field_name: str) -> date | None:
     raise ConfigError(f"Invalid date in {field_name}: {val!r}; expected YYYY-MM-DD")
 
 
-def _parse_chat_rule(d: dict) -> ChatRule:
+def _require_mapping(value: Any, field_name: str) -> dict[str, Any]:
+    """Reject a rule section that YAML read as something other than a mapping.
+
+    `type_rules:\n  personal: true` is a scalar, not a rule; without this the
+    parser walked on and died on `d["media"]` with a TypeError that named
+    neither the section nor the file.
+    """
+    if not isinstance(value, dict):
+        raise ConfigError(f"{field_name} must be a mapping, got {type(value).__name__}: {value!r}")
+    return value
+
+
+def _parse_chat_rule(d: dict[str, Any]) -> ChatRule:
     media = _parse_media_config(d["media"]) if "media" in d else None
     return ChatRule(
         id=d.get("id"),
@@ -350,8 +362,8 @@ def _parse_chat_rule(d: dict) -> ChatRule:
     )
 
 
-def _parse_type_rule(d: dict) -> TypeRule:
-    if isinstance(d, dict) and d.get("skip"):
+def _parse_type_rule(d: dict[str, Any]) -> TypeRule:
+    if d.get("skip"):
         return TypeRule(skip=True)
     media = _parse_media_config(d["media"]) if "media" in d else None
     return TypeRule(
@@ -362,11 +374,14 @@ def _parse_type_rule(d: dict) -> TypeRule:
     )
 
 
-def _parse_folder_rule(d: dict) -> FolderRule:
-    if isinstance(d, dict) and d.get("skip"):
+def _parse_folder_rule(d: dict[str, Any]) -> FolderRule:
+    if d.get("skip"):
         return FolderRule(skip=True)
     media = _parse_media_config(d["media"]) if "media" in d else None
-    chats = [_parse_chat_rule(c) for c in d.get("chats", [])]
+    chats = [
+        _parse_chat_rule(_require_mapping(c, f"folders.*.chats[{i}]"))
+        for i, c in enumerate(d.get("chats", []))
+    ]
     return FolderRule(media=media, skip=False, chats=chats)
 
 
@@ -486,7 +501,7 @@ def load_config(path: Path) -> Config:
     # Folders
     folders = {}
     for name, folder_data in raw.get("folders", {}).items():
-        folders[name] = _parse_folder_rule(folder_data)
+        folders[name] = _parse_folder_rule(_require_mapping(folder_data, f"folders.{name}"))
 
     # Type rules
     type_rules = {}
@@ -494,10 +509,10 @@ def load_config(path: Path) -> Config:
         if type_key not in _TYPE_RULE_KEYS:
             allowed = ", ".join(sorted(_TYPE_RULE_KEYS))
             raise ConfigError(f"Unknown key {type_key!r} in type_rules; allowed values: {allowed}")
-        type_rules[type_key] = _parse_type_rule(type_data)
+        type_rules[type_key] = _parse_type_rule(_require_mapping(type_data, f"type_rules.{type_key}"))
 
     # Chats
-    chats = [_parse_chat_rule(c) for c in raw.get("chats", [])]
+    chats = [_parse_chat_rule(_require_mapping(c, f"chats[{i}]")) for i, c in enumerate(raw.get("chats", []))]
 
     # Left channels
     lc_raw = raw.get("left_channels", {})

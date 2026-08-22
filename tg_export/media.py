@@ -20,6 +20,7 @@ from telethon.errors import FloodWaitError, ServerError, TimedOutError
 
 from tg_export.config import MediaConfig
 from tg_export.errors import TgExportError
+from tg_export.importer import TdesktopIndex
 from tg_export.models import Media, MediaType
 from tg_export.state import DB_TIMEOUT_SECONDS
 
@@ -186,7 +187,7 @@ class MediaDownloader:
         state,
         config: MediaConfig,
         min_free_bytes: int,
-        tdesktop_indexes: list | None = None,
+        tdesktop_indexes: list[TdesktopIndex] | None = None,
         sibling_db_paths: list[Path] | None = None,
     ):
         self.api = api

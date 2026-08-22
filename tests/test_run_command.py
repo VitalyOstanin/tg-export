@@ -67,9 +67,9 @@ def run_env(tmp_path, monkeypatch):
     stats = ExportStats()
     exporter = MagicMock()
     exporter.run = AsyncMock(return_value=stats)
-    exporter._force_shutdown = False
-    exporter._shutdown = False
-    exporter._shutdown_signal = None
+    exporter.force_shutdown = False
+    exporter.shutdown_requested = False
+    exporter.shutdown_signal = None
     monkeypatch.setattr("tg_export.exporter.Exporter", lambda *a, **k: exporter)
     monkeypatch.setattr(cli, "_render_index", AsyncMock())
 
@@ -93,7 +93,7 @@ def test_run_reports_errors_with_nonzero_code(run_env):
 def test_run_maps_signal_to_exit_code(run_env):
     import signal
 
-    run_env.exporter._shutdown_signal = signal.SIGINT
+    run_env.exporter.shutdown_signal = signal.SIGINT
     result = CliRunner().invoke(main, ["run"])
     assert result.exit_code == 128 + signal.SIGINT
 

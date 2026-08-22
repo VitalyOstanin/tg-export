@@ -54,6 +54,7 @@ from telethon.crypto import AuthKey
 from telethon.sessions import SQLiteSession
 
 from tg_export.privacy import restrict_file
+from tg_export.state import DB_TIMEOUT_SECONDS
 
 logger = logging.getLogger(__name__)
 
@@ -195,7 +196,7 @@ class FixedSQLiteSession(SQLiteSession):
         if path is None or not path.exists():
             return None, None
         try:
-            conn = sqlite3.connect(str(path), timeout=30)
+            conn = sqlite3.connect(str(path), timeout=DB_TIMEOUT_SECONDS)
             try:
                 # IMMEDIATE takes the write lock up front: the read below decides
                 # what the clearing UPDATE destroys, so a second process must not

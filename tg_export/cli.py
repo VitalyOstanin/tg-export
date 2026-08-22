@@ -19,12 +19,21 @@ Imports of project modules are deliberately made inside the command bodies
 rather than at module level: the entry point is a console script, and
 importing telethon, jinja2 and the exporter on every ``--help`` costs about a
 second of startup. Keep them where they are unless the module is needed by
-the group definitions themselves.
+the group definitions themselves. The standard library is the other way round
+-- it is already loaded by the interpreter, so it belongs in the header of the
+module; a test enforces that boundary.
 """
 
 import asyncio
 import contextlib
+import hashlib
+import json
 import logging
+import os
+import shutil
+import subprocess
+import tempfile
+from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -124,7 +133,13 @@ async def _connected_api(account_name):
         yield api, account
 
 
-def _resolve_output(account, config_override, output_override, *, missing_config_hint=None):
+def _resolve_output(
+    account: str | None,
+    config_override: Path | None,
+    output_override: Path | None,
+    *,
+    missing_config_hint: str | None = None,
+) -> tuple[str, Any, Path]:
     """Resolve ``(account, config, output_base)`` from the command options.
 
     Reported as a failure when the config file is missing: without it there is
@@ -144,7 +159,7 @@ def _resolve_output(account, config_override, output_override, *, missing_config
 
     cfg = load_config(config_path)
     if output_override:
-        output_base = Path(output_override).expanduser()
+        output_base = output_override.expanduser()
     else:
         output_base = _account_output_dir(Path(cfg.output.path), account)
     return account, cfg, output_base
@@ -204,7 +219,6 @@ def _resolve_log_level(debug: bool, log_level: str | None) -> tuple[int, bool]:
     switch regardless of the environment. A trailing ``:all`` (``DEBUG:all``)
     additionally lifts the libraries off their WARNING floor.
     """
-    import os
 
     raw = log_level or os.environ.get("LOG_LEVEL") or ""
     include_libraries = raw.strip().upper().endswith(_ALL_SUFFIX)
@@ -256,8 +270,7 @@ def _quiet_third_party_loggers(level: int, *, include_libraries: bool = False) -
     default=False,
     help="Suppress progress and status output (errors and the final summary are still shown).",
 )
-@click.pass_context
-def main(ctx, debug, log_level, quiet):
+def main(debug, log_level, quiet):
     """tg-export: Flexible Telegram data export tool."""
     from rich.logging import RichHandler
 
@@ -271,18 +284,18 @@ def main(ctx, debug, log_level, quiet):
         handlers=[RichHandler(console=export_console, rich_tracebacks=True, show_path=debug)],
     )
     _quiet_third_party_loggers(level, include_libraries=include_libraries)
+    # One home for the two flags. They used to be written here twice -- into
+    # these globals and into ctx.obj -- and read from both, while ctx.obj["debug"]
+    # was read nowhere; run_cli reports errors outside any click context and
+    # needs the module-level value anyway.
     global _QUIET, _DEBUG
     _QUIET = quiet
     _DEBUG = debug
-    ctx.ensure_object(dict)
-    ctx.obj["debug"] = debug
-    ctx.obj["quiet"] = quiet
 
 
 @main.group()
 def auth():
     """Telegram authentication: credentials, login, session check."""
-    pass
 
 
 @auth.command("credentials")
@@ -326,7 +339,6 @@ def auth_check(name, as_json):
 
 
 async def _auth_check(name, as_json=False):
-    import json
 
     from tg_export.api import TgApi
 
@@ -386,7 +398,6 @@ async def _auth_check(name, as_json=False):
 @main.group()
 def account():
     """Manage accounts: list, set default, remove."""
-    pass
 
 
 @account.command("list")
@@ -397,8 +408,6 @@ def account_list(as_json):
     accounts = mgr.list_accounts()
     default = mgr.get_default_account()
     if as_json:
-        import json
-
         payload = [{"name": acc, "default": acc == default} for acc in accounts]
         click.echo(json.dumps(payload, ensure_ascii=False, indent=2))
         return
@@ -465,7 +474,6 @@ def show_config(verbose):
             )
         else:
             click.echo("  proxy: none")
-        import shutil
 
         from tg_export.auth import DEFAULT_MIN_FREE_SPACE
 
@@ -587,7 +595,6 @@ def _show_account_config(config_path):
 @main.group()
 def takeout():
     """Manage Telegram Takeout sessions."""
-    pass
 
 
 @takeout.command("clear")
@@ -630,7 +637,6 @@ async def _takeout_clear(name):
 @main.group()
 def tg():
     """Direct Telegram API commands."""
-    pass
 
 
 @tg.command("messages")
@@ -697,12 +703,14 @@ def _entity_name(entity) -> str:
 @click.option(
     "--from-catalog",
     "catalog_file",
-    type=click.Path(exists=True),
+    type=click.Path(exists=True, path_type=Path),
     help="JSON catalog file (from tg-export list --format json)",
 )
 @click.option("--type", "chat_type", default=None, help="Filter by chat type (with --from-catalog)")
 @click.option("--last", "last_n", type=int, default=0, help="Show last N messages per chat")
-@click.option("--output", "output_file", type=click.Path(), default=None, help="Save results to JSON file")
+@click.option(
+    "--output", "output_file", type=click.Path(path_type=Path), default=None, help="Save results to JSON file"
+)
 @click.option("--json", "as_json", is_flag=True, help="Output as machine-readable JSON")
 def tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_file, as_json):
     """Show chat info: message count, type, title.
@@ -717,7 +725,6 @@ def tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_file, as_
 
 
 async def _tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_file, as_json=False):
-    import json
 
     from telethon.tl.functions.messages import GetHistoryRequest
 
@@ -811,7 +818,7 @@ async def _tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_fi
 
 @main.command("list")
 @click.option("--account", default=None, help="Account alias (default: from 'auth default')")
-@click.option("--output", type=click.Path(), help="Output file path")
+@click.option("--output", type=click.Path(path_type=Path), help="Output file path")
 @click.option("--format", "fmt", type=click.Choice(["yaml", "json"]), default="yaml")
 @click.option("--include-left", is_flag=True, help="Include left channels")
 def list_chats(account, output, fmt, include_left):
@@ -827,7 +834,7 @@ async def _list_chats(account, output, fmt, include_left):
         result = format_catalog_json(chats) if fmt == "json" else format_catalog_yaml(chats)
 
         if output:
-            Path(output).write_text(result, encoding="utf-8")
+            output.write_text(result, encoding="utf-8")
             _diag(f"Catalog saved to {output}")
         else:
             click.echo(result)
@@ -835,8 +842,8 @@ async def _list_chats(account, output, fmt, include_left):
 
 @main.command("init")
 @click.option("--account", default=None, help="Account alias (default: from 'auth default')")
-@click.option("--from", "from_catalog", type=click.Path(exists=True), help="Catalog file")
-@click.option("--output", type=click.Path(), default=None, help="Override output config path")
+@click.option("--from", "from_catalog", type=click.Path(exists=True, path_type=Path), help="Catalog file")
+@click.option("--output", type=click.Path(path_type=Path), default=None, help="Override output config path")
 def init_config(account, from_catalog, output):
     """Generate config template from catalog. Saves to ~/.config/tg-export/<account>.yaml."""
     asyncio.run(_init_config(account, from_catalog, output))
@@ -848,10 +855,10 @@ async def _init_config(account, from_catalog, output):
 
     mgr = _mgr()
     account = mgr.resolve_account(account)
-    config_path = Path(output) if output else mgr.config_path(account)
+    config_path = output or mgr.config_path(account)
 
     if from_catalog:
-        chats = _chats_from_catalog_file(Path(from_catalog))
+        chats = _chats_from_catalog_file(from_catalog)
     else:
         from tg_export.catalog import fetch_catalog
 
@@ -878,8 +885,6 @@ def _chats_from_catalog_file(path: Path):
 
 def _get_dir_size(path: Path) -> int | None:
     """Get directory size using du -sb (Linux) or du -sk fallback (BSD/macOS)."""
-    import subprocess
-
     # Why "--": prevents paths starting with "-" from being parsed as flags.
     # Why fallback: BSD du has no -b; -sk returns KiB.
     for cmd in (["du", "-sb", "--", str(path)], ["du", "-sk", "--", str(path)]):
@@ -900,8 +905,10 @@ def _get_dir_size(path: Path) -> int | None:
 
 @main.command("run")
 @click.option("--account", default=None, help="Account alias (default: from 'auth default')")
-@click.option("--config", type=click.Path(exists=True), default=None, help="Override config path")
-@click.option("--output", type=click.Path(), help="Override output directory")
+@click.option(
+    "--config", type=click.Path(exists=True, path_type=Path), default=None, help="Override config path"
+)
+@click.option("--output", type=click.Path(path_type=Path), help="Override output directory")
 @click.option("--verify", is_flag=True, help="Verify file integrity after export")
 @click.option("--dry-run", is_flag=True, help="Show what would be exported")
 @click.option(
@@ -909,10 +916,8 @@ def _get_dir_size(path: Path) -> int | None:
     is_flag=True,
     help="Fail instead of falling back to the regular API when Takeout cannot be started.",
 )
-@click.pass_context
-def run_export(ctx, account, config, output, verify, dry_run, require_takeout):
+def run_export(account, config, output, verify, dry_run, require_takeout):
     """Run export according to config. Config resolved by account name convention."""
-    quiet = bool(ctx.obj and ctx.obj.get("quiet"))
     exit_code = asyncio.run(
         _run_export(
             account,
@@ -920,7 +925,7 @@ def run_export(ctx, account, config, output, verify, dry_run, require_takeout):
             output,
             verify,
             dry_run,
-            quiet=quiet,
+            quiet=_QUIET,
             require_takeout=require_takeout,
         )
     )
@@ -1150,12 +1155,14 @@ async def _run_export(
         )
         stats = await exporter.run(dry_run=dry_run, verify=verify, chat_list=chats)
 
-        if exporter._force_shutdown:
+        if exporter.force_shutdown:
             _diag("\nForce shutdown — state saved.", essential=True)
         else:
             # Render index
             if not dry_run:
-                await _render_index(renderer, chats, cfg, state, should_stop=lambda: exporter._shutdown)
+                await _render_index(
+                    renderer, chats, cfg, state, should_stop=lambda: exporter.shutdown_requested
+                )
 
             await _print_export_summary(stats, state, output_base, takeout_active=takeout_active)
 
@@ -1170,7 +1177,7 @@ async def _run_export(
     # An export that logged errors did not do what it was asked to do, so it must
     # not report success; a signal outranks that and maps to 128 + signum.
     return _export_exit_code(
-        signum=exporter._shutdown_signal if exporter else None,
+        signum=exporter.shutdown_signal if exporter else None,
         error_count=len(stats.errors) if stats else 0,
     )
 
@@ -1180,7 +1187,6 @@ async def _group_chats_for_index(chats, cfg, state, should_stop):
 
     Returns None when ``should_stop`` fires: the caller then skips the render.
     """
-    from collections import defaultdict
 
     from tg_export.exporter import sanitize_name
 
@@ -1303,13 +1309,12 @@ async def _render_index(renderer, chats, cfg, state, should_stop=None):
 @main.group()
 def state():
     """Manage export state (reset, show status, force re-export)."""
-    pass
 
 
 @state.command("show")
 @click.option("--account", default=None, help="Account alias")
-@click.option("--config", type=click.Path(exists=True), default=None)
-@click.option("--output", type=click.Path(), default=None)
+@click.option("--config", type=click.Path(exists=True, path_type=Path), default=None)
+@click.option("--output", type=click.Path(path_type=Path), default=None)
 @click.option("--json", "as_json", is_flag=True, help="Output as machine-readable JSON")
 @click.argument("chat_id", type=int, required=False)
 def state_show(account, config, output, as_json, chat_id):
@@ -1318,7 +1323,6 @@ def state_show(account, config, output, as_json, chat_id):
 
 
 async def _state_show(account, config_override, output_override, chat_id, as_json=False):
-    import json
 
     async with _opened_state(account, config_override, output_override) as (st, _, account):
         if chat_id:
@@ -1380,8 +1384,8 @@ async def _state_show(account, config_override, output_override, chat_id, as_jso
 
 @state.command("reset")
 @click.option("--account", default=None, help="Account alias")
-@click.option("--config", type=click.Path(exists=True), default=None)
-@click.option("--output", type=click.Path(), default=None)
+@click.option("--config", type=click.Path(exists=True, path_type=Path), default=None)
+@click.option("--output", type=click.Path(path_type=Path), default=None)
 @click.option("--all", "reset_all", is_flag=True, help="Reset all chats")
 @click.option("--delete-messages", is_flag=True, help="Also delete messages from DB")
 @click.argument("chat_id", type=int, required=False)
@@ -1416,8 +1420,10 @@ async def _state_reset(account, config_override, output_override, reset_all, del
 @main.command("purge")
 @click.argument("chat", required=True)
 @click.option("--account", default=None, help="Account alias (default: from 'auth default')")
-@click.option("--config", type=click.Path(exists=True), default=None, help="Override config path")
-@click.option("--output", type=click.Path(), help="Export output directory")
+@click.option(
+    "--config", type=click.Path(exists=True, path_type=Path), default=None, help="Override config path"
+)
+@click.option("--output", type=click.Path(path_type=Path), help="Export output directory")
 @click.option("--yes", is_flag=True, help="Skip confirmation")
 def purge_chat(chat, account, config, output, yes):
     """Purge chat data: messages, files, state, and rendered HTML.
@@ -1428,7 +1434,6 @@ def purge_chat(chat, account, config, output, yes):
 
 
 async def _purge_chat(chat_arg, account, config_override, output_override, skip_confirm):
-    import shutil
 
     async with _opened_state(account, config_override, output_override) as (
         state,
@@ -1529,8 +1534,10 @@ async def _purge_chat(chat_arg, account, config_override, output_override, skip_
 
 @main.command("verify")
 @click.option("--account", default=None, help="Account alias (default: from 'auth default')")
-@click.option("--config", type=click.Path(exists=True), default=None, help="Override config path")
-@click.option("--output", type=click.Path(), help="Export output directory")
+@click.option(
+    "--config", type=click.Path(exists=True, path_type=Path), default=None, help="Override config path"
+)
+@click.option("--output", type=click.Path(path_type=Path), help="Export output directory")
 def verify_files(account, config, output):
     """Verify integrity of previously downloaded files."""
     exit_code = asyncio.run(_verify_files(account, config, output))
@@ -1548,14 +1555,13 @@ def _clean_verify_staging(root: Path) -> None:
     cleanup. The leftovers are harmless but accumulate next to the media, so
     sweep them at the start of the next run.
     """
-    import shutil
 
     for path in root.rglob(f"{VERIFY_STAGING_PREFIX}*"):
         if path.is_dir():
             shutil.rmtree(path, ignore_errors=True)
 
 
-async def _redownload_broken_file(api, state, entry: dict) -> bool:
+async def _redownload_broken_file(api, state, entry: dict[str, Any]) -> bool:
     """Re-download one broken file, replacing it only after the download succeeded.
 
     Returns True when the file was replaced, False when the message no longer
@@ -1565,9 +1571,6 @@ async def _redownload_broken_file(api, state, entry: dict) -> bool:
     first meant that an interruption -- a dropped connection, Ctrl+C -- left
     nothing behind while the database still pointed at the vanished path.
     """
-    import os
-    import tempfile
-
     chat_id = entry["chat_id"]
     msg_id = entry["msg_id"]
     local_path = Path(entry["local_path"])
@@ -1661,7 +1664,7 @@ async def _verify_files(account, config_override, output_override):
     "-f",
     "files",
     multiple=True,
-    type=click.Path(exists=True),
+    type=click.Path(exists=True, path_type=Path),
     help="File(s) to attach (can be specified multiple times)",
 )
 @click.option("--text", "-t", default=None, help="Message text")
@@ -1849,7 +1852,7 @@ async def _tg_send(account_name, recipients, text, files, as_document=False):
 
 @tg.command("download")
 @click.option("--account", default=None, help="Account alias")
-@click.option("--output", "-o", type=click.Path(), default=".", help="Output directory")
+@click.option("--output", "-o", type=click.Path(path_type=Path), default=".", help="Output directory")
 @click.argument("chat_id", type=int)
 @click.argument("msg_id", type=int)
 def tg_download(account, output, chat_id, msg_id):
@@ -1864,8 +1867,6 @@ def tg_download(account, output, chat_id, msg_id):
 
 def _file_head_sha256(path: Path, n_bytes: int = 64 * 1024) -> str:
     """SHA-256 of the first n_bytes of a file (cheap content fingerprint)."""
-    import hashlib
-
     h = hashlib.sha256()
     with path.open("rb") as f:
         chunk = f.read(n_bytes)
@@ -1873,7 +1874,7 @@ def _file_head_sha256(path: Path, n_bytes: int = 64 * 1024) -> str:
     return h.hexdigest()
 
 
-async def _download_if_new(client, msg, out: Path, downloaded: set) -> str | None:
+async def _download_if_new(client, msg, out: Path, downloaded: set[Path]) -> str | None:
     """Download media, skip only if EXACTLY the same content was already saved.
 
     Why: previous version compared just file size, which would silently delete
@@ -1909,8 +1910,7 @@ async def _download_if_new(client, msg, out: Path, downloaded: set) -> str | Non
     return path
 
 
-async def _tg_download(account_name, chat_id, msg_id, output_dir):
-    out = Path(output_dir)
+async def _tg_download(account_name: str | None, chat_id: int, msg_id: int, out: Path) -> int:
     out.mkdir(parents=True, exist_ok=True)
     async with _connected_api(account_name) as (api, _):
         tl_msg = await api.client.get_messages(chat_id, ids=msg_id)

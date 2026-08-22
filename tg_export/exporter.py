@@ -9,8 +9,9 @@ import logging
 import re
 import signal
 import time
+import unicodedata
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
@@ -36,7 +37,7 @@ from tg_export.config import ChatExportConfig, Config
 from tg_export.converter import convert_message
 from tg_export.format import format_size, format_speed
 from tg_export.html.renderer import HtmlRenderer
-from tg_export.media import DiskSpaceError, MediaDownloader
+from tg_export.media import DiskSpaceError, DownloadProgress, MediaDownloader
 from tg_export.models import Chat, ForumTopic, Message
 from tg_export.state import ExportState
 
@@ -122,6 +123,28 @@ def _format_elapsed(elapsed_s: float) -> str:
     return f"{m}:{s:02d}"
 
 
+@dataclass(frozen=True)
+class ChatCounters:
+    """Counters accumulated since the current chat started.
+
+    Every field here names a counter of :class:`ExportStats`; the difference is
+    computed from a snapshot taken by ``begin_chat``. Declaring them once in a
+    dataclass replaces nine near-identical properties whose counter names were
+    repeated a third time as string keys of a snapshot dict -- a typo in one of
+    those keys used to yield a silent zero.
+    """
+
+    messages_exported: int = 0
+    files_downloaded: int = 0
+    files_existing: int = 0
+    files_reused_chat: int = 0
+    files_reused_tdesktop: int = 0
+    files_reused_sibling: int = 0
+    files_skipped_by_size: int = 0
+    files_skipped_by_type: int = 0
+    data_size: int = 0
+
+
 @dataclass
 class ExportStats:
     chats_total: int = 0
@@ -140,8 +163,8 @@ class ExportStats:
     files_skipped_by_type: int = 0  # media type not in config
     data_size: int = 0  # bytes downloaded
     errors: list[str] = field(default_factory=list)
-    # Snapshot of global counters at start of current chat (for per-chat display)
-    _chat_snapshot: dict = field(default_factory=dict)
+    # Snapshot of the ChatCounters fields taken at the start of the current chat.
+    _chat_snapshot: ChatCounters = field(default_factory=ChatCounters)
 
     def begin_chat(self, messages_in_db: int, messages_total: int):
         """Reset per-chat tracking at start of each chat."""
@@ -151,17 +174,7 @@ class ExportStats:
         # the start of this chat: dividing them by the whole run's elapsed time
         # made the reported speed fall the longer the export went on.
         self._chat_started_at = time.monotonic()
-        self._chat_snapshot = {
-            "messages_exported": self.messages_exported,
-            "files_downloaded": self.files_downloaded,
-            "files_existing": self.files_existing,
-            "files_reused_chat": self.files_reused_chat,
-            "files_reused_tdesktop": self.files_reused_tdesktop,
-            "files_reused_sibling": self.files_reused_sibling,
-            "files_skipped_by_size": self.files_skipped_by_size,
-            "files_skipped_by_type": self.files_skipped_by_type,
-            "data_size": self.data_size,
-        }
+        self._chat_snapshot = ChatCounters(**{f.name: getattr(self, f.name) for f in fields(ChatCounters)})
 
     @property
     def chat_elapsed(self) -> float:
@@ -170,40 +183,12 @@ class ExportStats:
         return time.monotonic() - started if started else 0.0
 
     @property
-    def chat_messages_new(self) -> int:
-        return self.messages_exported - self._chat_snapshot.get("messages_exported", 0)
-
-    @property
-    def chat_files_downloaded(self) -> int:
-        return self.files_downloaded - self._chat_snapshot.get("files_downloaded", 0)
-
-    @property
-    def chat_files_existing(self) -> int:
-        return self.files_existing - self._chat_snapshot.get("files_existing", 0)
-
-    @property
-    def chat_files_reused_chat(self) -> int:
-        return self.files_reused_chat - self._chat_snapshot.get("files_reused_chat", 0)
-
-    @property
-    def chat_files_reused_tdesktop(self) -> int:
-        return self.files_reused_tdesktop - self._chat_snapshot.get("files_reused_tdesktop", 0)
-
-    @property
-    def chat_files_reused_sibling(self) -> int:
-        return self.files_reused_sibling - self._chat_snapshot.get("files_reused_sibling", 0)
-
-    @property
-    def chat_files_skipped_by_size(self) -> int:
-        return self.files_skipped_by_size - self._chat_snapshot.get("files_skipped_by_size", 0)
-
-    @property
-    def chat_files_skipped_by_type(self) -> int:
-        return self.files_skipped_by_type - self._chat_snapshot.get("files_skipped_by_type", 0)
-
-    @property
-    def chat_data_size(self) -> int:
-        return self.data_size - self._chat_snapshot.get("data_size", 0)
+    def per_chat(self) -> ChatCounters:
+        """Counters of the current chat: current values minus the snapshot."""
+        snapshot = self._chat_snapshot
+        return ChatCounters(
+            **{f.name: getattr(self, f.name) - getattr(snapshot, f.name) for f in fields(ChatCounters)}
+        )
 
 
 _BIDI_CONTROL_CHARS = "".join(
@@ -237,8 +222,6 @@ def sanitize_name(name: str) -> str:
     characters, RTL/bidi overrides, or be empty. Each of these can produce
     unintended paths or visually mislead the user.
     """
-    import unicodedata
-
     name = unicodedata.normalize("NFKC", name)
     name = _BIDI_REMOVE_RE.sub("", name)
     name = _CONTROL_CHARS_RE.sub("_", name)
@@ -374,7 +357,7 @@ class _MediaPipeline:
         return msg
 
 
-def phase_two_kwargs(iter_kwargs: dict, *, oldest_msg_id: int, last_msg_id: int) -> dict:
+def phase_two_kwargs(iter_kwargs: dict[str, Any], *, oldest_msg_id: int, last_msg_id: int) -> dict[str, Any]:
     """Arguments for the descending pass over a chat.
 
     Telethon applies ``offset_date`` only when ``offset_id`` is zero, so the
@@ -411,11 +394,11 @@ class StatusView:
         # Both rates below count what this chat produced, so they are measured
         # from the start of this chat and not from the start of the run.
         chat_elapsed = stats.chat_elapsed
-        chat_data = stats.chat_data_size
+        chat_data = stats.per_chat.data_size
         speed_str = format_speed(chat_data, chat_elapsed) if chat_data > 0 else ""
 
         # Per-chat message counts
-        chat_msgs = stats.chat_messages_new
+        chat_msgs = stats.per_chat.messages_exported
         msgs_done = stats.messages_in_db + chat_msgs
         msgs_str = f"[cyan]{msgs_done}"
         if stats.messages_total > 0:
@@ -436,21 +419,21 @@ class StatusView:
 
     def line2(self) -> str:
         """Where the files of the current chat came from."""
-        stats = self.stats
-        parts = [f"  files: [cyan]{stats.chat_files_downloaded}[/] downloaded"]
-        if stats.chat_files_existing:
-            parts.append(f"[green]{stats.chat_files_existing}[/] existing")
-        if stats.chat_files_reused_chat:
-            parts.append(f"[green]{stats.chat_files_reused_chat}[/] from_chat")
-        if stats.chat_files_reused_tdesktop:
-            parts.append(f"[green]{stats.chat_files_reused_tdesktop}[/] from_tdesktop")
-        if stats.chat_files_reused_sibling:
-            parts.append(f"[green]{stats.chat_files_reused_sibling}[/] from_sibling")
+        stats = self.stats.per_chat
+        parts = [f"  files: [cyan]{stats.files_downloaded}[/] downloaded"]
+        if stats.files_existing:
+            parts.append(f"[green]{stats.files_existing}[/] existing")
+        if stats.files_reused_chat:
+            parts.append(f"[green]{stats.files_reused_chat}[/] from_chat")
+        if stats.files_reused_tdesktop:
+            parts.append(f"[green]{stats.files_reused_tdesktop}[/] from_tdesktop")
+        if stats.files_reused_sibling:
+            parts.append(f"[green]{stats.files_reused_sibling}[/] from_sibling")
         skipped = []
-        if stats.chat_files_skipped_by_size:
-            skipped.append(f"[yellow]{stats.chat_files_skipped_by_size}[/] by_size")
-        if stats.chat_files_skipped_by_type:
-            skipped.append(f"[yellow]{stats.chat_files_skipped_by_type}[/] by_type")
+        if stats.files_skipped_by_size:
+            skipped.append(f"[yellow]{stats.files_skipped_by_size}[/] by_size")
+        if stats.files_skipped_by_type:
+            skipped.append(f"[yellow]{stats.files_skipped_by_type}[/] by_type")
         if skipped:
             parts.append(f"skipped: {', '.join(skipped)}")
         return " | ".join(parts)
@@ -489,6 +472,21 @@ class Exporter:
         # Set by run(); the only task a forced shutdown cancels.
         self._main_task: asyncio.Task | None = None
 
+    @property
+    def shutdown_requested(self) -> bool:
+        """A shutdown signal arrived; the run is finishing what it can."""
+        return self._shutdown
+
+    @property
+    def force_shutdown(self) -> bool:
+        """A second signal arrived; nothing more is written or rendered."""
+        return self._force_shutdown
+
+    @property
+    def shutdown_signal(self) -> int | None:
+        """Signal that stopped the run, for the ``128 + signum`` exit code."""
+        return self._shutdown_signal
+
     def _report_exported(self, count: int, noun: str, failed: int = 0) -> None:
         """Report what a section of global data produced, failures included.
 
@@ -507,19 +505,9 @@ class Exporter:
             return
         console.print(*args, **kwargs)
 
-    def _snapshot_active_downloads(self) -> dict:
-        """Read a consistent copy of the downloader's active downloads.
-
-        Prefers the downloader's thread-safe snapshot method; falls back to a
-        plain copy when it is unavailable (e.g. a test double).
-        """
-        snapshot = getattr(self.downloader, "snapshot_active_downloads", None)
-        if callable(snapshot):
-            try:
-                return dict(cast(Any, snapshot()))
-            except (TypeError, RuntimeError):
-                pass
-        return dict(self.downloader.active_downloads)
+    def _snapshot_active_downloads(self) -> dict[int, DownloadProgress]:
+        """Read a consistent copy of the downloader's active downloads."""
+        return self.downloader.snapshot_active_downloads()
 
     def _build_status_table(
         self,
@@ -537,7 +525,7 @@ class Exporter:
         lock-protected snapshot to avoid ``RuntimeError: dictionary changed size
         during iteration`` when the event loop mutates it concurrently.
         """
-        completed = stats.messages_in_db + stats.chat_messages_new
+        completed = stats.messages_in_db + stats.per_chat.messages_exported
         if stats.messages_total > 0:
             progress.update(main_task, completed=completed, total=stats.messages_total)
         else:
@@ -583,7 +571,7 @@ class Exporter:
         # undoing the protection exactly in the case it exists for.
         self._main_task = asyncio.current_task()
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         for signum in (signal.SIGINT, signal.SIGTERM):
             try:
                 loop.add_signal_handler(signum, functools.partial(self._handle_shutdown, signum))
@@ -689,7 +677,7 @@ class Exporter:
             is_left=chat.is_left,
             is_archived=chat.is_archived,
             is_forum=chat.is_forum,
-            is_monoforum=getattr(chat, "is_monoforum", False),
+            is_monoforum=chat.is_monoforum,
         )
 
         try:
@@ -927,12 +915,13 @@ class Exporter:
         brought neither a message nor a file. Anything written during this chat
         changes what a page shows, so any non-zero counter forces the rebuild.
         """
+        chat = stats.per_chat
         written = (
-            stats.chat_messages_new
-            + stats.chat_files_downloaded
-            + stats.chat_files_reused_chat
-            + stats.chat_files_reused_tdesktop
-            + stats.chat_files_reused_sibling
+            chat.messages_exported
+            + chat.files_downloaded
+            + chat.files_reused_chat
+            + chat.files_reused_tdesktop
+            + chat.files_reused_sibling
         )
         if written:
             return False
@@ -964,14 +953,14 @@ class Exporter:
 
     def _chat_progress_line(self, chat: Chat, stats: ExportStats, chat_total: int, chat_start: float) -> str:
         """One progress line for a chat, used when the live display is off."""
-        chat_msgs = stats.chat_messages_new
+        chat_msgs = stats.per_chat.messages_exported
         elapsed = time.monotonic() - chat_start
         parts = [f"  {chat.name}: {chat_msgs}"]
         if chat_total > 0:
             parts[0] += f"/{chat_total}"
         parts.append("msgs")
-        parts.append(f"{stats.chat_files_downloaded} files")
-        parts.append(format_size(stats.chat_data_size))
+        parts.append(f"{stats.per_chat.files_downloaded} files")
+        parts.append(format_size(stats.per_chat.data_size))
         if elapsed > 0 and chat_msgs > 0:
             parts.append(f"({chat_msgs / elapsed:.0f} msg/s)")
         return "  ".join(parts)
@@ -983,7 +972,7 @@ class Exporter:
         stats: ExportStats,
         *,
         last_msg_id: int,
-        iter_kwargs: dict,
+        iter_kwargs: dict[str, Any],
         before_date_from,
         progress_line,
         keep_service: bool = True,
@@ -1045,7 +1034,7 @@ class Exporter:
         *,
         last_msg_id: int,
         oldest_msg_id: int,
-        iter_kwargs: dict,
+        iter_kwargs: dict[str, Any],
         before_date_from,
         progress_line,
         keep_service: bool = True,
@@ -1608,7 +1597,7 @@ class Exporter:
 
     @staticmethod
     def _cleanup_orphaned_files_sync(
-        subdir_names: list,
+        subdir_names: list[str],
         chat_dir: Path,
         known_paths_raw: set[str],
     ):

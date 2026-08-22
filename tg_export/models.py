@@ -743,7 +743,7 @@ _ACTION_CLASSES: dict[str, type[ServiceAction]] = {
 # ---------------------------------------------------------------------------
 
 
-def _encode_default(obj: Any) -> Any:
+def encode_default(obj: Any) -> Any:
     if isinstance(obj, datetime):
         return {"__datetime__": obj.isoformat()}
     if isinstance(obj, Enum):
@@ -753,19 +753,19 @@ def _encode_default(obj: Any) -> Any:
     raise TypeError(f"Cannot serialize {type(obj)}")
 
 
-def _decode_hook(d: dict) -> dict | datetime:
+def decode_hook(d: dict[str, Any]) -> dict[str, Any] | datetime:
     if "__datetime__" in d:
         return datetime.fromisoformat(d["__datetime__"])
     return d
 
 
-def _media_to_dict(media: Media) -> dict:
+def media_to_dict(media: Media) -> dict[str, Any]:
     d = asdict(media)
     d["__media_class__"] = type(media).__name__
     return d
 
 
-def _media_from_dict(d: dict) -> Media:
+def media_from_dict(d: dict[str, Any]) -> Media:
     class_name = d.pop("__media_class__", None)
     if class_name is None:
         media_type = d.get("type", "unsupported")
@@ -806,13 +806,13 @@ def _media_from_dict(d: dict) -> Media:
     return cls(**d)
 
 
-def _action_to_dict(action: ServiceAction) -> dict:
+def action_to_dict(action: ServiceAction) -> dict[str, Any]:
     d = asdict(action)
     d["__action_class__"] = type(action).__name__
     return d
 
 
-def _action_from_dict(d: dict) -> ServiceAction:
+def action_from_dict(d: dict[str, Any]) -> ServiceAction:
     class_name = d.pop("__action_class__", None)
     cls = _ACTION_CLASSES.get(class_name, ServiceAction)
 

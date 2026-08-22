@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import contextlib
+import os
 import re
 import shutil
 from collections.abc import Callable
 from datetime import datetime
 from html import escape
 from pathlib import Path
+from typing import Any
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from markupsafe import Markup
@@ -74,7 +76,7 @@ class HtmlRenderer:
         return pages_info
 
     @staticmethod
-    def _build_items(processed: list) -> list[dict]:
+    def _build_items(processed: list[Any]) -> list[dict[str, Any]]:
         items: list[dict] = []
         prev_msg = None
         prev_date = None
@@ -268,7 +270,12 @@ class HtmlRenderer:
             redirect_html = f'<!DOCTYPE html><html><head><meta http-equiv="refresh" content="0;url={pages_info[0]["filename"]}"></head></html>'
             (chat_dir / "messages.html").write_text(redirect_html, encoding="utf-8")
 
-    def render_index(self, folders_list: list[dict], unfiled: list, sections: list):
+    def render_index(
+        self,
+        folders_list: list[dict[str, Any]],
+        unfiled: list[dict[str, Any]],
+        sections: list[dict[str, Any]],
+    ):
         """Render main index page.
 
         folders_list: list of {name, href, chats} dicts.
@@ -304,7 +311,7 @@ class HtmlRenderer:
         )
         (folder_dir / "index.html").write_text(html, encoding="utf-8")
 
-    def render_personal_info(self, user_data: dict):
+    def render_personal_info(self, user_data: dict[str, Any]):
         """Render personal information page."""
         template = self.env.get_template("personal_info.html.j2")
         html = template.render(
@@ -366,7 +373,7 @@ class HtmlRenderer:
         )
         (self.output_dir / "stories.html").write_text(html, encoding="utf-8")
 
-    def render_other_data(self, data: dict):
+    def render_other_data(self, data: dict[str, Any]):
         """Render other data page."""
         template = self.env.get_template("other_data.html.j2")
         html = template.render(
@@ -527,8 +534,6 @@ def _relative_path(from_dir: Path, to_dir: Path) -> str:
     ValueError, which we fall back to absolute. Manual parent-walk could
     enter an infinite loop on Windows roots (C:\\ → C:\\).
     """
-    import os
-
     try:
         return os.path.relpath(to_dir, start=from_dir).replace("\\", "/")
     except ValueError:

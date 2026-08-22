@@ -109,7 +109,7 @@ def _utf16_slice(units: bytes, start: int, end: int) -> str:
     return units[start * 2 : end * 2].decode("utf-16-le", errors="replace")
 
 
-def convert_entities(text: str, entities: list | None) -> list[TextPart]:
+def convert_entities(text: str, entities: list[Any] | None) -> list[TextPart]:
     """Parse Telethon entities into list[TextPart].
 
     Telegram counts ``offset`` and ``length`` in UTF-16 code units, not in
@@ -322,7 +322,9 @@ def convert_media(tl_media: Any) -> Media | None:
     return UnsupportedMedia(type=MediaType.unsupported, file=None)
 
 
-def _classify_document(attrs: dict, mime_type: str | None) -> tuple:
+def _classify_document(
+    attrs: dict[str, Any], mime_type: str | None
+) -> tuple[MediaType, str | None, int | None, int | None, int | None]:
     """Classify document type from attributes. Returns (MediaType, name, duration, w, h)."""
     name = None
     duration = None

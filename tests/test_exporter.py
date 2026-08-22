@@ -126,3 +126,34 @@ def test_phase_two_continues_from_where_phase_one_stopped():
     assert phase_two_kwargs(base, oldest_msg_id=0, last_msg_id=900) == {"offset_id": 900}
     # Первый запуск: нижней границы нет и верхней тоже -- идём от самых свежих.
     assert phase_two_kwargs(base, oldest_msg_id=0, last_msg_id=0) == base
+
+
+def test_every_per_chat_counter_exists_on_the_run_counters():
+    """Снимок счётчиков строится по именам полей ChatCounters.
+
+    Прежде имена были записаны третий раз строковыми ключами словаря-снимка и
+    читались через `.get(..., 0)`: опечатка в ключе давала не ошибку, а тихий
+    ноль -- счётчик по чату навсегда оставался равным общему.
+    """
+    from dataclasses import fields
+
+    from tg_export.exporter import ChatCounters, ExportStats
+
+    run_fields = {f.name for f in fields(ExportStats)}
+    missing = [f.name for f in fields(ChatCounters) if f.name not in run_fields]
+    assert not missing, f"нет таких счётчиков в ExportStats: {missing}"
+
+
+def test_per_chat_counts_only_what_the_current_chat_added():
+    from tg_export.exporter import ExportStats
+
+    stats = ExportStats()
+    stats.files_downloaded = 7
+    stats.data_size = 500
+    stats.begin_chat(messages_in_db=0, messages_total=0)
+    stats.files_downloaded += 2
+    stats.data_size += 100
+
+    assert stats.per_chat.files_downloaded == 2
+    assert stats.per_chat.data_size == 100
+    assert stats.files_downloaded == 9

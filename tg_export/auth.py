@@ -6,6 +6,7 @@ import logging
 import os
 import re
 from pathlib import Path
+from typing import Any
 
 import click
 import yaml
@@ -79,20 +80,26 @@ def default_config_dir() -> Path:
     return base / "tg-export"
 
 
+# Shape of the tuple Telethon expects in `proxy=`: scheme, host, port, rdns,
+# username, password. Written out so both ends of the call agree on the order.
+ProxyTuple = tuple[str, str, int, bool, str | None, str | None]
+
+
 class AccountManager:
     def __init__(self, config_dir: Path | None = None):
         self.config_dir = Path(config_dir) if config_dir else default_config_dir()
 
     def ensure_dirs(self):
-        self.config_dir.mkdir(parents=True, exist_ok=True)
-        # Why: api_credentials.yaml lives here; its directory should be 0o700
-        # so other local users cannot enumerate accounts/credentials.
-        try:
-            os.chmod(self.config_dir, 0o700)
-        except OSError as e:
-            logger.debug("ensure_dirs: cannot chmod %s: %s", self.config_dir, e)
-        self.sessions_dir.mkdir(parents=True, exist_ok=True)
-        os.chmod(self.sessions_dir, 0o700)
+        # Why 0o700: api_credentials.yaml and the session files live here, and
+        # other local users must not be able to enumerate accounts. Both
+        # directories are treated alike -- a filesystem without permission bits
+        # used to break the second chmod while the first one was tolerated.
+        for directory in (self.config_dir, self.sessions_dir):
+            directory.mkdir(parents=True, exist_ok=True)
+            try:
+                os.chmod(directory, 0o700)
+            except OSError as e:
+                logger.debug("ensure_dirs: cannot chmod %s: %s", directory, e)
 
     @property
     def sessions_dir(self) -> Path:
@@ -104,11 +111,9 @@ class AccountManager:
     def config_path(self, name: str) -> Path:
         return self.config_dir / f"{validate_account_name(name)}.yaml"
 
-    def resolve_config(self, account: str, config_override: str | None = None) -> Path:
+    def resolve_config(self, account: str, config_override: Path | None = None) -> Path:
         """Return config path: explicit override or convention-based."""
-        if config_override:
-            return Path(config_override)
-        return self.config_path(account)
+        return config_override or self.config_path(account)
 
     def list_accounts(self) -> list[str]:
         if not self.sessions_dir.exists():
@@ -175,7 +180,7 @@ class AccountManager:
             raise CredentialsError(f"{cred_path}: api_hash must be a non-empty string")
         return api_id, api_hash
 
-    def load_global_config(self) -> dict:
+    def load_global_config(self) -> dict[str, Any]:
         """Load global config from config.yaml. Returns raw dict.
 
         The file carries the proxy login and password, so it gets the same
@@ -205,7 +210,7 @@ class AccountManager:
             )
         return data
 
-    def load_proxy(self) -> tuple | None:
+    def load_proxy(self) -> ProxyTuple | None:
         """Load global proxy settings from config.yaml."""
         from tg_export.config import ConfigError
 

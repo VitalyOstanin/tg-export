@@ -6,6 +6,7 @@ import contextlib
 import importlib.util
 import logging
 from pathlib import Path
+from typing import Any
 
 from telethon import TelegramClient
 from telethon.errors.rpcerrorlist import TakeoutInvalidError, TakeoutRequiredError
@@ -21,6 +22,7 @@ from telethon.tl.functions.updates import GetStateRequest
 from telethon.tl.functions.users import GetFullUserRequest
 from telethon.tl.types import InputPeerSelf, InputUserSelf
 
+from tg_export.auth import ProxyTuple
 from tg_export.locking import ProcessLock
 from tg_export.session import FixedSQLiteSession
 
@@ -29,9 +31,13 @@ logger = logging.getLogger(__name__)
 # Safety cap on the left-channel paging loop.
 _MAX_LEFT_CHANNEL_PAGES = 100
 
+# Page size asked of the RPC methods that return a slice (top peers, stories,
+# ringtones). Telegram may return fewer; it never returns more.
+_DEFAULT_PAGE_LIMIT = 100
+
 
 class TgApi:
-    def __init__(self, session_path: str | Path, api_id: int, api_hash: str, proxy: tuple | None = None):
+    def __init__(self, session_path: str | Path, api_id: int, api_hash: str, proxy: ProxyTuple | None = None):
         kwargs = {}
         if proxy:
             # Telethon silently ignores `proxy=` when python-socks is missing
@@ -182,7 +188,7 @@ class TgApi:
             async for dialog in self.client.iter_dialogs(archived=archived):
                 yield dialog
 
-    async def get_left_channels(self) -> list:
+    async def get_left_channels(self) -> list[Any]:
         """Return every left channel, following the offset pages.
 
         The server answers with a slice, so one request at offset 0 drops
@@ -290,7 +296,7 @@ class TgApi:
                     channels=False,
                     bots_app=False,
                     offset=0,
-                    limit=100,
+                    limit=_DEFAULT_PAGE_LIMIT,
                     hash=0,
                 )
             )
@@ -316,14 +322,14 @@ class TgApi:
             GetPinnedStoriesRequest(
                 peer=InputPeerSelf(),
                 offset_id=0,
-                limit=100,
+                limit=_DEFAULT_PAGE_LIMIT,
             )
         )
         archived = await self.client(
             GetStoriesArchiveRequest(
                 peer=InputPeerSelf(),
                 offset_id=0,
-                limit=100,
+                limit=_DEFAULT_PAGE_LIMIT,
             )
         )
         return pinned, archived

@@ -6,6 +6,8 @@ import logging
 import re
 from pathlib import Path
 
+from tg_export.config import ImportExistingEntry
+
 logger = logging.getLogger(__name__)
 
 # Media subdirs in tdesktop HTML export
@@ -189,7 +191,7 @@ def _parse_chat_media(chat_dir: Path) -> dict[int, list[Path]]:
     return index
 
 
-def build_tdesktop_indexes(import_entries: list) -> list[TdesktopIndex]:
+def build_tdesktop_indexes(import_entries: list[ImportExistingEntry]) -> list[TdesktopIndex]:
     """Build TdesktopIndex instances from config import_existing entries."""
     indexes = []
     for entry in import_entries:

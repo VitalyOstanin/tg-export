@@ -375,3 +375,21 @@ def test_unmatched_action_ask_is_rejected(tmp_path):
     with pytest.raises(ConfigError) as e:
         load_config(path)
     assert "ask" in str(e.value)
+
+
+def test_rule_sections_must_be_mappings(tmp_path):
+    """`skip: true` без отступа даёт скаляр вместо правила.
+
+    Проверка `isinstance(d, dict)` в начале разбора правила была бесполезна:
+    при False разбор всё равно шёл дальше и падал на `d["media"]` трассировкой
+    `TypeError`, вместо сообщения о том, какой раздел конфигурации не тот.
+    """
+    for section, text in (
+        ("type_rules.personal", "type_rules:\n  personal: true\n"),
+        ("folders.Работа", "folders:\n  Работа: true\n"),
+        ("chats[0]", "chats:\n  - true\n"),
+    ):
+        path = _write_config(tmp_path, text)
+        with pytest.raises(ConfigError) as e:
+            load_config(path)
+        assert section in str(e.value), (section, str(e.value))

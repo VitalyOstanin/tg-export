@@ -126,7 +126,7 @@ async def test_tg_download_missing_message_is_error(monkeypatch, tmp_path):
     api.client.get_messages = AsyncMock(return_value=None)
     monkeypatch.setattr(cli, "_connected_api", _fake_connected_api(api))
 
-    code = await cli._tg_download("acc", 1, 2, str(tmp_path))
+    code = await cli._tg_download("acc", 1, 2, tmp_path)
     assert code == 1
 
 

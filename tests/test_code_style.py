@@ -193,6 +193,37 @@ def test_timedelta_imported_at_module_level_in_exporter():
     assert not inside_func, "from datetime import timedelta должен быть на уровне модуля, не внутри функции"
 
 
+def test_standard_library_is_imported_at_module_level():
+    """Отложенный импорт оправдан только для тяжёлых модулей.
+
+    Старт консольной команды экономится за счёт того, что telethon, jinja2 и
+    модули пакета грузятся по требованию. К стандартной библиотеке это не
+    относится: `json`, `os`, `shutil`, `logging` и `collections` уже загружены
+    интерпретатором, а импорт внутри функции вдобавок перекрывал модульный
+    `logger` локальной переменной.
+    """
+    import ast
+    import sys
+
+    offenders = []
+    for path in sorted(PROJECT.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+                continue
+            for sub in ast.walk(node):
+                if isinstance(sub, ast.Import):
+                    modules = [a.name for a in sub.names]
+                elif isinstance(sub, ast.ImportFrom):
+                    modules = [sub.module or ""]
+                else:
+                    continue
+                for module in modules:
+                    if module.split(".")[0] in sys.stdlib_module_names:
+                        offenders.append((path.name, sub.lineno, module))
+    assert not offenders, f"стандартную библиотеку импортировать в шапке модуля: {offenders}"
+
+
 def test_exporter_imports_rich_escape():
     """exporter должен импортировать rich.markup.escape, чтобы экранировать пользовательский ввод."""
     src = _read("exporter.py")

@@ -367,6 +367,6 @@ def test_the_output_override_names_the_directory_itself(tmp_path, monkeypatch):
     _account_with_config(tmp_path, monkeypatch, str(tmp_path / "exports"))
     override = tmp_path / "elsewhere"
 
-    _, _, output_base = cli._resolve_output("acc", None, str(override))
+    _, _, output_base = cli._resolve_output("acc", None, override)
 
     assert output_base == override

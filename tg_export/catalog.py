@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from collections import defaultdict
 from datetime import datetime
+from typing import Any
 
 import yaml
 
@@ -45,7 +47,7 @@ def _apply_folder_flags(chats: list[Chat], folders: list[dict]) -> None:
                 chat.folder = folder_name
 
 
-def _chat_to_dict(chat: Chat) -> dict:
+def _chat_to_dict(chat: Chat) -> dict[str, Any]:
     """Convert Chat to catalog YAML dict."""
     d = {
         "id": chat.id,
@@ -191,8 +193,6 @@ def format_catalog_yaml(chats: list[Chat]) -> str:
 
 def format_catalog_json(chats: list[Chat]) -> str:
     """Format chat catalog as JSON."""
-    import json
-
     data = [_chat_to_dict(c) for c in chats]
     return json.dumps(data, ensure_ascii=False, indent=2)
 
@@ -265,15 +265,11 @@ def generate_config_template(chats: list[Chat], account: str | None = None) -> s
 
 async def fetch_catalog(api, include_left: bool = False) -> list[Chat]:
     """Fetch all chats from Telegram API and map to models.Chat."""
-    import logging
-
-    log = logging.getLogger(__name__)
-
     from tg_export.converter import convert_chat
 
-    log.debug("Fetching folders...")
+    logger.debug("Fetching folders...")
     folders = await api.get_folders()
-    log.debug("Got %d folders: %s", len(folders), [f["name"] for f in folders])
+    logger.debug("Got %d folders: %s", len(folders), [f["name"] for f in folders])
     # Build reverse map: peer_id -> folder_name (from explicit include_peers)
     peer_to_folder: dict[int, str] = {}
     for folder in folders:
@@ -281,7 +277,7 @@ async def fetch_catalog(api, include_left: bool = False) -> list[Chat]:
             peer_to_folder[pid] = folder["name"]
 
     # Non-archived dialogs (folder=0 = main list, includes chats in named folders)
-    log.debug("Fetching non-archived dialogs (folder=0)...")
+    logger.debug("Fetching non-archived dialogs (folder=0)...")
     chats = []
     non_archived_ids: set[int] = set()
     async for dialog in api.iter_dialogs(archived=False):
@@ -291,7 +287,7 @@ async def fetch_catalog(api, include_left: bool = False) -> list[Chat]:
         folder = peer_to_folder.get(entity_id)
         chat = convert_chat(dialog, folder=folder)
         chats.append(chat)
-    log.debug("Got %d non-archived dialogs", len(chats))
+    logger.debug("Got %d non-archived dialogs", len(chats))
     # Named folder peers are also non-archived
     for folder in folders:
         non_archived_ids.update(folder["peer_ids"])
@@ -300,7 +296,7 @@ async def fetch_catalog(api, include_left: bool = False) -> list[Chat]:
     _apply_folder_flags(chats, folders)
 
     # Archived dialogs (folder=1), skip duplicates
-    log.debug("Fetching archived dialogs (folder=1)...")
+    logger.debug("Fetching archived dialogs (folder=1)...")
     archived_count = 0
     async for dialog in api.iter_dialogs(archived=True):
         entity = dialog.entity
@@ -314,8 +310,8 @@ async def fetch_catalog(api, include_left: bool = False) -> list[Chat]:
         chat.is_archived = True
         archived_count += 1
         chats.append(chat)
-    log.debug("Got archived dialogs, %d are archive-only", archived_count)
-    log.debug("Total chats: %d", len(chats))
+    logger.debug("Got archived dialogs, %d are archive-only", archived_count)
+    logger.debug("Total chats: %d", len(chats))
 
     if include_left:
         try:
