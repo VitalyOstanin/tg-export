@@ -1160,7 +1160,11 @@ async def _render_index(renderer, chats, cfg, state, should_stop=None):
 
     if should_stop and should_stop():
         return
-    renderer.render_index(folders_list=folders_list, unfiled=unfiled, sections=sections)
+    # to_thread: the render is synchronous and runs while the Telegram
+    # connection is still open, so in the loop thread it stalls everything else.
+    await asyncio.to_thread(
+        renderer.render_index, folders_list=folders_list, unfiled=unfiled, sections=sections
+    )
 
     # Render per-folder index pages
     for folder_info in folders_list:
@@ -1177,7 +1181,7 @@ async def _render_index(renderer, chats, cfg, state, should_stop=None):
                     "href": f"{dir_name}/messages.html",
                 }
             )
-        renderer.render_folder_index(folder_info["name"], adjusted)
+        await asyncio.to_thread(renderer.render_folder_index, folder_info["name"], adjusted)
 
 
 @main.group()

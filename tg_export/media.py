@@ -11,6 +11,7 @@ import shutil
 import sqlite3
 import tempfile
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -32,6 +33,10 @@ _RETRY_JITTER_SECONDS = 1.0
 # since a snapshot taken before the download started, which with concurrent
 # downloads means deleting the files a neighbour had just finished writing.
 DOWNLOAD_STAGING_PREFIX = ".tg-export-download-"
+
+# How long a successful free-space check is trusted before asking the
+# filesystem again.
+_DISK_SPACE_CHECK_INTERVAL = 5.0
 
 
 MEDIA_SUBDIRS = {
@@ -63,6 +68,19 @@ def check_skip_reason(media: Media, config: MediaConfig) -> str | None:
 def check_disk_space(path: Path, min_free_bytes: int) -> bool:
     usage = shutil.disk_usage(path)
     return usage.free >= min_free_bytes
+
+
+def _link_or_copy(src: Path, dst: Path) -> bool:
+    """Hardlink src to dst, copying instead across filesystems. Blocking."""
+    try:
+        os.link(src, dst)
+        return True
+    except OSError:
+        try:
+            shutil.copy2(src, dst)
+            return True
+        except OSError:
+            return False
 
 
 def _lookup_file_in_db(db_path: Path, file_id: int) -> str | None:
@@ -154,6 +172,8 @@ class MediaDownloader:
         # Anything found on the first visit within this process belongs to a
         # previous run that was killed mid-download.
         self._staging_cleaned: set[Path] = set()
+        # Monotonic deadline until which free space is taken on trust.
+        self._space_ok_until: float = 0.0
 
     def snapshot_active_downloads(self) -> dict[int, DownloadProgress]:
         """Return a consistent copy of active_downloads (thread-safe).
@@ -221,20 +241,20 @@ class MediaDownloader:
                 return linked, "reused_chat"
 
         # Try to copy from tdesktop export instead of downloading
-        imported = self._try_import_tdesktop(tl_message, media, chat_dir)
+        imported = await self._try_import_tdesktop(tl_message, media, chat_dir)
         if imported:
             await self._register(tl_message, media, imported, chat_id)
             return imported, "reused_tdesktop"
 
         # Try to hardlink from sibling account export
-        linked = self._try_link_sibling(media, chat_dir)
+        linked = await self._try_link_sibling(media, chat_dir)
         if linked:
             await self._register(tl_message, media, linked, chat_id)
             return linked, "reused_sibling"
 
         # Disk space check
         chat_dir.mkdir(parents=True, exist_ok=True)
-        if not check_disk_space(chat_dir, self.min_free_bytes):
+        if not self._has_free_space(chat_dir):
             raise DiskSpaceError(f"Free space less than {self.min_free_bytes // 1024**3} GB")
 
         # Download with semaphore
@@ -268,6 +288,23 @@ class MediaDownloader:
             )
             await self._register_skip(tl_message, media, chat_id, "skipped_by_size")
             return None, "skipped_by_size"
+
+    def _has_free_space(self, path: Path) -> bool:
+        """Disk space check, asked at most once per interval.
+
+        Free space falls by the size of what is being downloaded, not in jumps,
+        so querying the filesystem for every single file buys nothing. A failed
+        check is never cached: once the disk is full the caller must keep
+        seeing that on every file.
+        """
+        now = time.monotonic()
+        if self._space_ok_until > now:
+            return True
+        if not check_disk_space(path, self.min_free_bytes):
+            self._space_ok_until = 0.0
+            return False
+        self._space_ok_until = now + _DISK_SPACE_CHECK_INTERVAL
+        return True
 
     def _clean_stale_staging(self, target_dir: Path) -> None:
         """Drop staging directories left by a run that was killed mid-download."""
@@ -348,20 +385,27 @@ class MediaDownloader:
         if dst.exists():
             return dst
 
-        try:
-            os.link(src, dst)
-            logger.debug("hardlinked intra-account: file_id=%d %s -> %s", media.file.id, src, dst)
+        # to_thread: os.link is a syscall and the copy fallback reads and writes
+        # the whole file. Both stall every other download and the Telegram
+        # connection while they run in the loop thread.
+        if await asyncio.to_thread(_link_or_copy, src, dst):
+            logger.debug("linked intra-account: file_id=%d %s -> %s", media.file.id, src, dst)
             return dst
-        except OSError:
-            try:
-                shutil.copy2(src, dst)
-                logger.debug("copied intra-account: file_id=%d %s -> %s", media.file.id, src, dst)
-                return dst
-            except OSError:
-                return None
+        return None
 
-    def _try_link_sibling(self, media: Media, chat_dir: Path) -> Path | None:
+    async def _try_link_sibling(self, media: Media, chat_dir: Path) -> Path | None:
         """Try to hardlink file from a sibling account's export by file_id.
+
+        Runs off the loop: the lookup opens the sibling database with plain
+        sqlite3 and waits up to 30 seconds for a busy writer there, and the
+        fallback copies the whole file.
+        """
+        if not self.sibling_db_paths or not media.file or not media.file.id:
+            return None
+        return await asyncio.to_thread(self._link_sibling_blocking, media, chat_dir)
+
+    def _link_sibling_blocking(self, media: Media, chat_dir: Path) -> Path | None:
+        """Synchronous body of _try_link_sibling; never call it on the loop.
 
         Why size+path checks: sibling DBs are external input; we validate that
         the referenced path is inside the sibling's directory tree and that
@@ -418,26 +462,25 @@ class MediaDownloader:
             if dst.exists():
                 return dst
 
-            try:
-                os.link(src, dst)
-                logger.debug("hardlinked from sibling: file_id=%d %s -> %s", file_id, src, dst)
+            if _link_or_copy(src, dst):
+                logger.debug("linked from sibling: file_id=%d %s -> %s", file_id, src, dst)
                 return dst
-            except OSError:
-                # Different filesystem or not supported — fall back to copy
-                try:
-                    shutil.copy2(src, dst)
-                    logger.debug("copied from sibling: file_id=%d %s -> %s", file_id, src, dst)
-                    return dst
-                except OSError:
-                    continue
+            continue
 
         return None
 
-    def _try_import_tdesktop(self, tl_message, media: Media, chat_dir: Path) -> Path | None:
-        """Try to copy file from tdesktop export. Returns local path or None."""
+    async def _try_import_tdesktop(self, tl_message, media: Media, chat_dir: Path) -> Path | None:
+        """Try to copy file from tdesktop export. Returns local path or None.
+
+        Runs off the loop: the index is searched on disk and the file is copied
+        in full.
+        """
         if not self.tdesktop_indexes:
             return None
+        return await asyncio.to_thread(self._import_tdesktop_blocking, tl_message, media, chat_dir)
 
+    def _import_tdesktop_blocking(self, tl_message, media: Media, chat_dir: Path) -> Path | None:
+        """Synchronous body of _try_import_tdesktop; never call it on the loop."""
         msg_id = tl_message.id
         for idx in self.tdesktop_indexes:
             src = idx.find_file(msg_id)

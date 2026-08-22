@@ -1076,7 +1076,10 @@ class Exporter:
             "premium": bool(getattr(user, "premium", False)),
             "photo_path": photo_path,
         }
-        self.renderer.render_personal_info(user_data)
+        # to_thread: jinja renders these pages synchronously while the Telegram
+        # connection is live; in the loop thread nothing else is served meanwhile.
+        # The chat render already runs this way.
+        await asyncio.to_thread(self.renderer.render_personal_info, user_data)
         self._status_print("  [green]exported[/]: personal info")
 
     async def _export_contacts(self):
@@ -1123,7 +1126,7 @@ class Exporter:
                         }
                     )
 
-        self.renderer.render_contacts(contacts, frequent)
+        await asyncio.to_thread(self.renderer.render_contacts, contacts, frequent)
         self._status_print(f"  [green]exported[/]: {len(contacts)} contacts, {len(frequent)} frequent")
 
     async def _export_sessions(self):
@@ -1173,7 +1176,7 @@ class Exporter:
                 }
             )
 
-        self.renderer.render_sessions(app_sessions, web_sessions)
+        await asyncio.to_thread(self.renderer.render_sessions, app_sessions, web_sessions)
         self._status_print(
             f"  [green]exported[/]: {len(app_sessions)} app sessions, {len(web_sessions)} web sessions"
         )
@@ -1207,7 +1210,7 @@ class Exporter:
             except Exception as e:
                 logger.debug("Failed to download userpic %d: %s", seq, e)
 
-        self.renderer.render_userpics(photos)
+        await asyncio.to_thread(self.renderer.render_userpics, photos)
         self._status_print(f"  [green]exported[/]: {len(photos)} profile photos")
 
     async def _export_stories(self):
@@ -1219,7 +1222,7 @@ class Exporter:
             pinned, archived = await self.api.get_stories()
         except Exception as e:
             logger.warning("Stories API not available: %s", e)
-            self.renderer.render_stories([])
+            await asyncio.to_thread(self.renderer.render_stories, [])
             return
 
         # Combine pinned + archived, deduplicate by id
@@ -1270,7 +1273,7 @@ class Exporter:
                 }
             )
 
-        self.renderer.render_stories(stories)
+        await asyncio.to_thread(self.renderer.render_stories, stories)
         self._status_print(f"  [green]exported[/]: {len(stories)} stories")
 
     async def _export_other_data(self):
@@ -1313,7 +1316,7 @@ class Exporter:
         except Exception as e:
             logger.warning("Failed to fetch ringtones: %s", e)
 
-        self.renderer.render_other_data({"ringtones": ringtones})
+        await asyncio.to_thread(self.renderer.render_other_data, {"ringtones": ringtones})
         if ringtones:
             self._status_print(f"  [green]exported[/]: {len(ringtones)} ringtones")
 
