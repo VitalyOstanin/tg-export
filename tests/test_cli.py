@@ -1,3 +1,4 @@
+import logging
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -146,3 +147,99 @@ async def test_start_takeout_does_not_swallow_programming_errors(monkeypatch):
 
     with pytest.raises(TypeError):
         await cli._start_takeout(api, _takeout_cfg(), require=False)
+
+
+# ----- Глобальные опции: уровень логирования, --quiet, работа без TTY -----
+
+
+def test_resolve_log_level_priority(monkeypatch):
+    from tg_export.cli import _resolve_log_level
+
+    monkeypatch.delenv("LOG_LEVEL", raising=False)
+    assert _resolve_log_level(debug=False, log_level=None) == logging.WARNING
+
+    monkeypatch.setenv("LOG_LEVEL", "ERROR")
+    assert _resolve_log_level(debug=False, log_level=None) == logging.ERROR
+    # Флаг перекрывает переменную окружения...
+    assert _resolve_log_level(debug=False, log_level="INFO") == logging.INFO
+    # ...а --debug перекрывает и флаг.
+    assert _resolve_log_level(debug=True, log_level="INFO") == logging.DEBUG
+
+
+def test_resolve_log_level_rejects_unknown_name(monkeypatch):
+    import click
+
+    from tg_export.cli import _resolve_log_level
+
+    monkeypatch.setenv("LOG_LEVEL", "not-a-level")
+    with pytest.raises(click.BadParameter):
+        _resolve_log_level(debug=False, log_level=None)
+
+
+def test_diag_hides_routine_lines_under_quiet(monkeypatch):
+    from tg_export import cli
+
+    monkeypatch.setattr(cli, "_QUIET", True)
+    printed = []
+    monkeypatch.setattr(cli.click, "echo", lambda msg, **kw: printed.append(msg))
+
+    cli._diag("routine status")
+    cli._diag("something failed", essential=True)
+
+    assert printed == ["something failed"]
+
+
+def test_diag_prints_everything_without_quiet(monkeypatch):
+    from tg_export import cli
+
+    monkeypatch.setattr(cli, "_QUIET", False)
+    printed = []
+    monkeypatch.setattr(cli.click, "echo", lambda msg, **kw: printed.append(msg))
+
+    cli._diag("routine status")
+    cli._diag("something failed", essential=True)
+
+    assert printed == ["routine status", "something failed"]
+
+
+@pytest.mark.parametrize(
+    "is_terminal,quiet,expected", [(False, False, False), (True, True, False), (True, False, True)]
+)
+def test_live_display_requires_a_terminal_and_no_quiet(monkeypatch, is_terminal, quiet, expected):
+    # Без TTY (вывод в файл, конвейер) и под --quiet прогресс не должен
+    # перерисовываться поверх строк: экспортёр переходит на построчный вывод.
+    import asyncio
+
+    from rich.console import Console
+
+    from tg_export import exporter as exporter_module
+
+    fake_console = Console(quiet=True)
+    monkeypatch.setattr(type(fake_console), "is_terminal", property(lambda self: is_terminal))
+    monkeypatch.setattr(exporter_module, "console", fake_console)
+
+    downloader = AsyncMock()
+    downloader.active_downloads = {}
+    # snapshot_active_downloads на AsyncMock вернул бы корутину; экспортёр её
+    # отбросит, но незавершённая корутина оставит RuntimeWarning.
+    downloader.snapshot_active_downloads = lambda: {}
+    exp = exporter_module.Exporter(
+        api=MagicMock(),
+        state=AsyncMock(),
+        config=MagicMock(),
+        renderer=MagicMock(),
+        downloader=downloader,
+        account="acc",
+        quiet=quiet,
+    )
+    asyncio.run(exp.run(dry_run=True, chat_list=[]))
+
+    assert exp._use_live is expected
+
+
+def test_upload_progress_yields_nothing_under_quiet(monkeypatch):
+    from tg_export import cli
+
+    monkeypatch.setattr(cli, "_QUIET", True)
+    with cli._upload_progress(by_bytes=True) as progress:
+        assert progress is None

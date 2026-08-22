@@ -44,7 +44,9 @@ dev = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-addopts = "-ra --strict-markers --strict-config"
+# --cov здесь, а не только в CI: без него порог fail_under локально не
+# проверяется, и падение покрытия всплывает лишь после push.
+addopts = "-ra --strict-markers --strict-config --cov=tg_export"
 testpaths = ["tests"]
 filterwarnings = [
     "error::DeprecationWarning",
@@ -56,10 +58,32 @@ timeout = 60
 source = ["tg_export"]
 
 [tool.coverage.report]
-# Защита от регрессии покрытия. Порог ниже текущего фактического (~48%),
-# чтобы фиксировать нижнюю границу, не блокируя CI при колебаниях.
-# Проверяется при запуске с --cov (см. ci.yml).
-fail_under = 45
+# Общий порог по проекту. Проверяется при любом запуске с --cov (см. addopts).
+fail_under = 50
+
+# Нижние границы по модулям: общий порог сам по себе маскирует провал крупного
+# файла за счёт хорошо покрытых мелких. Значения стоят чуть ниже фактических,
+# чтобы ловить регрессию, а не требовать роста. Проверяются скриптом
+# scripts/coverage_gate.py после прогона с --cov.
+[tool.tg-export.coverage-floor]
+"tg_export/__init__.py" = 100
+"tg_export/html/__init__.py" = 100
+"tg_export/__main__.py" = 0
+"tg_export/api.py" = 50
+"tg_export/auth.py" = 50
+"tg_export/catalog.py" = 40
+"tg_export/cli.py" = 40
+"tg_export/config.py" = 85
+"tg_export/converter.py" = 30
+"tg_export/errors.py" = 100
+"tg_export/exporter.py" = 45
+"tg_export/format.py" = 50
+"tg_export/html/renderer.py" = 50
+"tg_export/importer.py" = 70
+"tg_export/media.py" = 15
+"tg_export/models.py" = 85
+"tg_export/session.py" = 80
+"tg_export/state.py" = 65
 
 [tool.ruff]
 target-version = "py311"
