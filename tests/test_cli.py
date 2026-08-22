@@ -64,10 +64,11 @@ class _RecordingDiag:
         return [m for m, e in self.calls if e or not essential_only]
 
 
-def _takeout_cfg():
+def _takeout_cfg(max_file_size=1024):
     cfg = MagicMock()
     cfg.contacts = True
     cfg.defaults.media.max_file_size_bytes = 1024
+    cfg.max_media_file_size = lambda: max_file_size
     return cfg
 
 
@@ -243,3 +244,19 @@ def test_upload_progress_yields_nothing_under_quiet(monkeypatch):
     monkeypatch.setattr(cli, "_QUIET", True)
     with cli._upload_progress(by_bytes=True) as progress:
         assert progress is None
+
+
+@pytest.mark.asyncio
+async def test_start_takeout_asks_for_the_largest_configured_limit(monkeypatch):
+    """Лимит Takeout берётся не из defaults, а из максимума по применимым
+    правилам: правило чата с большим max_file_size иначе было бы урезано
+    самой сессией."""
+    from tg_export import cli
+
+    monkeypatch.setattr(cli, "_diag", _RecordingDiag())
+    api = MagicMock()
+    api.start_takeout = AsyncMock()
+
+    await cli._start_takeout(api, _takeout_cfg(max_file_size=2 * 1024**3), require=False)
+
+    assert api.start_takeout.await_args.kwargs["max_file_size"] == 2 * 1024**3

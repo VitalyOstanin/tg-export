@@ -832,7 +832,9 @@ async def _start_takeout(api, cfg, *, require: bool) -> bool:
             megagroups=True,
             channels=True,
             files=True,
-            max_file_size=cfg.defaults.media.max_file_size_bytes,
+            # The whole session carries one limit, so it must cover the
+            # largest limit any exportable chat asks for, not just defaults.
+            max_file_size=cfg.max_media_file_size(),
         )
     except TakeoutInitDelayError as e:
         hours = e.seconds // 3600

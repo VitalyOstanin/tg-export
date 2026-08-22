@@ -139,6 +139,36 @@ class Config:
     chats: list[ChatRule] = field(default_factory=list)
     unmatched_action: str = "skip"
 
+    def max_media_file_size(self) -> int:
+        """Largest media limit any exportable chat can ask for, in bytes.
+
+        A Takeout session carries a single ``max_file_size`` for its whole
+        lifetime, while chats / type_rules / folders each may raise the limit
+        above ``defaults.media``. Taking the maximum is the only value that
+        does not silently cap a chat the configuration says to download in
+        full. Rules marked ``skip`` never download anything, so their limit
+        must not widen the session.
+        """
+        limits = [self.defaults.media.max_file_size_bytes]
+
+        def add(media: MediaConfig | None, skip: bool) -> None:
+            if media is not None and not skip:
+                limits.append(media.max_file_size_bytes)
+
+        for chat_rule in self.chats:
+            add(chat_rule.media, chat_rule.skip)
+        for type_rule in self.type_rules.values():
+            add(type_rule.media, type_rule.skip)
+        for folder_rule in self.folders.values():
+            add(folder_rule.media, folder_rule.skip)
+            for chat_rule in folder_rule.chats:
+                # resolve_chat_config returns None for every chat of a skipped
+                # folder before it ever looks at the nested rules, so a nested
+                # limit only counts while the folder itself is exported.
+                add(chat_rule.media, folder_rule.skip or chat_rule.skip)
+
+        return max(limits)
+
     def resolve_chat_config(
         self,
         chat_id: int,

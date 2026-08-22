@@ -173,3 +173,77 @@ def test_valid_actions_accepted(tmp_path):
     assert cfg.archived_action == "export_with_defaults"
     assert cfg.left_channels_action == "export_with_defaults"
     assert cfg.output.format == "both"
+
+
+def test_max_media_file_size_covers_rules_above_defaults(tmp_path):
+    """Takeout открывается с одним лимитом на всю сессию, поэтому он должен
+    покрывать самое большое ограничение из применимых правил.
+
+    Правила chats / type_rules / folders задают собственный max_file_size, и
+    значение больше, чем в defaults.media, -- обычный случай: мелкий лимит по
+    умолчанию и один чат, из которого забирают всё.
+    """
+    path = tmp_path / "cfg.yaml"
+    path.write_text(
+        "defaults:\n"
+        "  media:\n"
+        "    types: [photo]\n"
+        "    max_file_size: 50MB\n"
+        "type_rules:\n"
+        "  channels:\n"
+        "    media:\n"
+        "      types: [document]\n"
+        "      max_file_size: 200MB\n"
+        "chats:\n"
+        "  - id: 111\n"
+        "    media:\n"
+        "      types: [document]\n"
+        "      max_file_size: 2GB\n"
+    )
+    cfg = load_config(path)
+
+    assert cfg.max_media_file_size() == 2 * 1024**3
+
+
+def test_max_media_file_size_ignores_skipped_rules(tmp_path):
+    """Правило со skip не приводит к скачиванию, поэтому его лимит не должен
+    расширять область Takeout."""
+    path = tmp_path / "cfg.yaml"
+    path.write_text(
+        "defaults:\n"
+        "  media:\n"
+        "    types: [photo]\n"
+        "    max_file_size: 50MB\n"
+        "chats:\n"
+        "  - id: 111\n"
+        "    skip: true\n"
+        "    media:\n"
+        "      types: [document]\n"
+        "      max_file_size: 2GB\n"
+    )
+    cfg = load_config(path)
+
+    assert cfg.max_media_file_size() == 50 * 1024**2
+
+
+def test_max_media_file_size_ignores_chats_of_a_skipped_folder(tmp_path):
+    """Пропуск папки отсекает и вложенные в неё чаты: resolve_chat_config
+    возвращает None до того, как дойдёт до вложенных правил."""
+    path = tmp_path / "cfg.yaml"
+    path.write_text(
+        "defaults:\n"
+        "  media:\n"
+        "    types: [photo]\n"
+        "    max_file_size: 50MB\n"
+        "folders:\n"
+        "  Work:\n"
+        "    skip: true\n"
+        "    chats:\n"
+        "      - id: 222\n"
+        "        media:\n"
+        "          types: [document]\n"
+        "          max_file_size: 2GB\n"
+    )
+    cfg = load_config(path)
+
+    assert cfg.max_media_file_size() == 50 * 1024**2
