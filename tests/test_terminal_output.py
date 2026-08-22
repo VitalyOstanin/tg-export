@@ -231,3 +231,72 @@ async def test_exporter_dry_run_with_markup_in_chat_name_does_not_corrupt_output
 
     output = test_console.export_text()
     assert "[bold red]EVIL[/] chat" in output, f"имя чата с markup исчезло из вывода dry-run: {output!r}"
+
+
+def test_main_progress_never_mixes_a_new_chat_with_the_previous_snapshot():
+    """Поток отрисовки видел новый messages_in_db рядом со старым снимком.
+
+    `begin_chat` присваивал поля по одному: сначала счётчики начала чата,
+    потом снимок предыдущих значений. Между этими присваиваниями поток
+    обновления Live читал новое число уже выгруженных сообщений вместе со
+    снимком прошлого чата и показывал `completed` в разы больше `total`.
+    """
+    import threading
+    import time
+    from unittest.mock import AsyncMock, MagicMock
+
+    from rich.progress import Progress, TaskID
+
+    from tg_export.exporter import Exporter, ExportStats
+
+    exporter = Exporter(
+        api=AsyncMock(),
+        state=AsyncMock(),
+        config=MagicMock(),
+        renderer=MagicMock(),
+        downloader=MagicMock(),
+        account="test",
+    )
+    exporter.downloader.snapshot_active_downloads = lambda: {}
+
+    progress = Progress()
+    main_task = progress.add_task("test", total=100)
+    file_progress = Progress()
+    file_tasks: dict[int, TaskID] = {}
+
+    stats = ExportStats()
+    stats.begin_chat(messages_in_db=0, messages_total=1000)
+
+    stop = threading.Event()
+    overshoot: list[tuple[float, float]] = []
+
+    def export_chats():
+        """Как event loop: выгружает чат из 1000 сообщений и берётся за следующий."""
+        while not stop.is_set():
+            for _ in range(1000):
+                stats.messages_exported += 1
+            stats.begin_chat(messages_in_db=0, messages_total=1000)
+            time.sleep(0)
+
+    worker = threading.Thread(target=export_chats, daemon=True)
+    worker.start()
+    try:
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline and not overshoot:
+            exporter._build_status_table(
+                progress=progress,
+                main_task=main_task,
+                file_progress=file_progress,
+                file_tasks=file_tasks,
+                stats=stats,
+                line1="line1",
+                line2="line2",
+            )
+            task = progress.tasks[0]
+            if task.total is not None and task.completed > task.total:
+                overshoot.append((task.completed, task.total))
+    finally:
+        stop.set()
+        worker.join(timeout=1)
+
+    assert not overshoot, f"completed больше total: {overshoot[:3]}"

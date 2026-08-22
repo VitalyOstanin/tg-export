@@ -145,6 +145,38 @@ class ChatCounters:
     data_size: int = 0
 
 
+@dataclass(frozen=True)
+class ChatStart:
+    """Everything ``begin_chat`` fixes about the chat now being exported.
+
+    The Live refresh thread reads these values while the event loop moves on to
+    the next chat. Written field by field, the reader could pick up the new
+    ``messages_in_db`` next to the counters snapshot of the previous chat and
+    draw a progress bar far past its own total. One frozen object published by a
+    single attribute assignment has no half-updated state to observe.
+    """
+
+    counters: ChatCounters = ChatCounters()
+    messages_in_db: int = 0
+    messages_total: int = 0
+    started_at: float = 0.0
+
+
+@dataclass(frozen=True)
+class ChatView:
+    """Consistent view of the current chat for one redraw of the status."""
+
+    messages_in_db: int
+    messages_total: int
+    elapsed: float
+    counters: ChatCounters
+
+    @property
+    def messages_done(self) -> int:
+        """Messages of this chat already on disk, old and new together."""
+        return self.messages_in_db + self.counters.messages_exported
+
+
 @dataclass
 class ExportStats:
     chats_total: int = 0
@@ -152,8 +184,6 @@ class ExportStats:
     chats_skipped: int = 0
     chats_exported: int = 0
     messages_exported: int = 0
-    messages_total: int = 0  # total messages in current chat (0 = unknown)
-    messages_in_db: int = 0  # messages already in DB before this run
     files_downloaded: int = 0
     files_existing: int = 0  # already downloaded in previous runs
     files_reused_chat: int = 0  # reused from another chat (same account)
@@ -163,32 +193,65 @@ class ExportStats:
     files_skipped_by_type: int = 0  # media type not in config
     data_size: int = 0  # bytes downloaded
     errors: list[str] = field(default_factory=list)
-    # Snapshot of the ChatCounters fields taken at the start of the current chat.
-    _chat_snapshot: ChatCounters = field(default_factory=ChatCounters)
+    # What the current chat started from; replaced whole, never edited in place.
+    _chat_start: ChatStart = field(default_factory=ChatStart)
 
     def begin_chat(self, messages_in_db: int, messages_total: int):
-        """Reset per-chat tracking at start of each chat."""
-        self.messages_in_db = messages_in_db
-        self.messages_total = messages_total
-        # Rates shown on the status line divide per-chat counters, so they need
-        # the start of this chat: dividing them by the whole run's elapsed time
-        # made the reported speed fall the longer the export went on.
-        self._chat_started_at = time.monotonic()
-        self._chat_snapshot = ChatCounters(**{f.name: getattr(self, f.name) for f in fields(ChatCounters)})
+        """Fix what the next chat starts from, in one publication.
+
+        started_at is part of it: the rates on the status line divide per-chat
+        counters, so they need the start of this chat -- dividing them by the
+        whole run's elapsed time made the reported speed fall the longer the
+        export went on.
+        """
+        self._chat_start = ChatStart(
+            counters=ChatCounters(**{f.name: getattr(self, f.name) for f in fields(ChatCounters)}),
+            messages_in_db=messages_in_db,
+            messages_total=messages_total,
+            started_at=time.monotonic(),
+        )
+
+    def chat_view(self) -> ChatView:
+        """Read the current chat off one ChatStart, safe from the refresh thread.
+
+        The running counters are read after ``_chat_start`` and could belong to
+        the next chat already; the re-read below catches exactly that case and
+        starts over. A retry is cheaper than a lock in the export loop, which
+        increments these counters per message while the display reads them
+        twice a second.
+        """
+        while True:
+            start = self._chat_start
+            counters = ChatCounters(
+                **{
+                    f.name: getattr(self, f.name) - getattr(start.counters, f.name)
+                    for f in fields(ChatCounters)
+                }
+            )
+            if self._chat_start is not start:
+                continue
+            elapsed = time.monotonic() - start.started_at if start.started_at else 0.0
+            return ChatView(start.messages_in_db, start.messages_total, elapsed, counters)
+
+    @property
+    def messages_total(self) -> int:
+        """Messages the current chat has in Telegram, 0 when unknown."""
+        return self._chat_start.messages_total
+
+    @property
+    def messages_in_db(self) -> int:
+        """Messages of the current chat already stored before this run."""
+        return self._chat_start.messages_in_db
 
     @property
     def chat_elapsed(self) -> float:
         """Seconds since the current chat started, 0 before the first chat."""
-        started = getattr(self, "_chat_started_at", 0.0)
-        return time.monotonic() - started if started else 0.0
+        return self.chat_view().elapsed
 
     @property
     def per_chat(self) -> ChatCounters:
         """Counters of the current chat: current values minus the snapshot."""
-        snapshot = self._chat_snapshot
-        return ChatCounters(
-            **{f.name: getattr(self, f.name) - getattr(snapshot, f.name) for f in fields(ChatCounters)}
-        )
+        return self.chat_view().counters
 
 
 _BIDI_CONTROL_CHARS = "".join(
@@ -391,18 +454,22 @@ class StatusView:
         stats = self.stats
         elapsed = time.monotonic() - self.start_time
         elapsed_str = _format_elapsed(elapsed)
+        # One view for the whole line: this runs on the Live refresh thread,
+        # and reading the counters and the chat totals separately let a chat
+        # boundary fall between them.
+        view = stats.chat_view()
         # Both rates below count what this chat produced, so they are measured
         # from the start of this chat and not from the start of the run.
-        chat_elapsed = stats.chat_elapsed
-        chat_data = stats.per_chat.data_size
+        chat_elapsed = view.elapsed
+        chat_data = view.counters.data_size
         speed_str = format_speed(chat_data, chat_elapsed) if chat_data > 0 else ""
 
         # Per-chat message counts
-        chat_msgs = stats.per_chat.messages_exported
-        msgs_done = stats.messages_in_db + chat_msgs
+        chat_msgs = view.counters.messages_exported
+        msgs_done = view.messages_done
         msgs_str = f"[cyan]{msgs_done}"
-        if stats.messages_total > 0:
-            msgs_str += f"/{stats.messages_total}"
+        if view.messages_total > 0:
+            msgs_str += f"/{view.messages_total}"
         msgs_str += "[/]"
         if chat_msgs > 0:
             msgs_str += f" ([green]+{chat_msgs}[/]"
@@ -525,11 +592,11 @@ class Exporter:
         lock-protected snapshot to avoid ``RuntimeError: dictionary changed size
         during iteration`` when the event loop mutates it concurrently.
         """
-        completed = stats.messages_in_db + stats.per_chat.messages_exported
-        if stats.messages_total > 0:
-            progress.update(main_task, completed=completed, total=stats.messages_total)
+        view = stats.chat_view()
+        if view.messages_total > 0:
+            progress.update(main_task, completed=view.messages_done, total=view.messages_total)
         else:
-            progress.update(main_task, completed=completed, total=None)
+            progress.update(main_task, completed=view.messages_done, total=None)
 
         active = self._snapshot_active_downloads()
         for msg_id in list(file_tasks):

@@ -95,13 +95,14 @@ def test_speed_is_measured_over_the_current_chat_not_the_whole_run():
     Счётчик байтов сбрасывается на каждом чате, а время продолжает расти, и
     через час экспорта показанная скорость занижена в десятки раз.
     """
+    import dataclasses
     import time
 
     from tg_export.exporter import ExportStats, StatusView
 
     stats = ExportStats()
     stats.begin_chat(messages_in_db=0, messages_total=0)
-    stats._chat_started_at = time.monotonic() - 10
+    stats._chat_start = dataclasses.replace(stats._chat_start, started_at=time.monotonic() - 10)
     stats.data_size = 50 * 1024 * 1024
     stats.messages_exported = 100
 
