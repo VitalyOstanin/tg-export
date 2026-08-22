@@ -274,3 +274,46 @@ def test_cli_version_option():
     result = CliRunner().invoke(main, ["--version"])
     assert result.exit_code == 0
     assert version("tg-export") in result.output
+
+
+# ---------------------------------------------------------------------------
+# _tg_send: force_document propagation
+# ---------------------------------------------------------------------------
+
+
+class TestTgSend:
+    @staticmethod
+    def _run_send(tmp_path, file_count, as_document):
+        from tg_export.cli import _tg_send
+
+        files = []
+        for i in range(file_count):
+            f = tmp_path / f"pic{i}.jpg"
+            f.write_bytes(b"data")
+            files.append(str(f))
+
+        api = AsyncMock()
+        api.client = AsyncMock()
+
+        with patch("tg_export.cli._connect_tg", AsyncMock(return_value=(api, "acc"))):
+            asyncio.run(_tg_send("acc", [123], "caption", files, as_document))
+
+        return api.client.send_file
+
+    def test_single_file_sent_as_document_when_flag_set(self, tmp_path):
+        send_file = self._run_send(tmp_path, 1, True)
+
+        assert send_file.await_count == 1
+        assert send_file.await_args.kwargs["force_document"] is True
+
+    def test_multiple_files_sent_as_document_when_flag_set(self, tmp_path):
+        send_file = self._run_send(tmp_path, 3, True)
+
+        assert send_file.await_count == 1
+        assert send_file.await_args.kwargs["force_document"] is True
+        assert len(send_file.await_args.args[1]) == 3
+
+    def test_files_compressed_by_default(self, tmp_path):
+        send_file = self._run_send(tmp_path, 2, False)
+
+        assert send_file.await_args.kwargs["force_document"] is False

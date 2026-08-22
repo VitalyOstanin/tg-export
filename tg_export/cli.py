@@ -1486,8 +1486,14 @@ async def _connect_tg(account_name):
     help="File(s) to attach (can be specified multiple times)",
 )
 @click.option("--text", "-t", default=None, help="Message text")
+@click.option(
+    "--as-document",
+    is_flag=True,
+    default=False,
+    help="Send files as documents without compression (keeps original quality)",
+)
 @click.argument("recipients", nargs=-1, required=True)
-def tg_send(account, files, text, recipients):
+def tg_send(account, files, text, as_document, recipients):
     """Send message to one or more recipients.
 
     RECIPIENTS: chat IDs or usernames (multiple allowed).
@@ -1509,10 +1515,10 @@ def tg_send(account, files, text, recipients):
         except ValueError:
             parsed.append(r)
 
-    asyncio.run(_tg_send(account, parsed, text, files))
+    asyncio.run(_tg_send(account, parsed, text, files, as_document))
 
 
-async def _tg_send(account_name, recipients, text, files):
+async def _tg_send(account_name, recipients, text, files, as_document=False):
     api, _ = await _connect_tg(account_name)
     try:
         file_paths = [Path(f) for f in files] if files else None
@@ -1528,12 +1534,14 @@ async def _tg_send(account_name, recipients, text, files):
                             recipient,
                             str(file_paths[0]),
                             caption=text or "",
+                            force_document=as_document,
                         )
                     else:
                         await api.client.send_file(
                             recipient,
                             [str(p) for p in file_paths],
                             caption=text or "",
+                            force_document=as_document,
                         )
                 elif text:
                     await api.client.send_message(recipient, text)
