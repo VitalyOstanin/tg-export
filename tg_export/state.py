@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import sqlite3
 from dataclasses import asdict
 from datetime import datetime
@@ -33,6 +34,8 @@ from tg_export.models import (
     _media_to_dict,
 )
 from tg_export.privacy import restrict_file
+
+logger = logging.getLogger(__name__)
 
 # Python 3.12+ removed default datetime adapters from sqlite3.
 # Why module-level: register_* are global to the process; once loaded, all
@@ -234,6 +237,85 @@ async def _shielded(coro):
 CHAT_TABLES = ("messages", "files", "export_state", "catalog_cache")
 
 
+# Bumped when the schema changes in a way `_add_missing_columns` cannot repair
+# on its own (a dropped column, a changed type, a rebuilt index). Plain column
+# additions are reconciled from the DDL and need no bump.
+SCHEMA_VERSION = 1
+
+SCHEMA_SQL = """
+            CREATE TABLE IF NOT EXISTS export_state (
+                chat_id        INTEGER PRIMARY KEY,
+                last_msg_id    INTEGER NOT NULL DEFAULT 0,
+                oldest_msg_id  INTEGER DEFAULT 0,
+                full_history   INTEGER DEFAULT 0,
+                messages_count INTEGER DEFAULT 0,
+                updated_at     TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS messages (
+                chat_id          INTEGER NOT NULL,
+                msg_id           INTEGER NOT NULL,
+                date             TIMESTAMP,
+                edited           TIMESTAMP,
+                from_id          INTEGER,
+                from_name        TEXT,
+                text             TEXT,
+                text_parts       TEXT,
+                media_type       TEXT,
+                media            TEXT,
+                action_type      TEXT,
+                action           TEXT,
+                reply_to_msg_id  INTEGER,
+                reply_to_peer_id INTEGER,
+                forwarded_from   TEXT,
+                reactions        TEXT,
+                is_outgoing      INTEGER,
+                signature        TEXT,
+                via_bot_id       INTEGER,
+                saved_from_chat_id INTEGER,
+                inline_buttons   TEXT,
+                topic_id         INTEGER,
+                grouped_id       INTEGER,
+                PRIMARY KEY (chat_id, msg_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_messages_date ON messages(chat_id, date);
+            CREATE INDEX IF NOT EXISTS idx_messages_from ON messages(chat_id, from_id);
+            CREATE INDEX IF NOT EXISTS idx_messages_media ON messages(chat_id, media_type);
+
+            CREATE TABLE IF NOT EXISTS files (
+                file_id        INTEGER NOT NULL,
+                chat_id        INTEGER NOT NULL,
+                msg_id         INTEGER,
+                expected_size  INTEGER NOT NULL,
+                actual_size    INTEGER,
+                local_path     TEXT NOT NULL,
+                sha256_head    TEXT,
+                status         TEXT DEFAULT 'done',
+                downloaded_at  TIMESTAMP,
+                PRIMARY KEY (file_id, chat_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_files_chat ON files(chat_id);
+            CREATE INDEX IF NOT EXISTS idx_files_status ON files(status);
+
+            CREATE TABLE IF NOT EXISTS catalog_cache (
+                chat_id           INTEGER PRIMARY KEY,
+                name              TEXT,
+                type              TEXT,
+                folder            TEXT,
+                members_count     INTEGER,
+                messages_count    INTEGER,
+                last_message_date TIMESTAMP,
+                is_left           INTEGER DEFAULT 0,
+                is_archived       INTEGER DEFAULT 0,
+                is_forum          INTEGER DEFAULT 0,
+                is_monoforum      INTEGER DEFAULT 0,
+                updated_at        TIMESTAMP
+            );
+"""
+
+
 class ExportState:
     def __init__(self, db_path: Path):
         self.db_path = db_path
@@ -312,80 +394,63 @@ class ExportState:
         await _shielded(self.db.commit())
 
     async def _create_tables(self):
-        await self.db.executescript("""
-            CREATE TABLE IF NOT EXISTS export_state (
-                chat_id        INTEGER PRIMARY KEY,
-                last_msg_id    INTEGER NOT NULL DEFAULT 0,
-                oldest_msg_id  INTEGER DEFAULT 0,
-                full_history   INTEGER DEFAULT 0,
-                messages_count INTEGER DEFAULT 0,
-                updated_at     TIMESTAMP
-            );
-
-            CREATE TABLE IF NOT EXISTS messages (
-                chat_id          INTEGER NOT NULL,
-                msg_id           INTEGER NOT NULL,
-                date             TIMESTAMP,
-                edited           TIMESTAMP,
-                from_id          INTEGER,
-                from_name        TEXT,
-                text             TEXT,
-                text_parts       TEXT,
-                media_type       TEXT,
-                media            TEXT,
-                action_type      TEXT,
-                action           TEXT,
-                reply_to_msg_id  INTEGER,
-                reply_to_peer_id INTEGER,
-                forwarded_from   TEXT,
-                reactions        TEXT,
-                is_outgoing      INTEGER,
-                signature        TEXT,
-                via_bot_id       INTEGER,
-                saved_from_chat_id INTEGER,
-                inline_buttons   TEXT,
-                topic_id         INTEGER,
-                grouped_id       INTEGER,
-                PRIMARY KEY (chat_id, msg_id)
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_messages_date ON messages(chat_id, date);
-            CREATE INDEX IF NOT EXISTS idx_messages_from ON messages(chat_id, from_id);
-            CREATE INDEX IF NOT EXISTS idx_messages_media ON messages(chat_id, media_type);
-
-            CREATE TABLE IF NOT EXISTS files (
-                file_id        INTEGER NOT NULL,
-                chat_id        INTEGER NOT NULL,
-                msg_id         INTEGER,
-                expected_size  INTEGER NOT NULL,
-                actual_size    INTEGER,
-                local_path     TEXT NOT NULL,
-                sha256_head    TEXT,
-                status         TEXT DEFAULT 'done',
-                downloaded_at  TIMESTAMP,
-                PRIMARY KEY (file_id, chat_id)
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_files_chat ON files(chat_id);
-            CREATE INDEX IF NOT EXISTS idx_files_status ON files(status);
-
-            CREATE TABLE IF NOT EXISTS catalog_cache (
-                chat_id           INTEGER PRIMARY KEY,
-                name              TEXT,
-                type              TEXT,
-                folder            TEXT,
-                members_count     INTEGER,
-                messages_count    INTEGER,
-                last_message_date TIMESTAMP,
-                is_left           INTEGER DEFAULT 0,
-                is_archived       INTEGER DEFAULT 0,
-                is_forum          INTEGER DEFAULT 0,
-                is_monoforum      INTEGER DEFAULT 0,
-                updated_at        TIMESTAMP
-            );
-        """)
+        # Columns are reconciled before the script runs: an index declared over
+        # a column an older database lacks would fail on CREATE INDEX before any
+        # ALTER had a chance to add it.
+        await self._add_missing_columns()
+        await self.db.executescript(SCHEMA_SQL)
         await self._drop_unused_schema()
+        await self.db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         await self.commit()
+
+    async def _add_missing_columns(self):
+        """Bring a database created by an earlier version up to the current shape.
+
+        ``CREATE TABLE IF NOT EXISTS`` is a no-op on an existing file, so a
+        column added to the schema never appeared in databases already on disk:
+        the export failed on the first write with `table catalog_cache has no
+        column named is_archived`, in the middle of a run. The expected shape is
+        read from the very same DDL -- a scratch in-memory database built from
+        it -- so a new column migrates by being declared, with no second list to
+        keep in sync.
+        """
+        expected = await self._declared_columns()
+        for table, columns in expected.items():
+            async with self.db.execute(f"PRAGMA table_info({table})") as cur:
+                present = {row[1] for row in await cur.fetchall()}
+            if not present:
+                continue  # the table itself was just created from the DDL
+            for name, decl in columns.items():
+                if name in present:
+                    continue
+                logger.info("state DB: adding missing column %s.%s", table, name)
+                await self.db.execute(f"ALTER TABLE {table} ADD COLUMN {decl}")
+
+    @staticmethod
+    async def _declared_columns() -> dict[str, dict[str, str]]:
+        """Column declarations of the current schema, per table.
+
+        A column that cannot be added to an existing table (NOT NULL without a
+        default) is left out: such a change needs a real migration, and silently
+        failing on ALTER would be worse than the mismatch.
+        """
+        declared: dict[str, dict[str, str]] = {}
+        async with aiosqlite.connect(":memory:") as scratch:
+            await scratch.executescript(SCHEMA_SQL)
+            async with scratch.execute("SELECT name FROM sqlite_master WHERE type='table'") as cur:
+                tables = [row[0] for row in await cur.fetchall()]
+            for table in tables:
+                columns: dict[str, str] = {}
+                async with scratch.execute(f"PRAGMA table_info({table})") as cur:
+                    for _, name, col_type, notnull, default, pk in await cur.fetchall():
+                        if pk or (notnull and default is None):
+                            continue
+                        decl = f"{name} {col_type}" if col_type else name
+                        if default is not None:
+                            decl += f" DEFAULT {default}"
+                        columns[name] = decl
+                declared[table] = columns
+        return declared
 
     async def _drop_unused_schema(self):
         """Remove schema objects nothing reads.

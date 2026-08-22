@@ -378,3 +378,86 @@ async def test_list_chat_states_returns_progress_with_message_counts(tmp_path):
     assert row["chat_id"] == 7
     assert row["last_msg_id"] == 10
     assert row["msg_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_a_database_from_an_older_version_gets_the_new_columns(tmp_path):
+    """Схема создавалась через CREATE TABLE IF NOT EXISTS -- на старом файле это no-op.
+
+    Колонка `is_archived`, добавленная в catalog_cache, на файле состояния от
+    прежней версии не появлялась, и первая же запись каталога падала с
+    `OperationalError: table catalog_cache has no column named is_archived` --
+    уже внутри запущенного экспорта.
+    """
+    from tg_export.state import ExportState
+
+    db_path = tmp_path / "old.db"
+    with contextlib.closing(sqlite3.connect(db_path)) as conn:
+        conn.executescript("""
+            CREATE TABLE catalog_cache (
+                chat_id           INTEGER PRIMARY KEY,
+                name              TEXT,
+                type              TEXT,
+                folder            TEXT,
+                members_count     INTEGER,
+                messages_count    INTEGER,
+                last_message_date TIMESTAMP,
+                is_left           INTEGER DEFAULT 0,
+                is_forum          INTEGER DEFAULT 0,
+                is_monoforum      INTEGER DEFAULT 0,
+                updated_at        TIMESTAMP
+            );
+        """)
+        conn.commit()
+
+    async with ExportState(db_path) as state:
+        await state.cache_catalog(
+            chat_id=1,
+            name="Chat",
+            chat_type="personal",
+            folder=None,
+            members_count=None,
+            messages_count=3,
+            last_message_date=None,
+            is_left=False,
+            is_archived=True,
+            is_forum=False,
+            is_monoforum=False,
+        )
+        await state.commit()
+        async with state.db.execute("SELECT is_archived FROM catalog_cache WHERE chat_id=1") as cur:
+            row = await cur.fetchone()
+    assert row is not None and row[0] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_missing_message_column_is_added_on_open(tmp_path):
+    """Догоняются любые недостающие колонки, а не только та, что уже сломала выгрузку."""
+    from tg_export.state import ExportState
+
+    db_path = tmp_path / "old.db"
+    with contextlib.closing(sqlite3.connect(db_path)) as conn:
+        conn.executescript("""
+            CREATE TABLE messages (
+                chat_id INTEGER NOT NULL,
+                msg_id  INTEGER NOT NULL,
+                text    TEXT,
+                PRIMARY KEY (chat_id, msg_id)
+            );
+        """)
+        conn.commit()
+
+    async with ExportState(db_path) as state, state.db.execute("PRAGMA table_info(messages)") as cur:
+        columns = {row[1] for row in await cur.fetchall()}
+    assert {"grouped_id", "topic_id", "reactions"} <= columns, columns
+
+
+@pytest.mark.asyncio
+async def test_a_fresh_database_records_its_schema_version(tmp_path):
+    """Версия схемы -- то, по чему следующая правка поймёт, что мигрировать."""
+    from tg_export.state import SCHEMA_VERSION, ExportState
+
+    async with ExportState(tmp_path / "new.db") as state, state.db.execute("PRAGMA user_version") as cur:
+        row = await cur.fetchone()
+    assert row is not None and row[0] == SCHEMA_VERSION
+    assert SCHEMA_VERSION >= 1
