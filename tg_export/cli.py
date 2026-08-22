@@ -1561,11 +1561,7 @@ async def _send_files(client, recipient, file_paths, text, as_document):
 
     with _upload_progress(by_bytes) as progress:
         if not by_bytes:
-            task = (
-                progress.add_task(f"{len(file_paths)} files", total=len(file_paths))
-                if progress
-                else None
-            )
+            task = progress.add_task(f"{len(file_paths)} files", total=len(file_paths)) if progress else None
 
             def album_progress(sent, total):
                 if progress is not None and task is not None:
@@ -1583,9 +1579,7 @@ async def _send_files(client, recipient, file_paths, text, as_document):
         sizes = [p.stat().st_size for p in file_paths]
         total_task = None
         if progress and len(file_paths) > 1:
-            total_task = progress.add_task(
-                f"total 0/{len(file_paths)} files", total=sum(sizes)
-            )
+            total_task = progress.add_task(f"total 0/{len(file_paths)} files", total=sum(sizes))
         done_bytes = 0
 
         for index, path in enumerate(file_paths):
