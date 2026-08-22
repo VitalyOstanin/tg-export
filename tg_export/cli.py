@@ -906,17 +906,21 @@ async def _run_export(
     # State DB next to output
     state_path = output_base / ".tg-export-state.db"
     state = ExportState(state_path)
-    await state.open()
 
-    # Connect API
     api_id, api_hash = mgr.load_credentials()
     proxy = mgr.load_proxy()
     api = TgApi(mgr.session_path(account), api_id, api_hash, proxy=proxy)
-    await api.connect()
 
     exporter = None
     stats = None
     try:
+        # Both resources are taken inside the try: opening the state database
+        # creates a lock file, and a failure between that and the connect used
+        # to leave the lock and the socket behind -- the finally that releases
+        # them started only once both had succeeded.
+        await state.open()
+        await api.connect()
+
         takeout_active = await _start_takeout(api, cfg, require=require_takeout)
 
         # Setup renderer

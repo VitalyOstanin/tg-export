@@ -394,6 +394,8 @@ class Exporter:
         # Signal number that triggered shutdown (SIGINT / SIGTERM), or None.
         # The CLI maps it to exit code 128 + signum (130 for SIGINT, 143 for SIGTERM).
         self._shutdown_signal: int | None = None
+        # Set by run(); the only task a forced shutdown cancels.
+        self._main_task: asyncio.Task | None = None
 
     def _status_print(self, *args, **kwargs) -> None:
         """Print a non-essential status line unless running in quiet mode."""
@@ -479,9 +481,19 @@ class Exporter:
         """Main export loop."""
         stats = ExportStats()
 
+        # The task to cancel on a forced shutdown. Cancelling every task
+        # instead would also cancel the inner tasks asyncio.shield creates,
+        # undoing the protection exactly in the case it exists for.
+        self._main_task = asyncio.current_task()
+
         loop = asyncio.get_event_loop()
-        loop.add_signal_handler(signal.SIGINT, functools.partial(self._handle_shutdown, signal.SIGINT))
-        loop.add_signal_handler(signal.SIGTERM, functools.partial(self._handle_shutdown, signal.SIGTERM))
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            try:
+                loop.add_signal_handler(signum, functools.partial(self._handle_shutdown, signum))
+            except NotImplementedError:
+                # Windows event loops do not implement it; there Ctrl+C arrives
+                # as a KeyboardInterrupt, which the CLI turns into exit code 130.
+                logger.debug("signal handler for %s is not available on this platform", signum)
 
         if chat_list is None:
             return stats
@@ -1468,8 +1480,8 @@ class Exporter:
             # Second signal within 3s -> force exit via cancelling current task
             self._force_shutdown = True
             console.print("\n[bold red]Force shutdown![/]")
-            for task in asyncio.all_tasks():
-                task.cancel()
+            if self._main_task is not None:
+                self._main_task.cancel()
             return
         self._shutdown = True
         self._first_signal_time = now

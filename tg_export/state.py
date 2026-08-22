@@ -216,6 +216,24 @@ class StateLockError(TgExportError, RuntimeError):
     """Raised when another process already holds the state DB lock."""
 
 
+async def _shielded(coro):
+    """Run `coro` to completion even if the caller is cancelled, and wait for it.
+
+    asyncio.shield alone protects the operation but not the caller: the caller
+    is cancelled at once and walks into its own finally, where it closes the
+    database connection the shielded commit is still using -- aiosqlite then
+    drops the connection and the operation dies with `ValueError: Connection
+    closed` inside a task nobody awaits. Awaiting the inner task again before
+    re-raising keeps the caller in place until the write is really done.
+    """
+    task = asyncio.ensure_future(coro)
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        await task
+        raise
+
+
 class ExportState:
     def __init__(self, db_path: Path):
         self.db_path = db_path
@@ -303,11 +321,10 @@ class ExportState:
         self._release_lock()
 
     async def commit(self):
-        # Why: a second SIGINT cancels asyncio tasks, including the one running
-        # commit(); without shield, a partially-applied batch may be lost. Shield
-        # ensures the commit completes atomically even if the surrounding task
-        # is cancelled.
-        await asyncio.shield(self.db.commit())
+        # Why: a second SIGINT cancels the export task, including the one
+        # running commit(); without shield, a partially-applied batch may be
+        # lost.
+        await _shielded(self.db.commit())
 
     async def _create_tables(self):
         await self.db.executescript("""
@@ -758,7 +775,7 @@ class ExportState:
             await self.db.commit()
             return counts
 
-        return await asyncio.shield(_purge())
+        return await _shielded(_purge())
 
     async def find_chat_by_name(self, name: str) -> list[dict]:
         """Search chats in catalog_cache by name (case-insensitive substring)."""
