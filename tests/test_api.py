@@ -8,18 +8,28 @@ from tg_export.api import TgApi
 from tg_export.session import FixedSQLiteSession
 
 
-def _make_session_v8(path, takeout_id=None, tmp_auth_value=None, *, with_version=True):
-    """Create a v8-shaped sessions table that matches Telethon's runtime layout.
+def _make_session_v8(path, takeout_id=None, tmp_auth_value=None, *, with_version=True, swapped=False):
+    """Create a v8-shaped sessions table and fill it the way Telethon does.
 
-    Telethon's `_update_session_table` writes columns in physical order
-    `(dc_id, server_address, port, auth_key, takeout_id, tmp_auth_key)`, so we
-    mirror that here (and add the version row, which Telethon's SQLiteSession
-    expects to find on open).
+    Telethon's `_update_session_table` writes the row positionally --
+    `insert or replace into sessions values (?,?,?,?,?,?)` -- with the tuple
+    `(dc_id, server_address, port, auth_key, takeout_id, tmp_auth_key)`. The
+    physical column order therefore decides which column each value lands in,
+    and that order differs between session files in the wild:
+
+    * canonical (`swapped=False`) -- `..., auth_key, takeout_id, tmp_auth_key`,
+      what `_create_table` produces on a freshly created file;
+    * swapped (`swapped=True`) -- `..., auth_key, tmp_auth_key, takeout_id`,
+      found on files whose schema grew through a different upgrade path.
+
+    The insert here is positional too, so the fixture reproduces exactly what
+    Telethon would leave on disk for the given physical layout.
     """
+    tail = "tmp_auth_key blob, takeout_id integer" if swapped else "takeout_id integer, tmp_auth_key blob"
     conn = sqlite3.connect(str(path))
     conn.executescript(
         "CREATE TABLE sessions (dc_id integer primary key, server_address text,"
-        " port integer, auth_key blob, takeout_id integer, tmp_auth_key blob);"
+        f" port integer, auth_key blob, {tail});"
         "CREATE TABLE entities (id integer primary key, hash integer not null,"
         " username text, phone integer, name text, date integer);"
         "CREATE TABLE sent_files (md5_digest blob, file_size integer, type integer,"
@@ -31,8 +41,7 @@ def _make_session_v8(path, takeout_id=None, tmp_auth_value=None, *, with_version
         conn.execute("CREATE TABLE version (version integer primary key)")
         conn.execute("INSERT INTO version VALUES (8)")
     conn.execute(
-        "INSERT INTO sessions (dc_id, server_address, port, auth_key, takeout_id, tmp_auth_key)"
-        " VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?)",
         (2, "localhost", 443, b"x" * 256, takeout_id, tmp_auth_value),
     )
     conn.commit()
@@ -134,6 +143,80 @@ def test_fixed_sqlite_session_clears_non_bytes_tmp_auth_key(tmp_path):
     try:
         # AuthKey(data=None) — falsy; bool(AuthKey) == bool(AuthKey._key)
         assert not sess._tmp_auth_key
+    finally:
+        sess.close()
+
+
+def test_fixed_sqlite_session_restores_takeout_id_with_swapped_columns(tmp_path):
+    # Регрессия на потерю takeout_id: часть файлов сессии имеет физический
+    # порядок колонок (..., auth_key, tmp_auth_key, takeout_id). Telethon пишет
+    # строку позиционно, поэтому реальный takeout_id оказывается в колонке с
+    # именем tmp_auth_key, а b'' -- в колонке takeout_id. Чтение по ИМЕНИ видит
+    # мусор и стирает настоящее значение; читать нужно по ПОЗИЦИИ.
+    sp = tmp_path / "swapped.session"
+    _make_session_v8(sp, takeout_id=12345, tmp_auth_value=b"", swapped=True)
+
+    sess = FixedSQLiteSession(str(sp))
+    try:
+        assert sess.takeout_id == 12345
+        assert sess.auth_key is not None and sess.auth_key.key == b"x" * 256
+    finally:
+        sess.close()
+
+
+def test_fixed_sqlite_session_round_trip_survives_reopen(tmp_path):
+    # Полный цикл: записать takeout_id через сеттер, закрыть, открыть заново.
+    # Без этого теста потеря значения на повторном открытии не ловится ни одной
+    # из проверок выше -- все они смотрят только на первое открытие.
+    sp = tmp_path / "roundtrip.session"
+    _make_session_v8(sp, takeout_id=None, tmp_auth_value=None)
+
+    sess = FixedSQLiteSession(str(sp))
+    try:
+        sess.takeout_id = 777
+    finally:
+        sess.close()
+
+    for _ in range(3):
+        sess = FixedSQLiteSession(str(sp))
+        try:
+            assert sess.takeout_id == 777
+        finally:
+            sess.close()
+
+
+def test_fixed_sqlite_session_round_trip_survives_reopen_swapped(tmp_path):
+    # Тот же цикл на файле с обратным порядком колонок.
+    sp = tmp_path / "roundtrip_swapped.session"
+    _make_session_v8(sp, takeout_id=None, tmp_auth_value=None, swapped=True)
+
+    sess = FixedSQLiteSession(str(sp))
+    try:
+        sess.takeout_id = 888
+    finally:
+        sess.close()
+
+    for _ in range(3):
+        sess = FixedSQLiteSession(str(sp))
+        try:
+            assert sess.takeout_id == 888
+        finally:
+            sess.close()
+
+
+def test_fixed_sqlite_session_recovers_after_crash_between_clear_and_restore(tmp_path):
+    # Обнуление колонок и восстановление значения идут в двух разных операциях.
+    # Если процесс прервётся между ними, takeout_id пропадёт безвозвратно.
+    # Вызов _extract_and_clear без последующего восстановления воспроизводит
+    # именно такое прерывание.
+    sp = tmp_path / "crash.session"
+    _make_session_v8(sp, takeout_id=555, tmp_auth_value=b"")
+
+    FixedSQLiteSession._extract_and_clear(str(sp))
+
+    sess = FixedSQLiteSession(str(sp))
+    try:
+        assert sess.takeout_id == 555
     finally:
         sess.close()
 

@@ -1,27 +1,42 @@
-"""SQLiteSession subclass that works around a Telethon 1.43+ column-order bug.
+"""SQLiteSession subclass that works around a Telethon column-order bug.
 
-Why this exists: telethon/sessions/sqlite.py:62-68 reads the row via
+Why this exists: ``telethon/sessions/sqlite.py`` reads the row via
 ``select * from sessions`` and unpacks 6 values as
-``(dc_id, server_address, port, key, tmp_key, takeout_id)``.
-``_update_session_table`` (sqlite.py:211-218) writes them in physical
-schema order ``(dc_id, server_address, port, auth_key, takeout_id,
-tmp_auth_key)``. Columns 5 and 6 are swapped on read but not on write.
+``(dc_id, server_address, port, key, tmp_key, takeout_id)``, while
+``_update_session_table`` writes them positionally --
+``insert or replace into sessions values (?,?,?,?,?,?)`` -- from the tuple
+``(dc_id, server_address, port, auth_key, takeout_id, tmp_auth_key)``.
+Positions 5 and 6 are swapped on read but not on write.
 
-While both columns are NULL, ``AuthKey(data=None)`` short-circuits and
-the asymmetry is invisible. Once a successful Takeout stores a non-NULL
+While both columns are NULL, ``AuthKey(data=None)`` short-circuits and the
+asymmetry is invisible. Once a successful Takeout stores a non-NULL
 ``takeout_id``, the next start unpacks that integer into ``tmp_key``,
 ``AuthKey(data=int)`` calls ``sha1(int)``, and Telethon crashes with
 ``TypeError: object supporting the buffer API required``.
 
-Strategy: before calling ``super().__init__()``, read ``takeout_id`` and
-``tmp_auth_key`` *by name* (so we get the real values), NULL them out on
-disk so the buggy positional unpack sees a clean slate, then call
-``super().__init__()``. After it returns, restore the values via the
-public setters (which go through ``_update_session_table`` -- the write
-path is correct).
+Because the write path is positional, position -- not column name -- carries
+the meaning: position 5 always holds ``takeout_id`` and position 6 always
+holds ``tmp_auth_key``, whatever those columns happen to be called. Session
+files in the wild come with both physical layouts:
 
-Upstream is unaware of the bug as of 2026-05; once it's fixed and we
-upgrade past it, this class can be deleted.
+* canonical -- ``..., auth_key, takeout_id, tmp_auth_key``;
+* swapped   -- ``..., auth_key, tmp_auth_key, takeout_id``.
+
+Reading by name therefore picks up the wrong value on swapped files and
+destroys the real ``takeout_id``; this class reads by position instead.
+
+Strategy: before calling ``super().__init__()``, read positions 5 and 6, copy
+them into a backup table, NULL them out on disk so the buggy positional unpack
+sees a clean slate, then call ``super().__init__()``. After it returns, restore
+the values via the public setters (the write path is correct) and drop the
+backup table. Reading, backing up and clearing happen in one ``BEGIN
+IMMEDIATE`` transaction, so a crash in the middle -- or a second process
+opening the same file -- cannot lose the value: the next start finds it in the
+backup table.
+
+Upstream fixed the unpack in commit b6a451e07 (2026-08-19), which is not on
+PyPI yet. Even after upgrading past it this class cannot simply be deleted:
+files written with the swapped layout still need migrating.
 """
 
 from __future__ import annotations
@@ -34,6 +49,15 @@ from telethon.crypto import AuthKey
 from telethon.sessions import SQLiteSession
 
 logger = logging.getLogger(__name__)
+
+BACKUP_TABLE = "tg_export_session_backup"
+
+# Telethon writes exactly these six values, in this order, ignoring column
+# names. Positions 4 and 5 (0-based) are the two we have to rescue.
+_TAKEOUT_ID_POS = 4
+_TMP_AUTH_KEY_POS = 5
+_SESSION_COLUMN_COUNT = 6
+_SWAPPABLE_COLUMNS = {"takeout_id", "tmp_auth_key"}
 
 
 class FixedSQLiteSession(SQLiteSession):
@@ -53,78 +77,154 @@ class FixedSQLiteSession(SQLiteSession):
             self.takeout_id = saved_takeout_id
         if saved_tmp_auth_key:
             self.tmp_auth_key = AuthKey(data=saved_tmp_auth_key)
+        self._drop_backup()
+
+    def _drop_backup(self) -> None:
+        """Discard the staged copy once the values are back in the session table.
+
+        Only safe after the restore above: until then the backup is the only
+        place the real takeout_id exists.
+        """
+        if self.filename == ":memory:":
+            return
+        try:
+            c = self._cursor()
+            try:
+                c.execute(f"DROP TABLE IF EXISTS {BACKUP_TABLE}")
+            finally:
+                c.close()
+            self.save()
+        except sqlite3.Error as e:
+            logger.debug("session backup cleanup skipped (%s): %s", self.filename, e)
+
+    @staticmethod
+    def _session_path(session_id) -> Path | None:
+        if not session_id:
+            return None
+        sp = str(session_id)
+        return Path(sp if sp.endswith(".session") else f"{sp}.session")
+
+    @staticmethod
+    def _normalize(takeout_id_raw, tmp_auth_key_raw, where) -> tuple[int | None, bytes | None]:
+        """Coerce the two rescued values to the types Telethon can consume.
+
+        The same read/write asymmetry can place a BLOB into the takeout_id slot
+        (e.g. b'') or an int into the tmp_auth_key slot. The Telethon serializer
+        would then break on struct.pack (struct.error: required argument is not
+        an integer) or on AuthKey(data=int) via sha1. Drop anomalies instead.
+        """
+        takeout_id: int | None
+        if isinstance(takeout_id_raw, int):
+            takeout_id = takeout_id_raw
+        else:
+            if takeout_id_raw is not None:
+                logger.warning(
+                    "Unexpected takeout_id type %s in %s; clearing.",
+                    type(takeout_id_raw).__name__,
+                    where,
+                )
+            takeout_id = None
+
+        tmp_auth_key: bytes | None
+        if isinstance(tmp_auth_key_raw, bytes):
+            tmp_auth_key = tmp_auth_key_raw
+        elif isinstance(tmp_auth_key_raw, bytearray):
+            tmp_auth_key = bytes(tmp_auth_key_raw)
+        else:
+            if tmp_auth_key_raw is not None:
+                logger.warning(
+                    "Unexpected tmp_auth_key type %s in %s; clearing.",
+                    type(tmp_auth_key_raw).__name__,
+                    where,
+                )
+            tmp_auth_key = None
+
+        return takeout_id, tmp_auth_key
+
+    @staticmethod
+    def _read_backup(conn: sqlite3.Connection, path) -> tuple[int | None, bytes | None]:
+        """Read what a previous, interrupted start left staged."""
+        present = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (BACKUP_TABLE,),
+        ).fetchone()
+        if present is None:
+            return None, None
+        row = conn.execute(f"SELECT takeout_id, tmp_auth_key FROM {BACKUP_TABLE}").fetchone()
+        if row is None:
+            return None, None
+        return FixedSQLiteSession._normalize(row[0], row[1], f"{path} ({BACKUP_TABLE})")
 
     @staticmethod
     def _extract_and_clear(session_id) -> tuple[int | None, bytes | None]:
-        if not session_id:
-            return None, None
-        sp = str(session_id)
-        path = Path(sp if sp.endswith(".session") else f"{sp}.session")
-        if not path.exists():
+        path = FixedSQLiteSession._session_path(session_id)
+        if path is None or not path.exists():
             return None, None
         try:
-            conn = sqlite3.connect(str(path), timeout=5)
+            conn = sqlite3.connect(str(path), timeout=30)
             try:
+                # IMMEDIATE takes the write lock up front: the read below decides
+                # what the clearing UPDATE destroys, so a second process must not
+                # slip between them.
+                conn.execute("BEGIN IMMEDIATE")
                 info = conn.execute("PRAGMA table_info(sessions)").fetchall()
-                cols = {row[1] for row in info}
-                if not cols.issuperset({"tmp_auth_key", "takeout_id"}):
-                    return None, None
-                row = conn.execute("SELECT takeout_id, tmp_auth_key FROM sessions").fetchone()
-                if row is None:
-                    return None, None
-                takeout_id_raw, tmp_auth_key_raw = row
-                # Why `is not None` for both, not bool(): Telethon's
-                # _update_session_table with store_tmp_auth_key_on_disk=False
-                # writes b'' into physical position 5 (tmp_auth_key). That is
-                # falsy for bool(), but on the next read the swap bug sets
-                # session._takeout_id = b'', which breaks struct.pack in
-                # InvokeWithTakeoutRequest. Treat b'' as "has data" too and
-                # clear the DB so Telethon reads NULL/NULL.
-                has_data = takeout_id_raw is not None or tmp_auth_key_raw is not None
-                if not has_data:
+                names = [row[1] for row in info]
+                if len(names) != _SESSION_COLUMN_COUNT or set(names[_TAKEOUT_ID_POS:]) != _SWAPPABLE_COLUMNS:
+                    conn.rollback()
                     return None, None
 
-                # Type validation: the same read/write asymmetry could place a
-                # BLOB into the takeout_id slot (e.g. b'') or an int into the
-                # tmp_auth_key slot. The Telethon serializer would then break on
-                # struct.pack (struct.error: required argument is not an integer)
-                # or AuthKey(data=int) on sha1. Clean up anomalies.
-                takeout_id: int | None
-                if isinstance(takeout_id_raw, int):
-                    takeout_id = takeout_id_raw
-                else:
-                    if takeout_id_raw is not None:
-                        logger.warning(
-                            "Unexpected takeout_id type %s in %s; clearing.",
-                            type(takeout_id_raw).__name__,
-                            path,
-                        )
-                    takeout_id = None
-                tmp_auth_key: bytes | None
-                if isinstance(tmp_auth_key_raw, bytes):
-                    tmp_auth_key = tmp_auth_key_raw
-                elif isinstance(tmp_auth_key_raw, bytearray):
-                    tmp_auth_key = bytes(tmp_auth_key_raw)
-                else:
-                    if tmp_auth_key_raw is not None:
-                        logger.warning(
-                            "Unexpected tmp_auth_key type %s in %s; clearing.",
-                            type(tmp_auth_key_raw).__name__,
-                            path,
-                        )
-                    tmp_auth_key = None
+                row = conn.execute("SELECT * FROM sessions").fetchone()
+                takeout_id_raw = row[_TAKEOUT_ID_POS] if row else None
+                tmp_auth_key_raw = row[_TMP_AUTH_KEY_POS] if row else None
+                # Why `is not None` rather than bool(): Telethon writes b'' into
+                # position 6 when store_tmp_auth_key_on_disk is False. That is
+                # falsy, but on the next read the swap bug turns it into
+                # session._takeout_id = b'', which breaks struct.pack in
+                # InvokeWithTakeoutRequest. Treat b'' as "has data" and clear it
+                # so Telethon reads NULL/NULL.
+                has_row_data = takeout_id_raw is not None or tmp_auth_key_raw is not None
+
+                takeout_id, tmp_auth_key = FixedSQLiteSession._normalize(
+                    takeout_id_raw, tmp_auth_key_raw, path
+                )
+                backup_takeout_id, backup_tmp_auth_key = FixedSQLiteSession._read_backup(conn, path)
+                # Live columns win over the backup: a start that restored the
+                # value but died before dropping the table leaves a stale copy
+                # behind, and it must not overwrite what is on disk now.
+                if takeout_id is None:
+                    takeout_id = backup_takeout_id
+                if not tmp_auth_key:
+                    tmp_auth_key = backup_tmp_auth_key
+
+                has_backup = backup_takeout_id is not None or backup_tmp_auth_key is not None
+                if not has_row_data and not has_backup:
+                    conn.rollback()
+                    return None, None
 
                 logger.info(
                     "Detected stale takeout_id/tmp_auth_key in %s; "
                     "staging restore via FixedSQLiteSession (Telethon column-order bug)",
                     path,
                 )
-                # Clear the DB even if every value turned out anomalous: on the
-                # next super().__init__() Telethon, with the same swap bug, would
-                # read them back into the wrong slots again.
+                conn.execute(
+                    f"CREATE TABLE IF NOT EXISTS {BACKUP_TABLE} (takeout_id integer, tmp_auth_key blob)"
+                )
+                conn.execute(f"DELETE FROM {BACKUP_TABLE}")
+                conn.execute(
+                    f"INSERT INTO {BACKUP_TABLE} (takeout_id, tmp_auth_key) VALUES (?, ?)",
+                    (takeout_id, tmp_auth_key),
+                )
+                # Clear even if every value turned out anomalous: on the next
+                # super().__init__() Telethon, with the same swap bug, would read
+                # them back into the wrong slots again. Both physical layouts put
+                # these two columns at positions 5 and 6, so naming them here is
+                # unambiguous.
                 conn.execute("UPDATE sessions SET takeout_id = NULL, tmp_auth_key = NULL")
                 conn.commit()
                 return takeout_id, tmp_auth_key
+            except BaseException:
+                conn.rollback()
+                raise
             finally:
                 conn.close()
         except sqlite3.Error as e:
