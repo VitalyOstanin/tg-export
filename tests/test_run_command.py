@@ -178,3 +178,53 @@ def test_takeout_clear_finishes_the_session_on_the_server(tmp_path, monkeypatch)
     assert result.exit_code == 0, result.output
     api.client.end_takeout.assert_awaited_once_with(success=True)
     assert "4242" in result.output
+
+
+def test_service_messages_are_skipped_when_the_option_says_so(tmp_path):
+    """`export_service_messages: false` не влияла ни на что.
+
+    Опция разбиралась, прокидывалась в каждый ChatExportConfig и нигде не
+    читалась: сообщения со служебным действием сохранялись наравне с
+    обычными.
+    """
+    from datetime import datetime
+
+    from tg_export.exporter import Exporter
+    from tg_export.models import ActionPinMessage, Message
+
+    def _msg(msg_id, action=None):
+        return Message(
+            id=msg_id,
+            chat_id=1,
+            date=datetime(2024, 1, 1),
+            edited=None,
+            from_id=None,
+            from_name="",
+            text=[],
+            media=None,
+            action=action,
+            reply_to_msg_id=None,
+            reply_to_peer_id=None,
+            forwarded_from=None,
+            reactions=[],
+            is_outgoing=False,
+            signature=None,
+            via_bot_id=None,
+            saved_from_chat_id=None,
+            inline_buttons=None,
+            topic_id=None,
+            grouped_id=None,
+        )
+
+    exporter = Exporter.__new__(Exporter)
+    kept = exporter._keep_message(_msg(1), export_service_messages=False)
+    dropped = exporter._keep_message(
+        _msg(2, ActionPinMessage(type="ActionPinMessage")), export_service_messages=False
+    )
+    both = exporter._keep_message(
+        _msg(3, ActionPinMessage(type="ActionPinMessage")), export_service_messages=True
+    )
+
+    assert kept is True
+    assert dropped is False
+    assert both is True

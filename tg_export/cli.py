@@ -796,6 +796,7 @@ def init_config(account, from_catalog, output):
 
 
 async def _init_config(account, from_catalog, output):
+    """Write a config template, either from a saved catalog or from the account."""
     from tg_export.catalog import generate_config_template
 
     mgr = _mgr()
@@ -803,24 +804,29 @@ async def _init_config(account, from_catalog, output):
     config_path = Path(output) if output else mgr.config_path(account)
 
     if from_catalog:
-        import yaml
-
-        with open(from_catalog, encoding="utf-8") as f:
-            yaml.safe_load(f)
-        # Simple passthrough — generate template
-        _diag(f"Generating config from catalog: {from_catalog}")
+        chats = _chats_from_catalog_file(Path(from_catalog))
     else:
-        # Fetch from API
         from tg_export.catalog import fetch_catalog
 
         async with _connected_api(account) as (api, account):
             chats = await fetch_catalog(api)
-            template = generate_config_template(chats, account=account)
-            config_path.write_text(template, encoding="utf-8")
-            _diag(f"Config template saved to {config_path}")
-        return
 
-    _diag(f"Config saved to {config_path}")
+    config_path.write_text(generate_config_template(chats, account=account), encoding="utf-8")
+    _diag(f"Config template saved to {config_path}")
+
+
+def _chats_from_catalog_file(path: Path):
+    """Read the chat list out of a catalog written by ``tg chats --format yaml``."""
+    import yaml
+
+    from tg_export.catalog import chats_from_catalog
+    from tg_export.config import ConfigError
+
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, yaml.YAMLError) as e:
+        raise ConfigError(f"Cannot read catalog {path}: {e}") from e
+    return chats_from_catalog(data)
 
 
 def _get_dir_size(path: Path) -> int | None:
@@ -1161,7 +1167,8 @@ def _index_sections(cfg) -> list[dict]:
         (cfg.sessions, "Sessions", "Active Sessions", "sessions.html"),
         (cfg.userpics, "Profile Photos", "Profile Photos", "userpics.html"),
         (cfg.stories, "Stories", "Stories", "stories.html"),
-        (cfg.other_data or cfg.profile_music, "Other Data", "Other Data", "other_data.html"),
+        # The page carries the saved ringtones only, so profile_music decides it.
+        (cfg.profile_music, "Other Data", "Other Data", "other_data.html"),
     )
     return [
         {"title": title, "entries": [{"name": name, "href": href, "meta": ""}]}

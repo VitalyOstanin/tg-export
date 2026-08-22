@@ -379,8 +379,13 @@ def _parse_folder_rule(d: dict) -> FolderRule:
 # behaviour at runtime (where comparisons are against exact literals).
 _LEFT_CHANNELS_ACTIONS = {"skip", "export_with_defaults"}
 _ARCHIVED_ACTIONS = {"skip", "export_with_defaults"}
-_UNMATCHED_ACTIONS = {"skip", "export_with_defaults", "ask"}
-_OUTPUT_FORMATS = {"html", "json", "both"}
+# "ask" was accepted here but behaved as export_with_defaults: there is no
+# interactive branch in the code, and the price of the mistake is asymmetric --
+# the user expects a prompt per unmatched chat and gets all of them exported.
+_UNMATCHED_ACTIONS = {"skip", "export_with_defaults"}
+# Only HTML is rendered. "json"/"both" used to pass validation and show up in
+# `tg-export config -v` as an active setting while changing nothing.
+_OUTPUT_FORMATS = {"html"}
 
 # Known top-level config keys. An unknown key is most likely a typo in a
 # section name (e.g. `default` instead of `defaults`); without this check such

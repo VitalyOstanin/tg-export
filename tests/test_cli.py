@@ -260,3 +260,45 @@ async def test_start_takeout_asks_for_the_largest_configured_limit(monkeypatch):
     await cli._start_takeout(api, _takeout_cfg(max_file_size=2 * 1024**3), require=False)
 
     assert api.start_takeout.await_args.kwargs["max_file_size"] == 2 * 1024**3
+
+
+def test_init_from_catalog_writes_the_config_file(tmp_path, monkeypatch):
+    """`init --from` печатал «Config saved», не записав файла.
+
+    Результат разбора каталога никуда не присваивался, шаблон не строился,
+    файл не создавался -- а именно этот способ документация называет штатным.
+    Пользователь получал сообщение об успехе и «Config not found» на run.
+    """
+    import yaml
+    from click.testing import CliRunner
+
+    from tg_export.auth import AccountManager
+    from tg_export.cli import main
+
+    cfg_dir = tmp_path / "config"
+    mgr = AccountManager(config_dir=cfg_dir)
+    mgr.ensure_dirs()
+    monkeypatch.setattr("tg_export.cli._mgr", lambda: AccountManager(config_dir=cfg_dir))
+
+    catalog = tmp_path / "catalog.yaml"
+    catalog.write_text(
+        yaml.dump(
+            {
+                "folders": {"Work": [{"id": 10, "name": "Team", "type": "private_group", "messages": 5}]},
+                "unfiled": [{"id": 20, "name": "Notes", "type": "self", "messages": 1}],
+            },
+            allow_unicode=True,
+        ),
+        encoding="utf-8",
+    )
+    out = tmp_path / "generated.yaml"
+
+    result = CliRunner().invoke(
+        main, ["init", "--account", "acc", "--from", str(catalog), "--output", str(out)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert out.exists(), result.output
+    text = out.read_text(encoding="utf-8")
+    assert "Team" in text
+    assert "Notes" in text

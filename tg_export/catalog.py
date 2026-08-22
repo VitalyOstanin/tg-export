@@ -76,6 +76,85 @@ def _chat_to_dict(chat: Chat) -> dict:
     return d
 
 
+def _chat_from_dict(d, *, folder=None, is_archived=False, is_left=False) -> Chat:
+    """Restore a Chat from one catalog entry."""
+    from tg_export.config import ConfigError
+
+    if not isinstance(d, dict):
+        raise ConfigError(f"catalog entry must be a mapping, got {type(d).__name__}")
+    for key in ("id", "name"):
+        if key not in d:
+            raise ConfigError(f"catalog entry is missing '{key}': {d!r}")
+    raw_type = d.get("type", ChatType.personal.value)
+    try:
+        chat_type = ChatType(raw_type)
+    except ValueError:
+        allowed = ", ".join(t.value for t in ChatType)
+        raise ConfigError(
+            f"unknown chat type {raw_type!r} in catalog entry id={d['id']}; allowed: {allowed}"
+        ) from None
+    last_message = d.get("last_message")
+    if isinstance(last_message, str):
+        try:
+            last_message = datetime.strptime(last_message, "%Y-%m-%d")
+        except ValueError:
+            raise ConfigError(f"bad last_message {last_message!r} in catalog entry id={d['id']}") from None
+    elif last_message is not None and not isinstance(last_message, datetime):
+        last_message = None
+    return Chat(
+        id=d["id"],
+        name=d["name"],
+        type=chat_type,
+        username=d.get("username"),
+        folder=d.get("folder", folder),
+        members_count=d.get("members"),
+        last_message_date=last_message,
+        messages_count=d.get("messages", 0),
+        is_left=bool(d.get("is_left", is_left)),
+        is_archived=bool(d.get("is_archived", is_archived)),
+        is_forum=bool(d.get("is_forum", False)),
+        migrated_to_id=d.get("migrated_to_id"),
+        migrated_from_id=d.get("migrated_from_id"),
+        is_monoforum=bool(d.get("is_monoforum", False)),
+    )
+
+
+def chats_from_catalog(data) -> list[Chat]:
+    """Read back a catalog written by :func:`format_catalog_yaml`.
+
+    The section a chat sits in carries information the entry itself may omit:
+    ``folders`` names the folder, ``archived`` and ``left`` set the flags. An
+    entry that states them explicitly wins, so a hand-edited catalog behaves
+    the way it reads. The JSON catalog has no sections and is read as one list.
+    """
+    from tg_export.config import ConfigError
+
+    # The JSON form of the same catalog is a flat list: no sections, every flag
+    # spelled out in the entry itself.
+    if isinstance(data, list):
+        return [_chat_from_dict(d) for d in data]
+    if not isinstance(data, dict):
+        raise ConfigError(f"catalog must be a mapping, got {type(data).__name__}")
+
+    chats: list[Chat] = []
+
+    folders = data.get("folders") or {}
+    if not isinstance(folders, dict):
+        raise ConfigError(f"catalog section 'folders' must be a mapping, got {type(folders).__name__}")
+    for name, entries in folders.items():
+        if not isinstance(entries, list):
+            raise ConfigError(f"catalog folder {name!r} must hold a list, got {type(entries).__name__}")
+        chats.extend(_chat_from_dict(d, folder=name) for d in entries)
+
+    for section, flags in (("unfiled", {}), ("archived", {"is_archived": True}), ("left", {"is_left": True})):
+        entries = data.get(section) or []
+        if not isinstance(entries, list):
+            raise ConfigError(f"catalog section {section!r} must be a list, got {type(entries).__name__}")
+        chats.extend(_chat_from_dict(d, **flags) for d in entries)
+
+    return chats
+
+
 def format_catalog_yaml(chats: list[Chat]) -> str:
     """Format chat catalog as YAML, grouped by folders/unfiled/left."""
     folders: dict[str, list[dict]] = defaultdict(list)
@@ -148,7 +227,7 @@ def generate_config_template(chats: list[Chat], account: str | None = None) -> s
         "  action: skip  # skip | export_with_defaults",
         "",
         "unmatched:",
-        "  action: skip  # skip | export_with_defaults | ask",
+        "  action: skip  # skip | export_with_defaults",
         "",
         "# type_rules:",
         "#   bots:",

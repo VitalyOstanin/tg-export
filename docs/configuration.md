@@ -98,7 +98,12 @@ min_free_space: 20GB
 
 Файл: `~/.config/tg-export/<alias>.yaml`
 
-Генерируется командой `tg-export init --from catalog.yaml --output <alias>.yaml`.
+Генерируется командой `tg-export init --account <alias>`: она запрашивает список чатов
+у Telegram и пишет шаблон. Если каталог уже выгружен командой
+`tg-export list --account <alias> --output catalog.yaml`, шаблон строится из файла без
+обращения к сети: `tg-export init --from catalog.yaml --output <alias>.yaml`. Принимается
+и YAML-каталог с разделами `folders`/`unfiled`/`archived`/`left`, и плоский JSON-каталог
+(`list --format json`).
 
 ### output
 
@@ -107,13 +112,13 @@ min_free_space: 20GB
 ```yaml
 output:
   path: ./export_output    # базовый каталог; итоговый путь: {path}/{alias}/
-  format: html             # html | json | both
+  format: html             # единственный поддерживаемый формат
 ```
 
 | Поле | Тип | По умолчанию | Описание |
 |------|-----|-------------|----------|
 | `path` | строка | `./export_output` | Базовый каталог для экспорта |
-| `format` | строка | `html` | Формат вывода |
+| `format` | строка | `html` | Формат вывода; поддерживается только `html` |
 
 ### defaults
 
@@ -237,7 +242,8 @@ chats:
 
 ### Глобальные данные
 
-Флаги экспорта данных, не привязанных к чатам. Пока не реализовано (зарезервировано).
+Флаги экспорта данных, не привязанных к чатам. Каждый флаг управляет и выгрузкой,
+и соответствующим разделом на главной странице экспорта.
 
 ```yaml
 personal_info: true
@@ -245,9 +251,13 @@ contacts: true           # включает frequent contacts
 sessions: true           # включает web sessions
 userpics: true
 stories: true
-profile_music: true
-other_data: true
+profile_music: true      # сохранённые мелодии; ими и наполнена страница «Прочее»
+other_data: true         # зарезервирован: своих данных пока не добавляет
 ```
+
+Страница «Прочее» (`other_data.html`) сейчас содержит только мелодии профиля, поэтому
+её создание управляется флагом `profile_music`. Флаг `other_data` зарезервирован под
+данные, которые появятся позже.
 
 ### left_channels
 
@@ -296,7 +306,7 @@ import_existing:
 
 ```yaml
 unmatched:
-  action: skip             # skip | export_with_defaults | ask
+  action: skip             # skip | export_with_defaults
 ```
 
 ---

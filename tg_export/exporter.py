@@ -838,6 +838,7 @@ class Exporter:
                 iter_kwargs=iter_kwargs,
                 before_date_from=before_date_from,
                 progress_line=progress_line,
+                keep_service=chat_config.export_service_messages,
             )
 
         if not full_history and not self._shutdown:
@@ -850,6 +851,7 @@ class Exporter:
                 iter_kwargs=iter_kwargs,
                 before_date_from=before_date_from,
                 progress_line=progress_line,
+                keep_service=chat_config.export_service_messages,
             )
         else:
             # Phase 2 skipped (full_history already True or shutdown). Still
@@ -860,6 +862,15 @@ class Exporter:
 
         await self._render_chat_html(chat, chat_dir)
         return stats
+
+    @staticmethod
+    def _keep_message(msg: Message, *, export_service_messages: bool) -> bool:
+        """Whether a message belongs in the export.
+
+        `export_service_messages: false` used to change nothing: the option was
+        parsed, carried into every ChatExportConfig and read by no one.
+        """
+        return export_service_messages or msg.action is None
 
     async def _count_chat_messages(self, chat: Chat, *, has_date_filter: bool) -> int:
         """Total number of messages in the chat, for the progress bar.
@@ -899,6 +910,7 @@ class Exporter:
         iter_kwargs: dict,
         before_date_from,
         progress_line,
+        keep_service: bool = True,
     ) -> None:
         """Phase 1: everything newer than the stored pointer, newest first."""
         new_max_id = last_msg_id
@@ -914,11 +926,15 @@ class Exporter:
                 if before_date_from(tl_msg.date):
                     break
                 msg = convert_message(tl_msg, chat_id=chat.id)
+                # The pointer still advances over a skipped message: it was
+                # seen, and re-fetching it on the next run would change nothing.
+                if msg.id > new_max_id:
+                    new_max_id = msg.id
+                if not self._keep_message(msg, export_service_messages=keep_service):
+                    continue
                 # A message joins the batch only once its own media is on
                 # disk, so the stored record carries the local path.
                 batch.extend(await media.submit(msg, tl_msg))
-                if msg.id > new_max_id:
-                    new_max_id = msg.id
                 stats.messages_exported += 1
                 if len(batch) >= BATCH_SIZE:
                     await self.state.store_messages_batch(batch)
@@ -956,6 +972,7 @@ class Exporter:
         iter_kwargs: dict,
         before_date_from,
         progress_line,
+        keep_service: bool = True,
     ) -> None:
         """Phase 2: continue downward from the oldest message fetched so far."""
         batch: list[Message] = []
@@ -982,11 +999,13 @@ class Exporter:
                     reached_date_from = True
                     break
                 msg = convert_message(tl_msg, chat_id=chat.id)
-                batch.extend(await media.submit(msg, tl_msg))
                 if current_oldest == 0 or msg.id < current_oldest:
                     current_oldest = msg.id
                 if msg.id > phase2_max_id:
                     phase2_max_id = msg.id
+                if not self._keep_message(msg, export_service_messages=keep_service):
+                    continue
+                batch.extend(await media.submit(msg, tl_msg))
                 stats.messages_exported += 1
                 if len(batch) >= BATCH_SIZE:
                     await self.state.store_messages_batch(batch)
@@ -1131,7 +1150,10 @@ class Exporter:
             except Exception as e:
                 logger.warning("Failed to export stories: %s", e, exc_info=True)
 
-        if self.config.other_data or self.config.profile_music:
+        # The page holds the saved ringtones, which is what profile_music names;
+        # the flags used to be joined by "or", so profile_music: false changed
+        # nothing while other_data kept its default of true.
+        if self.config.profile_music:
             try:
                 await self._export_other_data()
             except Exception as e:

@@ -166,13 +166,13 @@ def test_valid_actions_accepted(tmp_path):
         "unmatched:\n  action: export_with_defaults\n"
         "archived:\n  action: export_with_defaults\n"
         "left_channels:\n  action: export_with_defaults\n"
-        "output:\n  format: both\n",
+        "output:\n  format: html\n",
     )
     cfg = load_config(path)
     assert cfg.unmatched_action == "export_with_defaults"
     assert cfg.archived_action == "export_with_defaults"
     assert cfg.left_channels_action == "export_with_defaults"
-    assert cfg.output.format == "both"
+    assert cfg.output.format == "html"
 
 
 def test_max_media_file_size_covers_rules_above_defaults(tmp_path):
@@ -350,3 +350,28 @@ def test_output_path_expands_the_tilde(tmp_path):
     path = _write_config(tmp_path, "output:\n  path: ~/exports\n")
     cfg = load_config(path)
     assert not cfg.output.path.startswith("~"), cfg.output.path
+
+
+def test_unimplemented_output_format_is_rejected(tmp_path):
+    """`format: json` проходил валидацию и показывался как действующая настройка.
+
+    Ни один потребитель значение не читал: рендерер создавался безусловно, и
+    пользователь узнавал про HTML только по содержимому каталога.
+    """
+    path = _write_config(tmp_path, "output:\n  format: json\n")
+    with pytest.raises(ConfigError) as e:
+        load_config(path)
+    assert "json" in str(e.value)
+
+
+def test_unmatched_action_ask_is_rejected(tmp_path):
+    """`action: ask` работал как export_with_defaults.
+
+    Интерактивной ветки в коде нет, а цена ошибки несимметрична: пользователь
+    ждёт подтверждения по каждому неохваченному чату, а получает полную
+    выгрузку всех несопоставленных.
+    """
+    path = _write_config(tmp_path, "unmatched:\n  action: ask\n")
+    with pytest.raises(ConfigError) as e:
+        load_config(path)
+    assert "ask" in str(e.value)
