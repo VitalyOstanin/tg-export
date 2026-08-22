@@ -75,3 +75,42 @@ def test_credentials_file_permissions(tmp_path):
     assert cred_path.exists()
     mode = cred_path.stat().st_mode & 0o777
     assert mode == 0o600
+
+
+@pytest.mark.asyncio
+async def test_add_account_opens_the_session_through_the_fixed_subclass(tmp_path, monkeypatch):
+    """Логин -- единственный путь записи в файл сессии вне FixedSQLiteSession.
+
+    Передача строкового пути в TelegramClient заставляет Telethon построить
+    обычный SQLiteSession, у которого takeout_id читается по имени колонки и
+    потому берётся из чужой позиции. Обход подкласса делает файл сессии
+    источником повторного повреждения, даже если конкретно при логине он
+    создаётся с нуля.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    from tg_export.session import FixedSQLiteSession
+
+    mgr = AccountManager(config_dir=tmp_path)
+    mgr.ensure_dirs()
+    mgr.save_credentials(1, "hash")
+
+    created = {}
+
+    def fake_client(session, api_id, api_hash, *args, **kwargs):
+        created["session"] = session
+        client = MagicMock()
+        client.connect = AsyncMock()
+        client.is_user_authorized = AsyncMock(return_value=True)
+        client.get_me = AsyncMock(return_value=MagicMock(first_name="Test", id=1))
+        client.disconnect = MagicMock(return_value=None)
+        return client
+
+    monkeypatch.setattr("telethon.TelegramClient", fake_client)
+
+    await mgr.add_account("acc")
+
+    assert isinstance(created["session"], FixedSQLiteSession), (
+        "клиент логина должен строиться на FixedSQLiteSession, а не на пути-строке"
+    )
+    created["session"].close()

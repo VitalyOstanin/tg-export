@@ -166,6 +166,8 @@ class AccountManager:
         """Interactive Telethon login. Requires terminal interaction."""
         from telethon import TelegramClient
 
+        from tg_export.session import FixedSQLiteSession
+
         api_id, api_hash = self.load_credentials()
         session_path = str(self.session_path(name))
 
@@ -177,7 +179,11 @@ class AccountManager:
         if journal.exists():
             journal.unlink()
 
-        client = TelegramClient(session_path, api_id, api_hash)
+        # FixedSQLiteSession, not the path: a bare path makes Telethon build a
+        # plain SQLiteSession, which addresses the session columns by name while
+        # they are written positionally. Login is the only writer outside the
+        # subclass, so leaving it out keeps the file a source of corruption.
+        client = TelegramClient(FixedSQLiteSession(session_path), api_id, api_hash)
         await client.connect()
 
         if not await client.is_user_authorized():

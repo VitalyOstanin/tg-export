@@ -57,6 +57,36 @@ def test_no_manual_live_enter_exit_in_exporter():
     assert "live_ctx.__exit__" not in src, "Live должен использоваться через with-блок"
 
 
+def test_every_telegram_client_is_built_on_the_fixed_session():
+    """Ни один путь создания клиента не должен обходить FixedSQLiteSession.
+
+    Telethon принимает строку вместо объекта сессии и молча строит обычный
+    SQLiteSession -- тот самый, что читает колонки по имени, тогда как пишутся
+    они позиционно. Проверка статическая: подсчитывать поведением каждый новый
+    путь создания клиента пришлось бы отдельным тестом.
+    """
+    import ast
+
+    offenders = []
+    for path in sorted(PROJECT.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+            if name != "TelegramClient" or not node.args:
+                continue
+            first = node.args[0]
+            built_here = (
+                isinstance(first, ast.Call)
+                and getattr(first.func, "id", getattr(first.func, "attr", None)) == "FixedSQLiteSession"
+            )
+            if not built_here and not (isinstance(first, ast.Name) and first.id == "session"):
+                offenders.append(f"{path.name}:{node.lineno}")
+    assert not offenders, f"TelegramClient должен получать FixedSQLiteSession: {offenders}"
+
+
 def test_no_manual_async_context_calls_in_api():
     """Takeout-контекст должен вестись через AsyncExitStack, а не ручными
     __aenter__/__aexit__: при ручном вызове выход из контекста не привязан к
