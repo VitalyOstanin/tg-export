@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
-import os
 import sqlite3
 from dataclasses import asdict
 from datetime import datetime
@@ -14,13 +12,8 @@ from typing import Any
 
 import aiosqlite
 
-from tg_export.errors import TgExportError
-
-try:
-    import fcntl as _fcntl
-except ImportError:  # pragma: no cover - Windows
-    _fcntl = None  # type: ignore[assignment]
-
+from tg_export.errors import ProcessLockError
+from tg_export.locking import ProcessLock
 from tg_export.models import (
     ForwardInfo,
     InlineButton,
@@ -212,7 +205,7 @@ def _load_messages_for_month_sync(db_path: Path, chat_id: int, month_key: str) -
         db.close()
 
 
-class StateLockError(TgExportError, RuntimeError):
+class StateLockError(ProcessLockError):
     """Raised when another process already holds the state DB lock."""
 
 
@@ -238,8 +231,11 @@ class ExportState:
     def __init__(self, db_path: Path):
         self.db_path = db_path
         self._db: aiosqlite.Connection | None = None
-        self._lock_fd: int | None = None
-        self._lock_path: Path | None = None
+        self._lock = ProcessLock(
+            db_path,
+            f"State DB is locked by another tg-export process: {db_path}.lock. "
+            f"Make sure no other run/verify/state command is in progress.",
+        )
 
     @property
     def db(self) -> aiosqlite.Connection:
@@ -249,44 +245,14 @@ class ExportState:
         return self._db
 
     def _acquire_lock(self):
-        """Acquire advisory lock on <db>.lock to prevent concurrent processes.
-
-        Why: SQLite alone returns 'database is locked' on contention; an
-        explicit lock with a clear error message tells the user that another
-        tg-export is running, instead of cryptic OperationalError later.
-        """
-        if _fcntl is None:
-            return  # Windows: no-op (Telegram session is already single-active)
-        self._lock_path = self.db_path.with_suffix(self.db_path.suffix + ".lock")
-        self._lock_path.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(str(self._lock_path), os.O_CREAT | os.O_RDWR, 0o600)
+        """Take the advisory lock that keeps a second export off this database."""
         try:
-            _fcntl.flock(fd, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
-        except (BlockingIOError, OSError) as e:
-            os.close(fd)
-            raise StateLockError(
-                f"State DB is locked by another tg-export process: {self._lock_path}. "
-                f"Make sure no other run/verify/state command is in progress."
-            ) from e
-        os.ftruncate(fd, 0)
-        os.write(fd, str(os.getpid()).encode())
-        self._lock_fd = fd
+            self._lock.acquire()
+        except ProcessLockError as e:
+            raise StateLockError(str(e)) from e
 
     def _release_lock(self):
-        if self._lock_fd is not None and _fcntl is not None:
-            with contextlib.suppress(OSError):
-                _fcntl.flock(self._lock_fd, _fcntl.LOCK_UN)
-            with contextlib.suppress(OSError):
-                os.close(self._lock_fd)
-            self._lock_fd = None
-        if self._lock_path is not None:
-            try:
-                self._lock_path.unlink()
-            except FileNotFoundError:
-                pass
-            except OSError:
-                pass
-            self._lock_path = None
+        self._lock.release()
 
     async def open(self):
         self.db_path.parent.mkdir(parents=True, exist_ok=True)

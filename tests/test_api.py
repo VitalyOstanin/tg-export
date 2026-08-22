@@ -359,6 +359,7 @@ def _make_takeout_api(*, takeout_id=None):
     api.client = MagicMock()
     api.takeout = None
     api._takeout_stack = None
+    api._session_lock = MagicMock()
     api.client.session = MagicMock()
     api.client.session.takeout_id = takeout_id
     api.client.end_takeout = AsyncMock(return_value=True)
@@ -606,3 +607,39 @@ async def test_get_folders_with_plain_string_title():
     folders = await api.get_folders()
     names = [f["name"] for f in folders]
     assert "News" in names
+
+
+@pytest.mark.asyncio
+async def test_second_process_cannot_open_the_same_session(tmp_path, monkeypatch):
+    """Файл сессии Telegram не покрывался блокировкой состояния: та привязана к
+    каталогу вывода. Поэтому `tg send` рядом с идущим экспортом, как и второй
+    экспорт с другим --output, работали с одной сессией одновременно, а Telethon
+    к такому не готов -- ключ авторизации в файле портится.
+    """
+    from unittest.mock import AsyncMock
+
+    from tg_export.errors import ProcessLockError
+
+    sp = tmp_path / "acc.session"
+
+    first = TgApi(str(sp), 1, "hash")
+    first.client.connect = AsyncMock()
+    first.client.disconnect = lambda: None
+    await first.connect()
+    try:
+        second = TgApi(str(sp), 1, "hash")
+        second.client.connect = AsyncMock()
+        second.client.disconnect = lambda: None
+        with pytest.raises(ProcessLockError):
+            await second.connect()
+        second.client.session.close()
+    finally:
+        await first.disconnect()
+        first.client.session.close()
+
+    third = TgApi(str(sp), 1, "hash")
+    third.client.connect = AsyncMock()
+    third.client.disconnect = lambda: None
+    await third.connect()
+    await third.disconnect()
+    third.client.session.close()

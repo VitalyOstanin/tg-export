@@ -20,3 +20,12 @@ class TakeoutUnavailableError(TgExportError):
     --require-takeout``): without that flag an unavailable Takeout is reported
     and the export falls back to the regular API.
     """
+
+
+class ProcessLockError(TgExportError, RuntimeError):
+    """Another process holds the lock on a resource this one needs.
+
+    The state database and the Telegram session file each tolerate one writer;
+    the lock turns a corrupted file or a bare "database is locked" into a clear
+    statement of what is busy.
+    """

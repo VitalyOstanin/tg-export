@@ -1,3 +1,4 @@
+import contextlib
 from datetime import datetime
 
 import pytest
@@ -237,3 +238,41 @@ async def test_verify_files_finds_partial(state):
     broken = await state.get_files_to_verify()
     assert len(broken) == 1
     assert broken[0]["file_id"] == 100
+
+
+@pytest.mark.asyncio
+async def test_lock_is_not_released_by_removing_its_file(tmp_path):
+    """flock привязан к inode, а не к имени: удаляя файл блокировки при
+    освобождении, процесс открывает дорогу второму экземпляру.
+
+    Последовательность: A держит блокировку, B успевает открыть тот же файл,
+    A завершается и удаляет файл, B берёт блокировку на осиротевшем inode, а C
+    создаёт новый файл и берёт блокировку на нём. B и C работают с одной базой
+    состояния: взаимно удаляют файлы при уборке и затирают указатели.
+    """
+    import os
+
+    import pytest as _pytest
+
+    from tg_export.state import ExportState, StateLockError
+
+    fcntl = _pytest.importorskip("fcntl")
+
+    db = tmp_path / "orphan_lock.db"
+    a = ExportState(db_path=db)
+    await a.open()
+    lock_path = a._lock.path
+    assert lock_path is not None
+
+    fd_b = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        await a.close()
+        fcntl.flock(fd_b, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+        c = ExportState(db_path=db)
+        with _pytest.raises(StateLockError):
+            await c.open()
+    finally:
+        with contextlib.suppress(OSError):
+            fcntl.flock(fd_b, fcntl.LOCK_UN)
+        os.close(fd_b)

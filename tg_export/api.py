@@ -21,6 +21,7 @@ from telethon.tl.functions.updates import GetStateRequest
 from telethon.tl.functions.users import GetFullUserRequest
 from telethon.tl.types import InputPeerSelf, InputUserSelf
 
+from tg_export.locking import ProcessLock
 from tg_export.session import FixedSQLiteSession
 
 logger = logging.getLogger(__name__)
@@ -45,9 +46,24 @@ class TgApi:
         self.client = TelegramClient(session, api_id, api_hash, **kwargs)
         self.takeout = None
         self._takeout_stack: contextlib.AsyncExitStack | None = None
+        # The state-database lock covers an output directory, not an account,
+        # so it never stopped two processes from using one session file --
+        # `tg send` next to a running export, or a second export with a
+        # different --output. Telethon keeps no lock of its own and answers
+        # concurrent use by corrupting the authorisation key in the file.
+        self._session_lock = ProcessLock(
+            Path(str(session_path)),
+            f"Telegram session {session_path} is in use by another tg-export process. "
+            f"Wait for it to finish, or use a different account.",
+        )
 
     async def connect(self):
-        await self.client.connect()
+        self._session_lock.acquire()
+        try:
+            await self.client.connect()
+        except BaseException:
+            self._session_lock.release()
+            raise
 
     async def disconnect(self):
         # Release the takeout context first: it must not outlive the connection
@@ -55,9 +71,12 @@ class TgApi:
         # server -- see stop_takeout.
         with contextlib.suppress(Exception):
             await self.stop_takeout()
-        result = self.client.disconnect()
-        if result is not None:
-            await result
+        try:
+            result = self.client.disconnect()
+            if result is not None:
+                await result
+        finally:
+            self._session_lock.release()
 
     async def start_takeout(self, **kwargs):
         """Open a Takeout session, reusing the one a previous run left behind.
