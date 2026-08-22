@@ -339,8 +339,10 @@ async def fetch_catalog(api, include_left: bool = False) -> list[Chat]:
                 )
                 chats.append(chat)
         except Exception as e:
-            # Left channels endpoint may not be available for all account types.
-            logger.debug("get_left_channels: %s", e)
+            # The endpoint is not available for every account type, but the
+            # caller asked for left channels: silently returning a catalog
+            # without them looks like the account has none.
+            logger.warning("Left channels could not be fetched (%s); they are missing from the catalog", e)
 
     return chats
 

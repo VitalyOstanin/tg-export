@@ -82,10 +82,21 @@ def chat_progress_description(chat_name: str) -> str:
     return f"[cyan]{escape(chat_name)}[/]"
 
 
+def describe_error(error: BaseException) -> str:
+    """Name the exception along with its text.
+
+    ``str(TimeoutError())`` and ``str(ValueError())`` are empty, and a bare
+    ``str(KeyError("peer_id"))`` is just the key: a report built on the text
+    alone ended after the colon and said nothing about what went wrong.
+    """
+    text = str(error)
+    return f"{type(error).__name__}: {text}" if text else type(error).__name__
+
+
 def chat_error_line(chat_name: str, error: BaseException, chat_id: int | None = None) -> str:
     """Build the `Error exporting <chat> (id=<id>): <e>` line, escaping both."""
     suffix = f" (id={chat_id})" if chat_id is not None else ""
-    return f"Error exporting {escape(chat_name)}{suffix}: {escape(str(error))}"
+    return f"Error exporting {escape(chat_name)}{suffix}: {escape(describe_error(error))}"
 
 
 def disk_space_error_line(error: BaseException) -> str:
@@ -448,6 +459,18 @@ class Exporter:
         # Set by run(); the only task a forced shutdown cancels.
         self._main_task: asyncio.Task | None = None
 
+    def _report_exported(self, count: int, noun: str, failed: int = 0) -> None:
+        """Report what a section of global data produced, failures included.
+
+        A success counter without a failure counter reads as completeness: 10
+        of 60 profile photos printed as `exported: 10 profile photos`.
+        """
+        line = f"  [green]exported[/]: {count} {noun}"
+        if failed:
+            line += f", {failed} failed"
+            logger.warning("%s: %d of %d could not be downloaded", noun, failed, count + failed)
+        self._status_print(line)
+
     def _status_print(self, *args, **kwargs) -> None:
         """Print a non-essential status line unless running in quiet mode."""
         if self.quiet:
@@ -675,8 +698,9 @@ class Exporter:
             console.print("[yellow]Force shutdown during export...[/]")
             return False
         except Exception as e:
+            logger.warning("Export failed: chat_id=%s name=%s", chat.id, chat.name, exc_info=True)
             console.print(chat_error_line(chat.name, e, chat_id=chat.id))
-            stats.errors.append(f"{chat.name} (id={chat.id}): {e}")
+            stats.errors.append(f"{chat.name} (id={chat.id}): {describe_error(e)}")
         return True
 
     async def run(
@@ -883,7 +907,8 @@ class Exporter:
                 return 0
             result = await self.api.client.get_messages(chat.id, limit=0)
             return getattr(result, "total", 0) or 0
-        except Exception:
+        except Exception as e:
+            logger.debug("chat %s: message count unavailable (%s), using the catalog value", chat.id, e)
             return chat.messages_count or 0
 
     def _chat_progress_line(self, chat: Chat, stats: ExportStats, chat_total: int, chat_start: float) -> str:
@@ -1116,7 +1141,11 @@ class Exporter:
             elif status == "skipped_by_type":
                 stats.files_skipped_by_type += 1
         except Exception as e:
-            stats.errors.append(f"Media error msg {msg.id}: {e}")
+            # Without this line the count in the summary was all that survived:
+            # the exception never reached logging, so no log level could
+            # recover what had failed and why.
+            logger.warning("Media error: chat_id=%s msg_id=%s", chat_id, msg.id, exc_info=True)
+            stats.errors.append(f"Media error msg {msg.id} (chat {chat_id}): {describe_error(e)}")
 
     async def export_global_data(self):
         """Export personal_info, userpics, stories, contacts, sessions, etc."""
@@ -1304,6 +1333,7 @@ class Exporter:
 
         photos = []
         seq = 0
+        failed = 0
         async for photo in self.api.iter_userpics():
             # Use a separate per-iteration counter for the filename so a failed
             # download does not cause the next photo to reuse the same name.
@@ -1324,10 +1354,11 @@ class Exporter:
                         }
                     )
             except Exception as e:
+                failed += 1
                 logger.debug("Failed to download userpic %d: %s", seq, e)
 
         await asyncio.to_thread(self.renderer.render_userpics, photos)
-        self._status_print(f"  [green]exported[/]: {len(photos)} profile photos")
+        self._report_exported(len(photos), "profile photos", failed)
 
     async def _export_stories(self):
         """Fetch and render stories."""
@@ -1349,6 +1380,7 @@ class Exporter:
             all_stories.setdefault(story_item.id, story_item)
 
         stories = []
+        failed = 0
         for idx, (story_id, item) in enumerate(sorted(all_stories.items())):
             photo_path = None
             video_path = None
@@ -1374,6 +1406,7 @@ class Exporter:
                         else:
                             photo_path = rel
                 except Exception as e:
+                    failed += 1
                     logger.debug("Failed to download story %d: %s", story_id, e)
 
             date_str = ""
@@ -1390,12 +1423,13 @@ class Exporter:
             )
 
         await asyncio.to_thread(self.renderer.render_stories, stories)
-        self._status_print(f"  [green]exported[/]: {len(stories)} stories")
+        self._report_exported(len(stories), "stories", failed)
 
     async def _export_other_data(self):
         """Fetch and render ringtones and other data."""
         ringtones_dir = self.renderer.output_dir / "ringtones"
         ringtones = []
+        failed = 0
 
         try:
             result = await self.api.get_ringtones()
@@ -1416,6 +1450,7 @@ class Exporter:
                             file=str(ringtones_dir / f"ringtone_{idx}"),
                         )
                     except Exception as e:
+                        failed += 1
                         logger.debug("Failed to download ringtone %d: %s", idx, e)
 
                     size_str = ""
@@ -1433,8 +1468,8 @@ class Exporter:
             logger.warning("Failed to fetch ringtones: %s", e)
 
         await asyncio.to_thread(self.renderer.render_other_data, {"ringtones": ringtones})
-        if ringtones:
-            self._status_print(f"  [green]exported[/]: {len(ringtones)} ringtones")
+        if ringtones or failed:
+            self._report_exported(len(ringtones), "ringtones", failed)
 
     async def _verify_files(self, stats: ExportStats):
         """Verify integrity of downloaded files and re-download broken ones."""

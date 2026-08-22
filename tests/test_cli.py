@@ -156,15 +156,16 @@ async def test_start_takeout_does_not_swallow_programming_errors(monkeypatch):
 def test_resolve_log_level_priority(monkeypatch):
     from tg_export.cli import _resolve_log_level
 
+    # Второй элемент пары -- включать ли собственные логи библиотек.
     monkeypatch.delenv("LOG_LEVEL", raising=False)
-    assert _resolve_log_level(debug=False, log_level=None) == logging.WARNING
+    assert _resolve_log_level(debug=False, log_level=None) == (logging.WARNING, False)
 
     monkeypatch.setenv("LOG_LEVEL", "ERROR")
-    assert _resolve_log_level(debug=False, log_level=None) == logging.ERROR
+    assert _resolve_log_level(debug=False, log_level=None) == (logging.ERROR, False)
     # Флаг перекрывает переменную окружения...
-    assert _resolve_log_level(debug=False, log_level="INFO") == logging.INFO
+    assert _resolve_log_level(debug=False, log_level="INFO") == (logging.INFO, False)
     # ...а --debug перекрывает и флаг.
-    assert _resolve_log_level(debug=True, log_level="INFO") == logging.DEBUG
+    assert _resolve_log_level(debug=True, log_level="INFO") == (logging.DEBUG, False)
 
 
 def test_resolve_log_level_rejects_unknown_name(monkeypatch):

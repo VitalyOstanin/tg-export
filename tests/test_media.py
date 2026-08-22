@@ -181,3 +181,73 @@ async def test_successful_download_does_not_overwrite_a_different_file(tmp_path)
     assert status == "downloaded"
     assert (photos / "photo.jpg").read_bytes() == b"older"
     assert path is not None and Path(path).read_bytes() == b"newer"
+
+
+@pytest.mark.asyncio
+async def test_each_retry_leaves_a_trace_in_the_log(tmp_path, monkeypatch, caplog):
+    """Бесшумные повторы неотличимы от зависшего процесса.
+
+    Наружу доходило только исключение последней попытки, а причина предыдущих
+    и величина задержки терялись целиком.
+    """
+    import logging
+    from unittest.mock import AsyncMock, MagicMock
+
+    monkeypatch.setattr("tg_export.media._MAX_DOWNLOAD_ATTEMPTS", 3)
+    monkeypatch.setattr("tg_export.media.asyncio.sleep", AsyncMock())
+
+    api = MagicMock()
+    api.download_media = AsyncMock(side_effect=ConnectionResetError("connection dropped"))
+    dl = _downloader(api, tmp_path)
+
+    msg = MagicMock()
+    msg.id = 77
+    msg.file = None
+
+    with caplog.at_level(logging.DEBUG, logger="tg_export.media"), pytest.raises(ConnectionResetError):
+        await dl.download(msg, _photo(), tmp_path / "chat", chat_id=5)
+
+    attempts = [r for r in caplog.records if "attempt" in r.getMessage() and r.levelno == logging.DEBUG]
+    assert len(attempts) == 2, f"нет записей о неудачных попытках: {[r.getMessage() for r in caplog.records]}"
+    assert any("ConnectionResetError" in r.getMessage() for r in attempts)
+    assert any(r.levelno == logging.WARNING and "77" in r.getMessage() for r in caplog.records), (
+        "исчерпание попыток не поднято до WARNING"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_telegram_server_error_is_retried_like_a_network_one(tmp_path, monkeypatch):
+    """Отказы Telegram RPC -- те же временные сбои, что и обрыв сокета.
+
+    Они наследуются от RPCError, а не от OSError, и потому не ретраились вовсе:
+    один ServerError обрывал файл, хотя повтор дал бы результат.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    from telethon.errors import ServerError
+
+    monkeypatch.setattr("tg_export.media.asyncio.sleep", AsyncMock())
+
+    calls = []
+
+    async def download_media(tl_message, target_dir, progress_cb=None):
+        calls.append(1)
+        if len(calls) == 1:
+            raise ServerError(request=None, message="INTERNAL")
+        path = Path(target_dir) / "photo.jpg"
+        path.write_bytes(b"data")
+        return str(path)
+
+    api = MagicMock()
+    api.download_media = AsyncMock(side_effect=download_media)
+    dl = _downloader(api, tmp_path)
+
+    msg = MagicMock()
+    msg.id = 78
+    msg.file = None
+
+    local_path, status = await dl.download(msg, _photo(), tmp_path / "chat", chat_id=5)
+
+    assert status == "downloaded", f"ServerError не был повторён: {status}"
+    assert len(calls) == 2
+    assert local_path is not None and local_path.exists()

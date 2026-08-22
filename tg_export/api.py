@@ -264,7 +264,10 @@ class TgApi:
                 )
             )
             return result
-        except Exception:
+        except Exception as e:
+            # Frequent contacts are an optional page: report why they are
+            # missing instead of rendering an empty section without a word.
+            logger.warning("Top peers are unavailable (%s); the frequent contacts section stays empty", e)
             return None
 
     async def iter_userpics(self):

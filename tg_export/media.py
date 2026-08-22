@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote
 
+from telethon.errors import FloodWaitError, ServerError, TimedOutError
+
 from tg_export.config import MediaConfig
 from tg_export.errors import TgExportError
 from tg_export.models import Media, MediaType
@@ -27,6 +29,24 @@ logger = logging.getLogger(__name__)
 # parallel downloads fail at once.
 _MAX_DOWNLOAD_ATTEMPTS = 3
 _RETRY_JITTER_SECONDS = 1.0
+
+# Telegram answers a transient server-side failure with an RPC error, not with
+# a socket error: ServerError and TimedOutError derive from RPCError, so the
+# network-only tuple below never covered them and a single one of them lost the
+# file. FloodWaitError is different in kind -- the server states how long to
+# wait -- and is handled separately, so it is not listed here.
+_TRANSIENT_DOWNLOAD_ERRORS: tuple[type[BaseException], ...] = (
+    ConnectionError,
+    TimeoutError,
+    OSError,
+    ServerError,
+    TimedOutError,
+)
+
+# A flood wait longer than this is not worth holding the export for: the file
+# is reported as failed and the run goes on. Shorter waits Telethon absorbs
+# itself (flood_sleep_threshold), so what reaches here is already the long tail.
+_MAX_FLOOD_WAIT_SECONDS = 300
 
 # Every download goes to its own directory under the target one and is moved
 # into place only once complete. A shared target directory cannot tell whose
@@ -446,7 +466,8 @@ class MediaDownloader:
 
             try:
                 actual_size = src.stat().st_size
-            except OSError:
+            except OSError as e:
+                logger.debug("sibling file %s is unreadable (%s) -- skipping", src, e)
                 continue
             if expected_size and actual_size != expected_size:
                 logger.debug(
@@ -500,12 +521,11 @@ class MediaDownloader:
                 return dst
             try:
                 shutil.copy2(src, dst)
-            except OSError:
+            except OSError as e:
+                logger.debug("tdesktop copy failed: %s -> %s (%s) -- skipping", src, dst, e)
                 continue
 
-            import logging
-
-            logging.getLogger(__name__).debug("imported from tdesktop: msg %d -> %s", msg_id, dst)
+            logger.debug("imported from tdesktop: msg %d -> %s", msg_id, dst)
             return dst
 
         return None
@@ -551,12 +571,40 @@ class MediaDownloader:
                     return await self.api.download_media(tl_message, target_dir, progress_cb=_progress_cb)
                 except _FileTooLargeError:
                     raise
-                except (ConnectionError, TimeoutError, OSError):
+                except FloodWaitError as e:
+                    if e.seconds > _MAX_FLOOD_WAIT_SECONDS or attempt == _MAX_DOWNLOAD_ATTEMPTS - 1:
+                        logger.warning(
+                            "msg %d: flood wait of %ds, giving up on the file",
+                            msg_id,
+                            e.seconds,
+                            exc_info=True,
+                        )
+                        raise
+                    logger.debug("msg %d: attempt %d failed, flood wait %ds", msg_id, attempt + 1, e.seconds)
+                    await asyncio.sleep(e.seconds)
+                except _TRANSIENT_DOWNLOAD_ERRORS as e:
                     if attempt == _MAX_DOWNLOAD_ATTEMPTS - 1:
+                        # The exception itself travels on to the caller; this
+                        # line is what ties the final failure to the attempts
+                        # that led to it, which were silent before.
+                        logger.warning(
+                            "msg %d: download failed after %d attempts",
+                            msg_id,
+                            _MAX_DOWNLOAD_ATTEMPTS,
+                            exc_info=True,
+                        )
                         raise
                     # Exponential backoff with jitter to desynchronise retries
                     # of many parallel downloads after a shared network blip.
                     delay = 2**attempt + random.uniform(0, _RETRY_JITTER_SECONDS)
+                    logger.debug(
+                        "msg %d: attempt %d failed (%s: %s), retrying in %.1fs",
+                        msg_id,
+                        attempt + 1,
+                        type(e).__name__,
+                        e,
+                        delay,
+                    )
                     await asyncio.sleep(delay)
             return None
         finally:

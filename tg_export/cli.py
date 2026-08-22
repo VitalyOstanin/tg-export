@@ -196,27 +196,46 @@ _LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
 DEFAULT_MESSAGE_TEXT_LENGTH = 200
 
 
-def _resolve_log_level(debug: bool, log_level: str | None) -> int:
-    """Resolve the effective log level.
+def _resolve_log_level(debug: bool, log_level: str | None) -> tuple[int, bool]:
+    """Resolve the effective log level and whether libraries share it.
 
     Priority (highest first): --debug flag, --log-level flag, LOG_LEVEL env var,
     default WARNING. --debug always wins so it stays a quick "show me everything"
-    switch regardless of the environment.
+    switch regardless of the environment. A trailing ``:all`` (``DEBUG:all``)
+    additionally lifts the libraries off their WARNING floor.
     """
     import os
 
+    raw = log_level or os.environ.get("LOG_LEVEL") or ""
+    include_libraries = raw.strip().upper().endswith(_ALL_SUFFIX)
     if debug:
-        return logging.DEBUG
-    raw = log_level or os.environ.get("LOG_LEVEL")
+        return logging.DEBUG, include_libraries
     if not raw:
-        return logging.WARNING
+        return logging.WARNING, False
     name = raw.strip().upper()
+    if include_libraries:
+        name = name[: -len(_ALL_SUFFIX)]
     if name not in _LOG_LEVELS:
         raise click.BadParameter(
-            f"unknown log level {raw!r}; expected one of {', '.join(_LOG_LEVELS)}",
+            f"unknown log level {raw!r}; expected one of {', '.join(_LOG_LEVELS)}"
+            f" (append '{_ALL_SUFFIX.lower()}' to include the libraries)",
             param_hint="--log-level",
         )
-    return getattr(logging, name)
+    return getattr(logging, name), include_libraries
+
+
+# Libraries whose own debug stream would bury ours: telethon logs every MTProto
+# packet, aiosqlite every statement. --debug means "show me everything tg-export
+# knows", so their level is set independently of ours; LOG_LEVEL=DEBUG:all (or
+# --log-level DEBUG:all) is what turns the libraries on as well.
+_THIRD_PARTY_LOGGERS = ("telethon", "aiosqlite")
+_ALL_SUFFIX = ":ALL"
+
+
+def _quiet_third_party_loggers(level: int, *, include_libraries: bool = False) -> None:
+    """Hold third-party loggers at WARNING unless the caller asked for them."""
+    for name in _THIRD_PARTY_LOGGERS:
+        logging.getLogger(name).setLevel(level if include_libraries else max(level, logging.WARNING))
 
 
 @click.group()
@@ -225,7 +244,10 @@ def _resolve_log_level(debug: bool, log_level: str | None) -> int:
 @click.option(
     "--log-level",
     default=None,
-    help="Log level (DEBUG/INFO/WARNING/ERROR/CRITICAL). Overrides the LOG_LEVEL env var; --debug overrides this.",
+    help=(
+        "Log level (DEBUG/INFO/WARNING/ERROR/CRITICAL). Overrides the LOG_LEVEL env var; "
+        "--debug overrides this. Append ':all' (DEBUG:all) to include telethon and aiosqlite."
+    ),
 )
 @click.option(
     "--quiet",
@@ -241,15 +263,14 @@ def main(ctx, debug, log_level, quiet):
 
     from tg_export.exporter import console as export_console
 
-    level = _resolve_log_level(debug, log_level)
+    level, include_libraries = _resolve_log_level(debug, log_level)
 
     logging.basicConfig(
         level=level,
         format="%(name)s %(message)s",
         handlers=[RichHandler(console=export_console, rich_tracebacks=True, show_path=debug)],
     )
-    if level > logging.DEBUG:
-        logging.getLogger("aiosqlite").setLevel(logging.ERROR)
+    _quiet_third_party_loggers(level, include_libraries=include_libraries)
     global _QUIET, _DEBUG
     _QUIET = quiet
     _DEBUG = debug
@@ -1031,8 +1052,29 @@ async def _print_export_summary(stats, state, output_base: Path, *, takeout_acti
     total_disk = await asyncio.to_thread(_get_dir_size, output_base)
     if total_disk is not None:
         _diag(f"  Export size on disk: {format_size(total_disk)}", essential=True)
-    if stats.errors:
-        _diag(f"  Errors: {len(stats.errors)}", essential=True)
+    _print_export_errors(stats.errors)
+
+
+# How many failures the summary spells out before switching to a count. A run
+# that failed on hundreds of files would otherwise scroll the summary itself
+# out of the terminal; the full set is in the log, one warning per failure.
+_SUMMARY_ERROR_LIMIT = 10
+
+
+def _print_export_errors(errors) -> None:
+    """Print the failures behind the counter.
+
+    The list was collected and thrown away: `Errors: 137` told the user that
+    the export is incomplete and nothing about what was missing.
+    """
+    if not errors:
+        return
+    _diag(f"  Errors: {len(errors)}", essential=True)
+    for error in errors[:_SUMMARY_ERROR_LIMIT]:
+        _diag(f"    {error}", essential=True)
+    hidden = len(errors) - _SUMMARY_ERROR_LIMIT
+    if hidden > 0:
+        _diag(f"    ... and {hidden} more (see the log)", essential=True)
 
 
 async def _run_export(
@@ -1934,4 +1976,14 @@ def run_cli() -> None:
         if _DEBUG:
             raise
         click.echo(f"Error: {e}", err=True)
+        raise SystemExit(EXIT_FAILURE) from e
+    except Exception as e:
+        # Everything outside the domain hierarchy -- telethon, sqlite, sockets.
+        # Such an exception used to print a full traceback, and during an export
+        # it landed on top of the live progress widget: a network failure read
+        # as a broken tool.
+        if _DEBUG:
+            raise
+        click.echo(f"Error: {type(e).__name__}: {e}", err=True)
+        click.echo("Run with --debug for the full traceback.", err=True)
         raise SystemExit(EXIT_FAILURE) from e

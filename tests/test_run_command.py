@@ -228,3 +228,26 @@ def test_service_messages_are_skipped_when_the_option_says_so(tmp_path):
     assert kept is True
     assert dropped is False
     assert both is True
+
+
+def test_the_summary_shows_what_the_errors_were(run_env):
+    """«Errors: 137» без единой строки причины не поддаётся расследованию."""
+    run_env.stats.errors.extend([f"Media error msg {i}: OSError: connection dropped" for i in range(3)])
+
+    result = CliRunner().invoke(main, ["run"])
+
+    assert result.exit_code == 1
+    assert "Errors: 3" in result.output
+    assert result.output.count("connection dropped") == 3, result.output
+
+
+def test_a_long_list_of_errors_is_cut_with_a_count_of_the_rest(run_env):
+    """Полный список на сотни строк смыл бы саму сводку."""
+    run_env.stats.errors.extend([f"error {i}" for i in range(25)])
+
+    result = CliRunner().invoke(main, ["run"])
+
+    assert "Errors: 25" in result.output
+    assert "error 0" in result.output
+    assert "error 24" not in result.output
+    assert "15 more" in result.output, result.output
