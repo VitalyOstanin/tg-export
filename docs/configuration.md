@@ -98,8 +98,10 @@ proxy:
 Для работы прокси необходимо установить дополнительную зависимость:
 
 ```bash
-uv pip install "tg-export[proxy]"
+pip install "tg-export[proxy]"
 ```
+
+При работе из исходников тот же набор ставится командой `uv sync --extra proxy`.
 
 ### min_free_space
 

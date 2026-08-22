@@ -60,25 +60,39 @@ pip install tg-export
 Для работы через прокси:
 
 ```bash
-pip install tg-export[proxy]
+pip install "tg-export[proxy]"
 ```
 
-Из исходников (для конечного использования):
+Кавычки нужны в zsh: без них квадратные скобки трактуются как шаблон имени файла.
+
+Из исходников:
 
 ```bash
-uv pip install -e .
+git clone https://github.com/VitalyOstanin/tg-export.git
+cd tg-export
+uv sync
 ```
 
-Для разработки используйте `uv sync --extra dev` (синхронизация по `uv.lock` с dev-зависимостями) -- см. раздел [Разработка](#разработка).
+`uv sync` создаёт окружение `.venv` и ставит в него проект с зависимостями; команды
+после этого запускаются как `uv run tg-export ...` из каталога проекта. Отдельная
+`uv pip install -e .` окружения не создаёт и на свежем клоне завершается ошибкой
+`No virtual environment found` -- ей нужен предварительный `uv venv`.
+
+Для разработки -- `uv sync --extra dev` (то же плюс dev-зависимости), см. раздел
+[Разработка](#разработка).
 
 ## Быстрый старт
+
+Примеры ниже записаны для пакета, установленного из PyPI: исполняемый файл `tg-export`
+доступен в PATH. При работе из исходников те же команды запускаются с префиксом:
+`uv run tg-export ...` из каталога проекта.
 
 ### 1. Получить API credentials
 
 Зайти на [my.telegram.org](https://my.telegram.org), создать приложение, получить `api_id` и `api_hash`.
 
 ```bash
-uv run tg-export auth credentials
+tg-export auth credentials
 ```
 
 Ввести `api_id` и `api_hash`. Они сохраняются в `~/.config/tg-export/api_credentials.yaml` и используются для всех аккаунтов.
@@ -99,7 +113,7 @@ proxy:
 ### 3. Залогиниться в Telegram
 
 ```bash
-uv run tg-export auth add --name myaccount
+tg-export auth add --name myaccount
 ```
 
 Ввести номер телефона и код подтверждения. Сессия сохранится в `~/.config/tg-export/sessions/myaccount.session`.
@@ -107,7 +121,7 @@ uv run tg-export auth add --name myaccount
 Для нескольких аккаунтов повторить с разными именами. Установить аккаунт по умолчанию:
 
 ```bash
-uv run tg-export account default myaccount
+tg-export account default myaccount
 ```
 
 ### 4. Анализ чатов и каталог
@@ -115,23 +129,23 @@ uv run tg-export account default myaccount
 Получить каталог всех чатов аккаунта:
 
 ```bash
-uv run tg-export list --output catalog.yaml
-uv run tg-export list --format json --output catalog.json
+tg-export list --output catalog.yaml
+tg-export list --format json --output catalog.json
 ```
 
 Посмотреть информацию о конкретных чатах (количество сообщений, последние сообщения):
 
 ```bash
-uv run tg-export tg info 123456789 987654321
-uv run tg-export tg info --from-catalog catalog.json --type personal --last 3
+tg-export tg info 123456789 987654321
+tg-export tg info --from-catalog catalog.json --type personal --last 3
 ```
 
 Посмотреть последние сообщения чата. Текст по умолчанию обрезается до 200 символов; `--truncate N` задаёт другую длину, `--truncate 0` и `--no-truncate` печатают текст целиком:
 
 ```bash
-uv run tg-export tg messages 123456789 -n 5
-uv run tg-export tg messages 123456789 -n 5 --truncate 1000
-uv run tg-export tg messages 123456789 -n 5 --no-truncate
+tg-export tg messages 123456789 -n 5
+tg-export tg messages 123456789 -n 5 --truncate 1000
+tg-export tg messages 123456789 -n 5 --no-truncate
 ```
 
 ### 5. Настройка правил экспорта
@@ -139,7 +153,7 @@ uv run tg-export tg messages 123456789 -n 5 --no-truncate
 Сгенерировать шаблон конфига:
 
 ```bash
-uv run tg-export init
+tg-export init
 ```
 
 Конфиг создается в `~/.config/tg-export/myaccount.yaml`. Настроить правила: какие чаты экспортировать, какие пропускать, какие типы медиа скачивать.
@@ -197,13 +211,13 @@ unmatched:
 ### 6. Запустить экспорт
 
 ```bash
-uv run tg-export run
+tg-export run
 ```
 
 Для пробного запуска без скачивания:
 
 ```bash
-uv run tg-export run --dry-run
+tg-export run --dry-run
 ```
 
 При повторном запуске скачиваются только новые сообщения (инкрементальный экспорт).
@@ -216,7 +230,7 @@ uv run tg-export run --dry-run
 ошибкой, а не переходом на обычный API:
 
 ```bash
-uv run tg-export run --require-takeout
+tg-export run --require-takeout
 ```
 
 Takeout-сессия живёт между запусками: по окончании экспорта она не завершается,
@@ -228,7 +242,7 @@ Takeout-сессия живёт между запусками: по оконча
 Завершить сессию явно:
 
 ```bash
-uv run tg-export takeout clear
+tg-export takeout clear
 ```
 
 ### 7. Sibling-дедупликация
@@ -290,7 +304,7 @@ export_output/
 
 ## Глобальные опции
 
-Опции указываются до подкоманды (`uv run tg-export <опция> <команда>`):
+Опции указываются до подкоманды (`tg-export <опция> <команда>`):
 
 | Опция               | Назначение                                                                                  |
 | ------------------- | ------------------------------------------------------------------------------------------- |
@@ -300,7 +314,7 @@ export_output/
 
 Приоритет уровня логирования (по убыванию): `--debug` > `--log-level` > переменная окружения `LOG_LEVEL` > значение по умолчанию `WARNING`.
 
-Потоки вывода: машиночитаемый вывод команд `list`, `state show`, `tg info`, `tg messages` идёт в stdout; прогресс, статусы, диагностика и ошибки — в stderr. Это позволяет безопасно использовать пайпинг, например `uv run tg-export list --format json | jq ...`.
+Потоки вывода: машиночитаемый вывод команд `list`, `state show`, `tg info`, `tg messages` идёт в stdout; прогресс, статусы, диагностика и ошибки — в stderr. Это позволяет безопасно использовать пайпинг, например `tg-export list --format json | jq ...`.
 
 Флаг `--json` для машиночитаемого вывода поддерживают команды `account list`, `auth check` и `state show`. В этом режиме в stdout печатается только JSON.
 
