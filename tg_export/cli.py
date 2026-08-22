@@ -9,7 +9,7 @@ import click
 import yaml
 
 from tg_export.auth import AccountManager
-from tg_export.errors import TgExportError
+from tg_export.errors import TakeoutUnavailableError, TgExportError
 
 logger = logging.getLogger(__name__)
 
@@ -745,16 +745,87 @@ def _get_dir_size(path: Path) -> int | None:
 @click.option("--output", type=click.Path(), help="Override output directory")
 @click.option("--verify", is_flag=True, help="Verify file integrity after export")
 @click.option("--dry-run", is_flag=True, help="Show what would be exported")
+@click.option(
+    "--require-takeout",
+    is_flag=True,
+    help="Fail instead of falling back to the regular API when Takeout cannot be started.",
+)
 @click.pass_context
-def run_export(ctx, account, config, output, verify, dry_run):
+def run_export(ctx, account, config, output, verify, dry_run, require_takeout):
     """Run export according to config. Config resolved by account name convention."""
     quiet = bool(ctx.obj and ctx.obj.get("quiet"))
-    exit_code = asyncio.run(_run_export(account, config, output, verify, dry_run, quiet=quiet))
+    exit_code = asyncio.run(
+        _run_export(
+            account,
+            config,
+            output,
+            verify,
+            dry_run,
+            quiet=quiet,
+            require_takeout=require_takeout,
+        )
+    )
     if exit_code:
         raise click.exceptions.Exit(exit_code)
 
 
-async def _run_export(account, config_override, output_override, verify, dry_run, quiet=False):
+async def _start_takeout(api, cfg, *, require: bool) -> bool:
+    """Open a Takeout session, or report why the export falls back without one.
+
+    Returns True when Takeout is active. A fall back is announced as an
+    essential message: it changes how the whole export is fetched, so it must
+    stay visible under --quiet. With ``require`` set the fall back becomes a
+    hard error instead.
+
+    Only failures that legitimately mean "no Takeout right now" are handled --
+    Telegram RPC errors, the ValueError Telethon raises for an unfinished
+    takeout, and connection failures. Anything else (a TypeError from a corrupt
+    takeout_id, say) is a defect and must not be hidden behind a fall back.
+    """
+    from telethon.errors import RPCError, TakeoutInitDelayError
+
+    try:
+        await api.start_takeout(
+            contacts=cfg.contacts,
+            users=True,
+            chats=True,
+            megagroups=True,
+            channels=True,
+            files=True,
+            max_file_size=cfg.defaults.media.max_file_size_bytes,
+        )
+    except TakeoutInitDelayError as e:
+        hours = e.seconds // 3600
+        minutes = (e.seconds % 3600) // 60
+        reason = (
+            f"Takeout cooldown: need to wait {hours}h {minutes}m ({e.seconds}s). "
+            f"Approve takeout in your Telegram client to skip the wait."
+        )
+    except (RPCError, ValueError, OSError) as e:
+        reason = f"Takeout not available: {e}"
+    else:
+        _diag("Takeout session started.")
+        return True
+
+    if require:
+        raise TakeoutUnavailableError(f"{reason} Takeout was required (--require-takeout).")
+    _diag(
+        f"{reason} Using regular API: the export continues, but it is slower "
+        f"and subject to the usual rate limits.",
+        essential=True,
+    )
+    return False
+
+
+async def _run_export(
+    account,
+    config_override,
+    output_override,
+    verify,
+    dry_run,
+    quiet=False,
+    require_takeout=False,
+):
     from tg_export.api import TgApi
     from tg_export.catalog import fetch_catalog
     from tg_export.config import load_config
@@ -792,30 +863,7 @@ async def _run_export(account, config_override, output_override, verify, dry_run
 
     exporter = None
     try:
-        # Start takeout if possible
-        from telethon.errors import TakeoutInitDelayError
-
-        try:
-            await api.start_takeout(
-                contacts=cfg.contacts,
-                users=True,
-                chats=True,
-                megagroups=True,
-                channels=True,
-                files=True,
-                max_file_size=cfg.defaults.media.max_file_size_bytes,
-            )
-            _diag("Takeout session started.")
-        except TakeoutInitDelayError as e:
-            hours = e.seconds // 3600
-            minutes = (e.seconds % 3600) // 60
-            _diag(
-                f"Takeout cooldown: need to wait {hours}h {minutes}m "
-                f"({e.seconds}s). Approve takeout in your Telegram client "
-                f"to skip the wait. Using regular API for now."
-            )
-        except Exception as e:
-            _diag(f"Takeout not available: {e}. Using regular API.")
+        takeout_active = await _start_takeout(api, cfg, require=require_takeout)
 
         # Setup renderer
         renderer = HtmlRenderer(output_dir=output_base, config=cfg.output)
@@ -883,6 +931,13 @@ async def _run_export(account, config_override, output_override, verify, dry_run
             from tg_export.exporter import _format_size
 
             _diag("\nExport complete:", essential=True)
+            # Which API served the export decides how complete and how fast it
+            # was, so it belongs in the summary rather than only in a line
+            # printed at start-up and long scrolled away.
+            _diag(
+                f"  API: {'takeout' if takeout_active else 'regular (no takeout)'}",
+                essential=True,
+            )
             _diag(
                 f"  Chats: {stats.chats_exported}/{stats.chats_included} (skipped {stats.chats_skipped})",
                 essential=True,

@@ -11,3 +11,12 @@ from __future__ import annotations
 
 class TgExportError(Exception):
     """Base class for all tg-export domain errors."""
+
+
+class TakeoutUnavailableError(TgExportError):
+    """Takeout could not be started while it was required.
+
+    Raised only when the caller asked for Takeout explicitly (``run
+    --require-takeout``): without that flag an unavailable Takeout is reported
+    and the export falls back to the regular API.
+    """
