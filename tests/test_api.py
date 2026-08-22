@@ -1,3 +1,4 @@
+import logging
 import sqlite3
 from unittest.mock import AsyncMock, MagicMock, call
 
@@ -276,6 +277,78 @@ def test_fixed_sqlite_session_recovers_after_crash_between_clear_and_restore(tmp
     sess = FixedSQLiteSession(str(sp))
     try:
         assert sess.takeout_id == 555
+    finally:
+        sess.close()
+
+
+def _open_session_capturing_logs(path, caplog, level=logging.INFO):
+    """Open the session and return the log records it emitted at `level`+."""
+    caplog.clear()
+    with caplog.at_level(level, logger="tg_export.session"):
+        sess = FixedSQLiteSession(str(path))
+        sess.close()
+    return [r for r in caplog.records if r.name == "tg_export.session"]
+
+
+def test_healthy_session_start_says_nothing(tmp_path, caplog):
+    """Исправный запуск должен молчать.
+
+    Telethon при `store_tmp_auth_key_on_disk=False` пишет в tmp_auth_key `b''`,
+    поэтому признак «в строке что-то есть» истинен всегда, и сообщение о
+    восстановлении печаталось на каждом запуске -- при том что восстанавливать
+    было нечего.
+    """
+    sp = tmp_path / "healthy.session"
+    _make_session_v8(sp, takeout_id=None, tmp_auth_value=b"")
+
+    records = _open_session_capturing_logs(sp, caplog)
+
+    assert [r.getMessage() for r in records] == []
+
+
+def test_real_takeout_id_is_reported_with_its_value(tmp_path, caplog):
+    """Перенос настоящего takeout_id -- единственное состояние, о котором стоит
+    сообщать, и сообщение должно называть сам идентификатор."""
+    sp = tmp_path / "live.session"
+    _make_session_v8(sp, takeout_id=777, tmp_auth_value=b"")
+
+    records = _open_session_capturing_logs(sp, caplog)
+
+    messages = [r.getMessage() for r in records]
+    assert len(messages) == 1, messages
+    assert "777" in messages[0]
+    assert not [r for r in records if r.levelno >= logging.WARNING]
+
+
+def test_empty_placeholder_is_not_called_unexpected(tmp_path, caplog):
+    """`b''` в позиции takeout_id -- задокументированный след ошибки Telethon,
+    а не аномалия: предупреждать о нём значит называть неожиданным то, что
+    модуль сам описывает как ожидаемое."""
+    sp = tmp_path / "placeholder.session"
+    _make_session_v8(sp, takeout_id=b"", tmp_auth_value=b"")
+
+    records = _open_session_capturing_logs(sp, caplog, level=logging.DEBUG)
+
+    warnings = [r.getMessage() for r in records if r.levelno >= logging.WARNING]
+    assert warnings == [], warnings
+
+
+def test_unusable_takeout_id_names_the_place_it_came_from(tmp_path, caplog):
+    """Настоящая аномалия должна остаться предупреждением и указать, откуда
+    взято значение: строка сессии или отложенная копия. Без этого разовая
+    санация не отличается от повреждения, возникающего снова и снова."""
+    sp = tmp_path / "broken.session"
+    _make_session_v8(sp, takeout_id=b"\x01\x02", tmp_auth_value=b"")
+
+    records = _open_session_capturing_logs(sp, caplog)
+
+    warnings = [r.getMessage() for r in records if r.levelno >= logging.WARNING]
+    assert len(warnings) == 1, warnings
+    assert "sessions" in warnings[0], warnings[0]
+
+    sess = FixedSQLiteSession(str(sp))
+    try:
+        assert sess.takeout_id is None
     finally:
         sess.close()
 
