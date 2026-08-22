@@ -73,6 +73,12 @@ def _to_str(val: Any) -> str | None:
 # Entity type mapping
 # ---------------------------------------------------------------------------
 
+# Dispatch here and below goes by class name rather than by isinstance, so this
+# module never imports TL classes and survives their absence in another
+# Telethon version. The flip side is that a rename upstream raises nothing at
+# all -- it just routes the value into the unknown branch. Every name used that
+# way is checked against telethon.tl.types by
+# tests/test_telethon_contract.py.
 ENTITY_MAP = {
     "MessageEntityBold": TextType.bold,
     "MessageEntityItalic": TextType.italic,

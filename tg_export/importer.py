@@ -10,8 +10,12 @@ from tg_export.config import ImportExistingEntry
 
 logger = logging.getLogger(__name__)
 
-# Media subdirs in tdesktop HTML export
-_TDESKTOP_MEDIA_SUBDIRS = {
+# Media subdirs in tdesktop HTML export. A tuple, not a set: the order of the
+# alternatives below is the order of iteration, and a set orders its strings by
+# hash -- which PYTHONHASHSEED randomises per process. The pattern would then
+# differ from run to run, so any failure that depended on it would reproduce
+# only sometimes.
+_TDESKTOP_MEDIA_SUBDIRS = (
     "photos",
     "files",
     "video_files",
@@ -19,7 +23,7 @@ _TDESKTOP_MEDIA_SUBDIRS = {
     "video_messages",
     "stickers",
     "gifs",
-}
+)
 
 # Regex patterns for tdesktop HTML parsing
 _MSG_ID_RE = re.compile(r'id="message(\d+)"')
