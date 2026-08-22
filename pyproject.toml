@@ -89,5 +89,16 @@ reportOptionalMemberAccess = "warning"
 [tool.setuptools.packages.find]
 include = ["tg_export*"]
 
+# Without this the wheel carries only *.py: the Jinja templates and the static
+# assets the renderer copies next to the export would be missing, and `run`
+# would fail with TemplateNotFound on any pip-installed copy.
+[tool.setuptools.package-data]
+"tg_export.html" = [
+    "templates/*.j2",
+    "static/css/*.css",
+    "static/js/*.js",
+    "static/images/*.svg",
+]
+
 [project.scripts]
 tg-export = "tg_export.cli:run_cli"

@@ -39,12 +39,20 @@ jobs:
 
       - name: Smoke test built wheel
         # Установить собранный wheel в изолированное эфемерное окружение и
-        # убедиться, что точка входа запускается, до публикации на PyPI.
+        # убедиться, что он не только запускается, но и умеет рендерить.
+        # Why not just --version: точка входа стартует и на пакете, куда не
+        # попали Jinja-шаблоны и статика, а экспорт в такой сборке падает с
+        # TemplateNotFound. Скрипт компилирует все шаблоны и рендерит index.
+        # Why cd: из корня репозитория импортировался бы исходный tg_export,
+        # а не установленный, и проверка стала бы бессмысленной.
         run: |
           set -euo pipefail
-          WHEEL=$(ls dist/*.whl)
+          WHEEL=$(ls "$PWD"/dist/*.whl)
+          SCRIPT="$PWD/scripts/smoke_installed_package.py"
           uv run --no-project --with "$WHEEL" tg-export --version
           uv run --no-project --with "$WHEEL" tg-export --help
+          cd "$(mktemp -d)"
+          uv run --no-project --with "$WHEEL" python "$SCRIPT"
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # v1.14.0

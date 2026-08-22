@@ -101,3 +101,44 @@ def test_exporter_imports_rich_escape():
     assert re.search(r"from rich\.markup import\b.*\bescape\b", src), (
         "exporter.py должен импортировать escape из rich.markup для эскейпа имён чатов/файлов"
     )
+
+
+def test_every_package_data_file_is_declared_for_packaging():
+    """Каждый не-.py файл пакета должен попадать в дистрибутив.
+
+    Без [tool.setuptools.package-data] в колесо уходят только *.py, и любой
+    экспорт после pip install падает с TemplateNotFound. Тест сверяет фактические
+    файлы данных с шаблонами, объявленными в pyproject.toml, чтобы новый тип
+    ресурса (шрифт, favicon) не выпал из сборки молча.
+    """
+    import fnmatch
+    import tomllib
+
+    root = PROJECT.parent
+    with (root / "pyproject.toml").open("rb") as fh:
+        pyproject = tomllib.load(fh)
+
+    package_data = pyproject["tool"]["setuptools"]["package-data"]
+    data_files = [
+        p for p in PROJECT.rglob("*") if p.is_file() and p.suffix != ".py" and "__pycache__" not in p.parts
+    ]
+    assert data_files, "в пакете не найдено файлов данных — проверьте раскладку"
+
+    undeclared = []
+    for path in data_files:
+        rel_to_package = path.relative_to(PROJECT)
+        covered = False
+        for package, patterns in package_data.items():
+            package_dir = PROJECT.joinpath(*package.split(".")[1:])
+            if package_dir not in path.parents:
+                continue
+            rel = path.relative_to(package_dir).as_posix()
+            if any(fnmatch.fnmatch(rel, pattern) for pattern in patterns):
+                covered = True
+                break
+        if not covered:
+            undeclared.append(rel_to_package.as_posix())
+
+    assert not undeclared, (
+        f"файлы данных не объявлены в [tool.setuptools.package-data] и не попадут в дистрибутив: {undeclared}"
+    )
