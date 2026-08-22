@@ -569,7 +569,9 @@ class HtmlRenderer:
             return ""
         parts = ['<div class="reactions">']
         for r in msg.reactions:
-            label = r.emoji or "star"
+            # The emoji comes from Telegram and can be any string, custom
+            # emoji included; it was the only unescaped substitution here.
+            label = escape(r.emoji) if r.emoji else "star"
             parts.append(f'<span class="reaction">{label} <span class="count">{r.count}</span></span>')
         parts.append("</div>")
         return "\n".join(parts)
@@ -583,7 +585,11 @@ class HtmlRenderer:
             for btn in row:
                 text = escape(btn.text)
                 if btn.data and btn.type.value == "url":
-                    parts.append(f'<a class="btn" href="{escape(btn.data)}" target="_blank">{text}</a>')
+                    # _safe_href, as the template path does: escaping alone
+                    # leaves javascript: intact, and the button runs it when
+                    # the exported page is opened.
+                    href = escape(_safe_href(btn.data))
+                    parts.append(f'<a class="btn" href="{href}" target="_blank">{text}</a>')
                 else:
                     parts.append(f'<span class="btn">{text}</span>')
             parts.append("</div>")

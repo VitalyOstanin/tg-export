@@ -270,3 +270,47 @@ def test_render_album(renderer):
     html = renderer.render_album(msgs)
     assert 'class="message"' in html
     assert "Album" in html
+
+
+def test_inline_button_url_goes_through_the_scheme_filter(renderer):
+    """URL кнопки подставлялся в готовый HTML без проверки схемы, тогда как
+    шаблонный путь такую проверку делает: javascript: в кнопке выполнялся при
+    нажатии на неё в открытой странице выгрузки."""
+    from tg_export.models import InlineButton, InlineButtonType
+
+    msg = _make_msg(text="see below")
+    msg.inline_buttons = [[InlineButton(type=InlineButtonType.url, text="Click", data="javascript:alert(1)")]]
+
+    html = renderer._render_buttons(msg)
+
+    assert "javascript:" not in html, html
+    assert 'href="#"' in html, html
+
+
+def test_inline_button_keeps_an_ordinary_url(renderer):
+    from tg_export.models import InlineButton, InlineButtonType
+
+    msg = _make_msg(text="see below")
+    msg.inline_buttons = [
+        [InlineButton(type=InlineButtonType.url, text="Click", data="https://example.com/a?b=1")]
+    ]
+
+    html = renderer._render_buttons(msg)
+
+    assert 'href="https://example.com/a?b=1"' in html, html
+
+
+def test_reaction_label_is_escaped(renderer):
+    """Текст реакции -- единственная неэкранированная подстановка модуля.
+    Пользовательские эмодзи приходят из Telegram и подставлялись как есть."""
+    from tg_export.models import Reaction, ReactionType
+
+    msg = _make_msg()
+    msg.reactions = [
+        Reaction(type=ReactionType.emoji, emoji="<img src=x onerror=alert(1)>", document_id=None, count=2)
+    ]
+
+    html = renderer._render_reactions(msg)
+
+    assert "<img" not in html, html
+    assert "&lt;img" in html, html
