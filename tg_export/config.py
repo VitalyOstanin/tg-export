@@ -182,7 +182,12 @@ class Config:
         Priority: chats > folders.chats > folders > type_rules > defaults.
         Returns None if the chat should be skipped.
         """
-        # Priority 1: explicit chats section
+        # Priority 1: explicit chats section.
+        # A linear scan on purpose: the section is written by hand and holds
+        # tens of rules at most, the method runs once per chat rather than per
+        # message, and an index would have to be invalidated whenever the
+        # (mutable) rule list changes -- more machinery than the microseconds
+        # it would save.
         for rule in self.chats:
             if rule.id is not None and rule.id == chat_id:
                 return self._rule_to_export_config(rule)

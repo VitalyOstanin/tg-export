@@ -10,7 +10,7 @@ from collections.abc import Callable
 from datetime import datetime
 from html import escape
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from markupsafe import Markup
@@ -175,8 +175,9 @@ class HtmlRenderer:
         for old in chat_dir.glob("messages*.html"):
             old.unlink()
 
+        anchors = _PathAnchors.for_chat(chat_dir)
         for msg in messages:
-            _fix_media_path(msg, chat_dir)
+            _fix_media_path(msg, chat_dir, anchors)
 
         processed = _group_albums(messages)
 
@@ -245,6 +246,7 @@ class HtmlRenderer:
         pages_info = self._build_pages_info(sorted(month_keys))
         rel = _relative_path(chat_dir, self.output_dir)
         template = self.env.get_template("chat.html.j2")
+        anchors = _PathAnchors.for_chat(chat_dir)
 
         aborted = False
         for page_idx, pinfo in enumerate(pages_info):
@@ -253,7 +255,7 @@ class HtmlRenderer:
                 break
             messages = load_month(pinfo["key"])
             for msg in messages:
-                _fix_media_path(msg, chat_dir)
+                _fix_media_path(msg, chat_dir, anchors)
             processed = _group_albums(messages)
             items = self._build_items(processed)
             self._render_page(
@@ -540,7 +542,24 @@ def _relative_path(from_dir: Path, to_dir: Path) -> str:
         return str(to_dir)
 
 
-def _fix_media_path(msg: Message, chat_dir: Path):
+class _PathAnchors(NamedTuple):
+    """The two paths a relative media path is measured against.
+
+    Both are the same for every message of a chat, and both cost a filesystem
+    call: `Path.cwd()` and `Path.resolve()` were made per message, so a chat of
+    a hundred thousand messages asked the filesystem two hundred thousand times
+    for one pair of values.
+    """
+
+    cwd: Path
+    chat_root: Path
+
+    @classmethod
+    def for_chat(cls, chat_dir: Path) -> _PathAnchors:
+        return cls(Path.cwd(), chat_dir.resolve())
+
+
+def _fix_media_path(msg: Message, chat_dir: Path, anchors: _PathAnchors):
     """Make media local_path relative to chat_dir for correct HTML references."""
     media = msg.media
     if media is None:
@@ -556,8 +575,8 @@ def _fix_media_path(msg: Message, chat_dir: Path):
         # Relative path like "export_output/account/unfiled/Chat_123/photos/file.jpg"
         # Try to find chat_dir suffix in the path
         try:
-            resolved = Path.cwd() / p
-            file_obj.local_path = str(resolved.relative_to(chat_dir.resolve()))
+            resolved = anchors.cwd / p
+            file_obj.local_path = str(resolved.relative_to(anchors.chat_root))
         except ValueError:
             # Last resort: just keep the filename parts after the media subdir
             media_subdirs = set(MEDIA_SUBDIRS.values())

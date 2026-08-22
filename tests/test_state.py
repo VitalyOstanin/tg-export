@@ -587,3 +587,49 @@ async def test_search_can_be_limited(state):
     results = await state.search_messages(chat_id=123, text_query="Привет", limit=2)
 
     assert [m.id for m in results] == [1, 2]
+
+
+def test_month_reader_serves_the_whole_chat_from_one_connection(tmp_path):
+    """Рендер чата читает месяцы через одно соединение, а не открывает его на каждый.
+
+    Открытие стоит обращения к файлу, чтения схемы и холодного кэша страниц, а
+    прагмы (cache_size, mmap_size, temp_store) задаются соединению, не базе: у
+    чата с сотнями месяцев каждое такое соединение не успевало ничего накопить.
+    """
+    import asyncio
+    import sqlite3
+    from datetime import UTC, datetime
+
+    from tg_export.state import ExportState, month_reader
+
+    db_path = tmp_path / "state.db"
+
+    async def fill():
+        async with ExportState(db_path) as state:
+            await state.store_messages_batch(
+                [
+                    _make_msg(msg_id=1, chat_id=10, date=datetime(2024, 1, 5, tzinfo=UTC)),
+                    _make_msg(msg_id=2, chat_id=10, date=datetime(2024, 2, 7, tzinfo=UTC)),
+                ]
+            )
+
+    asyncio.run(fill())
+
+    opened: list[str] = []
+    real_connect = sqlite3.connect
+
+    def counting_connect(*args, **kwargs):
+        opened.append(str(args[0]) if args else "")
+        return real_connect(*args, **kwargs)
+
+    sqlite3.connect = counting_connect
+    try:
+        with month_reader(db_path, 10) as load_month:
+            january = load_month("2024-01")
+            february = load_month("2024-02")
+    finally:
+        sqlite3.connect = real_connect
+
+    assert [m.id for m in january] == [1]
+    assert [m.id for m in february] == [2]
+    assert len(opened) == 1, f"на чат должно открываться одно соединение, открыто: {opened}"

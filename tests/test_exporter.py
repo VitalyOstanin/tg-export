@@ -158,3 +158,34 @@ def test_per_chat_counts_only_what_the_current_chat_added():
     assert stats.per_chat.files_downloaded == 2
     assert stats.per_chat.data_size == 100
     assert stats.files_downloaded == 9
+
+
+@pytest.mark.asyncio
+async def test_message_count_is_recounted_only_when_something_was_written():
+    """COUNT(*) по чату линеен по его размеру, а прогон без записей его не меняет.
+
+    Счётчик снимается в начале каждого чата; повторный подсчёт в конце нужен
+    только там, где сообщения действительно добавились.
+    """
+    from tg_export.exporter import ExportStats
+
+    state = AsyncMock()
+    state.count_messages = AsyncMock(return_value=999)
+    exporter = Exporter(
+        api=AsyncMock(),
+        state=state,
+        config=MagicMock(),
+        renderer=MagicMock(),
+        downloader=AsyncMock(),
+        account="test",
+    )
+
+    stats = ExportStats()
+    stats.begin_chat(messages_in_db=42, messages_total=42)
+
+    assert await exporter._chat_message_count(10, stats) == 42
+    state.count_messages.assert_not_called()
+
+    stats.messages_exported += 3
+    assert await exporter._chat_message_count(10, stats) == 999
+    state.count_messages.assert_awaited_once_with(10)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import sqlite3
@@ -42,6 +43,17 @@ logger = logging.getLogger(__name__)
 # database already considered that too little: a writer holds the lock for
 # seconds on a large batch. One constant so every connection waits the same.
 DB_TIMEOUT_SECONDS = 30.0
+
+# Pragmas that make sense for any connection to this database, reading or
+# writing: they size the cache and keep temporaries in memory. Declared once so
+# that the read-only connection of the renderer gets the same treatment as the
+# main one -- it used to get none.
+_READER_PRAGMAS = (
+    f"PRAGMA busy_timeout = {int(DB_TIMEOUT_SECONDS * 1000)}",
+    "PRAGMA temp_store = MEMORY",
+    "PRAGMA cache_size = -65536",
+    "PRAGMA mmap_size = 268435456",
+)
 
 
 def _now() -> datetime:
@@ -201,29 +213,40 @@ def _row_to_message(row: dict[str, Any]) -> Message:
     )
 
 
-def _load_messages_for_month_sync(db_path: Path, chat_id: int, month_key: str) -> list[Message]:
-    """Synchronous month loader for use inside asyncio.to_thread workers.
+def _load_month(db: sqlite3.Connection, chat_id: int, month_key: str) -> list[Message]:
+    """Read one month of a chat from an already open connection."""
+    if month_key == "0000-00":
+        cur = db.execute(
+            "SELECT * FROM messages WHERE chat_id=? AND date IS NULL ORDER BY msg_id",
+            (chat_id,),
+        )
+    else:
+        start, end = _month_range(month_key)
+        cur = db.execute(
+            "SELECT * FROM messages WHERE chat_id=? AND date >= ? AND date < ? ORDER BY msg_id",
+            (chat_id, start, end),
+        )
+    return [_row_to_message(dict(r)) for r in cur.fetchall()]
 
-    Why: render_chat_streaming runs in a thread to avoid blocking the event
-    loop. Reusing the aiosqlite connection from another thread is unsafe;
-    open a short-lived read-only sqlite3 connection per month instead.
+
+@contextlib.contextmanager
+def month_reader(db_path: Path, chat_id: int):
+    """Yield a `load_month(month_key)` reading through one connection.
+
+    Why a connection of its own: render_chat_streaming runs in a thread to keep
+    the event loop free, and the aiosqlite connection of the caller may not be
+    used from another thread. Why one for the whole chat rather than one per
+    month: opening it costs a file open, a schema read and a cold page cache,
+    and the pragmas below apply to the connection, not to the database -- a chat
+    with several hundred months paid all of that per month, on a connection that
+    never got large enough a cache to keep anything.
     """
     db = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=DB_TIMEOUT_SECONDS)
     try:
         db.row_factory = sqlite3.Row
-        if month_key == "0000-00":
-            cur = db.execute(
-                "SELECT * FROM messages WHERE chat_id=? AND date IS NULL ORDER BY msg_id",
-                (chat_id,),
-            )
-        else:
-            start, end = _month_range(month_key)
-            cur = db.execute(
-                "SELECT * FROM messages WHERE chat_id=? AND date >= ? AND date < ? ORDER BY msg_id",
-                (chat_id, start, end),
-            )
-        rows = cur.fetchall()
-        return [_row_to_message(dict(r)) for r in rows]
+        for pragma in _READER_PRAGMAS:
+            db.execute(pragma)
+        yield lambda month_key: _load_month(db, chat_id, month_key)
     finally:
         db.close()
 
@@ -403,12 +426,9 @@ class ExportState:
         # between the tables is kept by the application -- see CHAT_TABLES and
         # purge_chat, which delete a chat from every table by hand.
         for pragma in (
-            f"PRAGMA busy_timeout = {int(DB_TIMEOUT_SECONDS * 1000)}",
             "PRAGMA journal_mode = WAL",
             "PRAGMA synchronous = NORMAL",
-            "PRAGMA temp_store = MEMORY",
-            "PRAGMA cache_size = -65536",
-            "PRAGMA mmap_size = 268435456",
+            *_READER_PRAGMAS,
         ):
             await self.db.execute(pragma)
 
@@ -826,9 +846,15 @@ class ExportState:
 
     async def list_chat_states(self) -> list[dict[str, Any]]:
         """Return the export progress of every known chat, newest update first."""
+        # LEFT JOIN with one grouping instead of a correlated COUNT(*) per row:
+        # the subquery walked the chat_id index once for every chat in the
+        # table, so the cost was the number of chats times the size of each.
         async with self.db.execute(
-            "SELECT es.*, (SELECT COUNT(*) FROM messages m WHERE m.chat_id=es.chat_id) AS msg_count "
-            "FROM export_state es ORDER BY es.updated_at DESC"
+            "SELECT es.*, COALESCE(m.msg_count, 0) AS msg_count "
+            "FROM export_state es "
+            "LEFT JOIN (SELECT chat_id, COUNT(*) AS msg_count FROM messages GROUP BY chat_id) m "
+            "ON m.chat_id = es.chat_id "
+            "ORDER BY es.updated_at DESC"
         ) as cur:
             return [dict(row) for row in await cur.fetchall()]
 

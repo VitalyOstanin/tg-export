@@ -964,12 +964,25 @@ class Exporter:
         else:
             # Phase 2 skipped (full_history already True or shutdown). Still
             # refresh messages_count: phase 1 batches may have added new messages.
-            msg_count = await self.state.count_messages(chat.id)
+            msg_count = await self._chat_message_count(chat.id, stats)
             if msg_count > 0:
                 await self.state.update_messages_count(chat.id, msg_count)
 
         await self._render_chat_html(chat, chat_dir, stats)
         return stats
+
+    async def _chat_message_count(self, chat_id: int, stats: ExportStats) -> int:
+        """Rows of this chat in `messages`, recounted only when something was written.
+
+        COUNT(*) over the chat_id index is linear in the size of the chat, and
+        the export already asks for it once when the chat starts. A run that
+        stored no message cannot have changed the number, and that is the usual
+        case for an incremental run: the value taken at the start still holds.
+        """
+        view = stats.chat_view()
+        if view.counters.messages_exported == 0:
+            return view.messages_in_db
+        return await self.state.count_messages(chat_id)
 
     @staticmethod
     def _pages_are_current(chat_dir: Path, stats: ExportStats) -> bool:
@@ -1165,7 +1178,7 @@ class Exporter:
             last_msg_id=max(last_msg_id, phase2_max_id),
             oldest_msg_id=current_oldest if current_oldest > 0 else oldest_msg_id,
             full_history=new_full,
-            messages_count=await self.state.count_messages(chat.id),
+            messages_count=await self._chat_message_count(chat.id, stats),
         )
         if new_full:
             logger.debug("  %s: full history complete", chat.name)
@@ -1189,16 +1202,17 @@ class Exporter:
         chat_id = chat.id
 
         def _render():
-            from tg_export.state import _load_messages_for_month_sync
+            from tg_export.state import month_reader
 
-            load_month = lambda key: _load_messages_for_month_sync(db_path, chat_id, key)  # noqa: E731
-            # Why should_stop: render runs inside asyncio.to_thread; the
-            # worker thread cannot be cancelled by task.cancel, so without
-            # a checkpoint between months the default executor blocks
-            # asyncio shutdown until the entire chat is rendered.
-            self.renderer.render_chat_streaming(
-                chat, month_keys, load_month, chat_dir, should_stop=lambda: self._shutdown
-            )
+            # One read-only connection for the whole chat: see month_reader.
+            with month_reader(db_path, chat_id) as load_month:
+                # Why should_stop: render runs inside asyncio.to_thread; the
+                # worker thread cannot be cancelled by task.cancel, so without
+                # a checkpoint between months the default executor blocks
+                # asyncio shutdown until the entire chat is rendered.
+                self.renderer.render_chat_streaming(
+                    chat, month_keys, load_month, chat_dir, should_stop=lambda: self._shutdown
+                )
 
         await asyncio.to_thread(_render)
 
