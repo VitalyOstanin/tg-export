@@ -57,6 +57,14 @@ class TgApi:
             f"Wait for it to finish, or use a different account.",
         )
 
+    async def __aenter__(self) -> TgApi:
+        """Connect and hand the client over; the caller cannot forget to close it."""
+        await self.connect()
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        await self.disconnect()
+
     async def connect(self):
         self._session_lock.acquire()
         try:

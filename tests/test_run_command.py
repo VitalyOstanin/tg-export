@@ -46,6 +46,19 @@ def run_env(tmp_path, monkeypatch):
     api.start_takeout = AsyncMock()
     api.stop_takeout = AsyncMock()
     api.takeout = None
+
+    # TgApi используется как контекстменеджер, поэтому подставной объект должен
+    # проводить вход и выход через те же connect/disconnect.
+    async def _aenter(*_args):
+        await api.connect()
+        return api
+
+    async def _aexit(*_exc):
+        await api.disconnect()
+        return False
+
+    api.__aenter__ = _aenter
+    api.__aexit__ = _aexit
     monkeypatch.setattr("tg_export.api.TgApi", lambda *a, **k: api)
     monkeypatch.setattr("tg_export.catalog.fetch_catalog", AsyncMock(return_value=[]))
     monkeypatch.setattr("tg_export.html.renderer.HtmlRenderer", MagicMock())
@@ -124,13 +137,20 @@ def test_run_without_config_reports_error(run_env):
 def test_run_keeps_the_takeout_session_for_the_next_run(run_env):
     """Завершение takeout после экспорта стоит суток ожидания на следующем
     запуске: Telegram отвечает на новый InitTakeoutSessionRequest откатом до
-    24 часов. Команда обязана отпустить сессию, а не финализировать её."""
+    24 часов. Команда обязана отпустить сессию, а не финализировать её.
+
+    Отпускает её выход из контекста подключения (TgApi.disconnect), поэтому
+    здесь проверяется, что команда закрывает соединение и ни при каких
+    обстоятельствах не завершает takeout сама; что именно делает disconnect,
+    проверено в test_disconnect_releases_takeout_without_finishing_it.
+    """
     run_env.api.takeout = MagicMock()
 
     result = CliRunner().invoke(main, ["run"])
 
     assert result.exit_code == 0, result.output
-    run_env.api.stop_takeout.assert_awaited_once_with()
+    run_env.api.disconnect.assert_awaited_once_with()
+    assert run_env.api.stop_takeout.await_args_list == []
 
 
 def test_takeout_clear_finishes_the_session_on_the_server(tmp_path, monkeypatch):

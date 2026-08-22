@@ -1,6 +1,7 @@
 """Tests for tg subcommands: messages (msg_id display) and download (dedup)."""
 
 import asyncio
+import contextlib
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -296,8 +297,12 @@ class TestTgSend:
         api = AsyncMock()
         api.client = AsyncMock()
 
+        @contextlib.asynccontextmanager
+        async def fake_connected_api(_account_name):
+            yield api, "acc"
+
         with (
-            patch("tg_export.cli._connect_tg", AsyncMock(return_value=(api, "acc"))),
+            patch("tg_export.cli._connected_api", fake_connected_api),
             patch.object(cli, "_QUIET", True),
         ):
             asyncio.run(_tg_send("acc", [123], text, files, as_document))

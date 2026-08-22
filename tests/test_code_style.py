@@ -240,3 +240,57 @@ def test_every_package_data_file_is_declared_for_packaging():
     assert not undeclared, (
         f"файлы данных не объявлены в [tool.setuptools.package-data] и не попадут в дистрибутив: {undeclared}"
     )
+
+
+def _cli_ast():
+    import ast
+
+    return ast.parse(_read("cli.py"))
+
+
+def test_cli_never_manages_connection_lifetime_by_hand():
+    """Соединение с Telegram и БД состояния открываются только через `async with`.
+
+    Ручная пара `connect()` + `finally: disconnect()` была повторена в cli.py
+    десять раз, и в двух командах исключение между `connect()` и входом в `try`
+    оставляло соединение открытым. Контекстменеджер убирает и повтор, и разрыв
+    между захватом ресурса и его защитой.
+    """
+    import ast
+
+    manual = {"connect", "disconnect", "open", "close"}
+    hits = []
+    for node in ast.walk(_cli_ast()):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+            continue
+        if node.func.attr not in manual:
+            continue
+        target = node.func.value
+        if isinstance(target, ast.Name) and target.id in {"api", "state", "st"}:
+            hits.append((node.lineno, f"{target.id}.{node.func.attr}()"))
+    assert not hits, f"открывай ресурс через `async with`: {hits}"
+
+
+def test_cli_helpers_are_context_managers():
+    """Помощники подключения и открытия состояния не отдают ресурс наружу.
+
+    `_connect_tg` возвращал подключённый TgApi и переносил уборку на
+    вызывающего строкой docstring «Caller must call api.disconnect() when
+    done»; ровно так же поступал `_open_state`. Обязательство, записанное в
+    docstring, а не в коде, соблюдается ровно до первой невнимательности.
+    """
+    import ast
+
+    src = _read("cli.py")
+    tree = ast.parse(src)
+    for name in ("_connected_api", "_opened_state"):
+        fn = next(
+            (n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef) and n.name == name),
+            None,
+        )
+        assert fn is not None, f"ожидается помощник-контекстменеджер {name}"
+        decorators = {ast.unparse(d) for d in fn.decorator_list}
+        assert any("asynccontextmanager" in d for d in decorators), (
+            f"{name} должен быть @contextlib.asynccontextmanager, а не возвращать ресурс: {decorators}"
+        )
+    assert "Caller must call api.disconnect" not in src

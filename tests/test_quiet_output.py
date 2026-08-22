@@ -68,8 +68,10 @@ def test_quiet_keeps_what_purge_is_about_to_delete(tmp_path, account_env, monkey
             return (7,)
 
     state = MagicMock()
-    state.open = AsyncMock()
-    state.close = AsyncMock()
+    # ExportState отдаётся через `async with`, поэтому вход в контекст должен
+    # вернуть тот же объект, а не автосозданный мок.
+    state.__aenter__ = AsyncMock(return_value=state)
+    state.__aexit__ = AsyncMock(return_value=False)
     state.get_catalog_entry = AsyncMock(return_value={"name": "Chat"})
     state.purge_chat = AsyncMock(return_value=7)
     state.db.execute = lambda *a, **k: _Cursor()

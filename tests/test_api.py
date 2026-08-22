@@ -657,3 +657,26 @@ async def test_second_process_cannot_open_the_same_session(tmp_path, monkeypatch
     await third.connect()
     await third.disconnect()
     _close_session(third)
+
+
+@pytest.mark.asyncio
+async def test_api_is_an_async_context_manager(tmp_path):
+    """Выход из `async with` закрывает соединение, в том числе по исключению.
+
+    Ручная пара connect/disconnect в cli.py оставляла соединение открытым,
+    когда исключение возникало между connect() и входом в try.
+    """
+    api = TgApi(str(tmp_path / "ctx.session"), 1, "hash")
+    api.client.connect = AsyncMock()
+    api.client.disconnect = MagicMock(return_value=None)
+    seen = []
+
+    with pytest.raises(RuntimeError):
+        async with api as entered:
+            assert entered is api
+            seen.append("body")
+            raise RuntimeError("boom")
+
+    assert seen == ["body"]
+    assert not api._session_lock.held
+    _close_session(api)

@@ -75,6 +75,78 @@ def _export_exit_code(*, signum: int | None, error_count: int) -> int:
     return EXIT_FAILURE if error_count else EXIT_OK
 
 
+# The state database lives inside the output directory, so its name is part of
+# the export layout rather than a local detail of any one command.
+STATE_DB_NAME = ".tg-export-state.db"
+
+
+@contextlib.asynccontextmanager
+async def _connected_api(account_name):
+    """Connect to Telegram for one account; yield ``(api, account)``.
+
+    Every command needs the same prologue -- resolve the account, load the
+    credentials and the proxy, build TgApi, connect -- and the same guarantee
+    that the socket is closed afterwards. Returning a connected object instead
+    left that guarantee to a line of docstring.
+    """
+    from tg_export.api import TgApi
+
+    mgr = _mgr()
+    account = mgr.resolve_account(account_name)
+    api_id, api_hash = mgr.load_credentials()
+    proxy = mgr.load_proxy()
+    api = TgApi(mgr.session_path(account), api_id, api_hash, proxy=proxy)
+    async with api:
+        yield api, account
+
+
+def _resolve_output(account, config_override, output_override, *, missing_config_hint=None):
+    """Resolve ``(account, config, output_base)`` from the command options.
+
+    Reported as a failure when the config file is missing: without it there is
+    neither an output directory nor a state database to work on. ``run`` passes
+    a hint telling how to create the file; ``{account}`` in it is filled in.
+    """
+    from tg_export.config import load_config
+
+    mgr = _mgr()
+    account = mgr.resolve_account(account)
+    config_path = mgr.resolve_config(account, config_override)
+    if not config_path.exists():
+        _error(f"Config not found: {config_path}")
+        if missing_config_hint:
+            _error(missing_config_hint.format(account=account))
+        raise click.exceptions.Exit(EXIT_FAILURE)
+
+    cfg = load_config(config_path)
+    output_base = Path(output_override) if output_override else Path(cfg.output.path)
+    return account, cfg, output_base
+
+
+@contextlib.asynccontextmanager
+async def _opened_state(account, config_override, output_override, *, required: bool = True):
+    """Open the state database of an account; yield ``(state, output_base, account)``.
+
+    With ``required=False`` a missing database yields ``(None, ...)`` instead of
+    exiting: `verify` has nothing to check on a fresh output directory, which is
+    not a failure.
+    """
+    from tg_export.state import ExportState
+
+    account, _, output_base = _resolve_output(account, config_override, output_override)
+    state_path = output_base / STATE_DB_NAME
+
+    if not state_path.exists():
+        if required:
+            _error("No state database found.")
+            raise click.exceptions.Exit(EXIT_FAILURE)
+        yield None, output_base, account
+        return
+
+    async with ExportState(state_path) as state:
+        yield state, output_base, account
+
+
 _LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
 
 # Default cut length for message text in `tg messages`; 0 disables the cut.
@@ -213,34 +285,31 @@ async def _auth_check(name, as_json=False):
                 _error(f"  {acc}: session file missing")
             continue
         proxy = mgr.load_proxy()
-        api = TgApi(session, api_id, api_hash, proxy=proxy)
         try:
-            await api.connect()
-            if await api.client.is_user_authorized():
-                me = await api.client.get_me()
-                first = getattr(me, "first_name", "")
-                last = getattr(me, "last_name", None) or ""
-                me_id = getattr(me, "id", None)
-                results.append(
-                    {
-                        "account": acc,
-                        "status": "ok",
-                        "name": f"{first} {last}".strip(),
-                        "id": me_id,
-                    }
-                )
-                if not as_json:
-                    _diag(f"  {acc}: OK - {first} {last} (id={me_id})")
-            else:
-                results.append({"account": acc, "status": "not_authorized"})
-                if not as_json:
-                    _error(f"  {acc}: not authorized")
+            async with TgApi(session, api_id, api_hash, proxy=proxy) as api:
+                if await api.client.is_user_authorized():
+                    me = await api.client.get_me()
+                    first = getattr(me, "first_name", "")
+                    last = getattr(me, "last_name", None) or ""
+                    me_id = getattr(me, "id", None)
+                    results.append(
+                        {
+                            "account": acc,
+                            "status": "ok",
+                            "name": f"{first} {last}".strip(),
+                            "id": me_id,
+                        }
+                    )
+                    if not as_json:
+                        _diag(f"  {acc}: OK - {first} {last} (id={me_id})")
+                else:
+                    results.append({"account": acc, "status": "not_authorized"})
+                    if not as_json:
+                        _error(f"  {acc}: not authorized")
         except Exception as e:
             results.append({"account": acc, "status": "error", "error": str(e)})
             if not as_json:
                 _error(f"  {acc}: error - {e}")
-        finally:
-            await api.disconnect()
 
     if as_json:
         click.echo(json.dumps(results, ensure_ascii=False, indent=2))
@@ -463,15 +532,7 @@ def takeout_clear(name):
 
 
 async def _takeout_clear(name):
-    from tg_export.api import TgApi
-
-    mgr = _mgr()
-    account = mgr.resolve_account(name)
-    api_id, api_hash = mgr.load_credentials()
-    proxy = mgr.load_proxy()
-    api = TgApi(mgr.session_path(account), api_id, api_hash, proxy=proxy)
-    await api.connect()
-    try:
+    async with _connected_api(name) as (api, account):
         session = api.client.session
         if session is None:
             _diag(f"  {account}: no session available")
@@ -493,8 +554,6 @@ async def _takeout_clear(name):
             session.save()
         state = "finished" if finished else "cleared locally"
         _diag(f"  {account}: takeout session {state} (was id={old_id})")
-    finally:
-        await api.disconnect()
 
 
 # ---------------------------------------------------------------------------
@@ -533,16 +592,8 @@ def tg_messages(chat_id, account, limit, truncate, no_truncate):
 
 
 async def _tg_messages(chat_id, account, limit, truncate=DEFAULT_MESSAGE_TEXT_LENGTH):
-    from tg_export.api import TgApi
 
-    mgr = _mgr()
-    account = mgr.resolve_account(account)
-    api_id, api_hash = mgr.load_credentials()
-    proxy = mgr.load_proxy()
-    api = TgApi(mgr.session_path(account), api_id, api_hash, proxy=proxy)
-    await api.connect()
-
-    try:
+    async with _connected_api(account) as (api, account):
         entity = await api.client.get_entity(chat_id)
         title = getattr(entity, "title", None) or _entity_name(entity)
         click.echo(f"# {title} (id={chat_id})\n")
@@ -566,8 +617,6 @@ async def _tg_messages(chat_id, account, limit, truncate=DEFAULT_MESSAGE_TEXT_LE
             if truncate:
                 text = text[:truncate]
             click.echo(f"  {date_str}  [{msg.id}]  {sender}: {text}")
-    finally:
-        await api.disconnect()
 
 
 def _entity_name(entity) -> str:
@@ -603,8 +652,6 @@ async def _tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_fi
 
     from telethon.tl.functions.messages import GetHistoryRequest
 
-    from tg_export.api import TgApi
-
     # Collect IDs
     ids = list(chat_ids)
     if catalog_file:
@@ -619,15 +666,8 @@ async def _tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_fi
         _diag("No chat IDs specified. Use arguments or --from-catalog --type.")
         return
 
-    mgr = _mgr()
-    account = mgr.resolve_account(account)
-    api_id, api_hash = mgr.load_credentials()
-    proxy = mgr.load_proxy()
-    api = TgApi(mgr.session_path(account), api_id, api_hash, proxy=proxy)
-    await api.connect()
-
     results = []
-    try:
+    async with _connected_api(account) as (api, account):
         total = len(ids)
         for idx, cid in enumerate(ids, 1):
             try:
@@ -694,8 +734,6 @@ async def _tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_fi
         # A chat that could not be queried is a failure even when the rest
         # succeeded: the JSON carries an "error" key the caller may miss.
         return EXIT_FAILURE if any("error" in r for r in results) else EXIT_OK
-    finally:
-        await api.disconnect()
 
 
 @main.command("list")
@@ -709,17 +747,9 @@ def list_chats(account, output, fmt, include_left):
 
 
 async def _list_chats(account, output, fmt, include_left):
-    from tg_export.api import TgApi
     from tg_export.catalog import fetch_catalog, format_catalog_json, format_catalog_yaml
 
-    mgr = _mgr()
-    account = mgr.resolve_account(account)
-    api_id, api_hash = mgr.load_credentials()
-    proxy = mgr.load_proxy()
-    api = TgApi(mgr.session_path(account), api_id, api_hash, proxy=proxy)
-    await api.connect()
-
-    try:
+    async with _connected_api(account) as (api, account):
         chats = await fetch_catalog(api, include_left=include_left)
         result = format_catalog_json(chats) if fmt == "json" else format_catalog_yaml(chats)
 
@@ -728,8 +758,6 @@ async def _list_chats(account, output, fmt, include_left):
             _diag(f"Catalog saved to {output}")
         else:
             click.echo(result)
-    finally:
-        await api.disconnect()
 
 
 @main.command("init")
@@ -757,20 +785,13 @@ async def _init_config(account, from_catalog, output):
         _diag(f"Generating config from catalog: {from_catalog}")
     else:
         # Fetch from API
-        from tg_export.api import TgApi
         from tg_export.catalog import fetch_catalog
 
-        api_id, api_hash = mgr.load_credentials()
-        proxy = mgr.load_proxy()
-        api = TgApi(mgr.session_path(account), api_id, api_hash, proxy=proxy)
-        await api.connect()
-        try:
+        async with _connected_api(account) as (api, account):
             chats = await fetch_catalog(api)
             template = generate_config_template(chats, account=account)
             config_path.write_text(template, encoding="utf-8")
             _diag(f"Config template saved to {config_path}")
-        finally:
-            await api.disconnect()
         return
 
     _diag(f"Config saved to {config_path}")
@@ -887,24 +908,18 @@ async def _run_export(
     quiet=False,
     require_takeout=False,
 ):
-    from tg_export.api import TgApi
     from tg_export.catalog import fetch_catalog
-    from tg_export.config import load_config
     from tg_export.exporter import Exporter
     from tg_export.html.renderer import HtmlRenderer
     from tg_export.media import MediaDownloader
     from tg_export.state import ExportState
 
-    mgr = _mgr()
-    account = mgr.resolve_account(account)
-    config_path = mgr.resolve_config(account, config_override)
-    if not config_path.exists():
-        _diag(f"Config not found: {config_path}", essential=True)
-        _diag(f"Create it with: tg-export init --account {account}", essential=True)
-        raise click.exceptions.Exit(1)
-
-    cfg = load_config(config_path)
-    output_base = Path(output_override) if output_override else Path(cfg.output.path)
+    account, cfg, output_base = _resolve_output(
+        account,
+        config_override,
+        output_override,
+        missing_config_hint="Create it with: tg-export init --account {account}",
+    )
     _diag(f"Account: {account}")
     _diag(f"Output: {output_base.resolve()}")
 
@@ -914,22 +929,19 @@ async def _run_export(
     ensure_private_dir(output_base)
 
     # State DB next to output
-    state_path = output_base / ".tg-export-state.db"
-    state = ExportState(state_path)
-
-    api_id, api_hash = mgr.load_credentials()
-    proxy = mgr.load_proxy()
-    api = TgApi(mgr.session_path(account), api_id, api_hash, proxy=proxy)
+    state_path = output_base / STATE_DB_NAME
 
     exporter = None
     stats = None
+    # Both resources are entered inside the stack: opening the state database
+    # creates a lock file, and a failure between that and the connect used to
+    # leave the lock and the socket behind. The stack also unwinds them in
+    # reverse order -- the takeout session is released by TgApi.disconnect
+    # before the database is closed.
+    resources = contextlib.AsyncExitStack()
     try:
-        # Both resources are taken inside the try: opening the state database
-        # creates a lock file, and a failure between that and the connect used
-        # to leave the lock and the socket behind -- the finally that releases
-        # them started only once both had succeeded.
-        await state.open()
-        await api.connect()
+        state = await resources.enter_async_context(ExportState(state_path))
+        api, _ = await resources.enter_async_context(_connected_api(account))
 
         takeout_active = await _start_takeout(api, cfg, require=require_takeout)
 
@@ -953,7 +965,7 @@ async def _run_export(
         for sibling in output_base.parent.iterdir():
             if sibling == output_base or not sibling.is_dir():
                 continue
-            sdb = sibling / ".tg-export-state.db"
+            sdb = sibling / STATE_DB_NAME
             if sdb.exists():
                 sibling_dbs.append(sdb)
                 logger.debug("sibling state DB: %s", sdb)
@@ -962,7 +974,7 @@ async def _run_export(
             _diag(f"Sibling exports for file dedup: {', '.join(names)}")
 
         # Setup downloader
-        min_free = mgr.load_min_free_space() or 20 * 1024**3  # default 20GB
+        min_free = _mgr().load_min_free_space() or 20 * 1024**3  # default 20GB
         downloader = MediaDownloader(
             api=api,
             state=state,
@@ -1046,17 +1058,10 @@ async def _run_export(
     except asyncio.CancelledError:
         _diag("\nForce shutdown — saving state...", essential=True)
     finally:
-        if api.takeout:
-            # No success flag: the takeout session stays open on the server so
-            # the next run reuses its id. Finishing it here would force a new
-            # InitTakeoutSessionRequest, which Telegram answers with a cooldown
-            # of up to 24 hours. `tg takeout clear` finishes it explicitly.
-            with contextlib.suppress(Exception, asyncio.CancelledError):
-                await api.stop_takeout()
+        # Releasing must not raise over the outcome of the export itself, and a
+        # second Ctrl+C lands here as CancelledError.
         with contextlib.suppress(Exception, asyncio.CancelledError):
-            await api.disconnect()
-        with contextlib.suppress(Exception, asyncio.CancelledError):
-            await state.close()
+            await resources.aclose()
 
     # An export that logged errors did not do what it was asked to do, so it must
     # not report success; a signal outranks that and maps to 128 + signum.
@@ -1204,29 +1209,6 @@ def state():
     pass
 
 
-def _open_state(account, config_override, output_override):
-    """Helper: resolve paths and return (state, output_base, account). Caller must open/close."""
-    from tg_export.config import load_config
-    from tg_export.state import ExportState
-
-    mgr = _mgr()
-    account = mgr.resolve_account(account)
-    config_path = mgr.resolve_config(account, config_override)
-    if not config_path.exists():
-        _error(f"Config not found: {config_path}")
-        raise click.exceptions.Exit(1)
-
-    cfg = load_config(config_path)
-    output_base = Path(output_override) if output_override else Path(cfg.output.path)
-    state_path = output_base / ".tg-export-state.db"
-
-    if not state_path.exists():
-        _error("No state database found.")
-        raise click.exceptions.Exit(1)
-
-    return ExportState(state_path), output_base, account
-
-
 @state.command("show")
 @click.option("--account", default=None, help="Account alias")
 @click.option("--config", type=click.Path(exists=True), default=None)
@@ -1241,9 +1223,7 @@ def state_show(account, config, output, as_json, chat_id):
 async def _state_show(account, config_override, output_override, chat_id, as_json=False):
     import json
 
-    st, _, account = _open_state(account, config_override, output_override)
-    await st.open()
-    try:
+    async with _opened_state(account, config_override, output_override) as (st, _, account):
         if chat_id:
             chat_state = await st.get_chat_state(chat_id)
             if not chat_state:
@@ -1303,8 +1283,6 @@ async def _state_show(account, config_override, output_override, chat_id, as_jso
                 click.echo(
                     f"{r['chat_id']:>15}  {r['msg_count']:>6}  {r['last_msg_id']:>8}  {r['oldest_msg_id']:>9}  {full:>4}  {r['updated_at']}"
                 )
-    finally:
-        await st.close()
 
 
 @state.command("reset")
@@ -1325,9 +1303,7 @@ def state_reset(account, config, output, reset_all, delete_messages, chat_id):
 
 
 async def _state_reset(account, config_override, output_override, reset_all, delete_messages, chat_id):
-    st, _, account = _open_state(account, config_override, output_override)
-    await st.open()
-    try:
+    async with _opened_state(account, config_override, output_override) as (st, _, account):
         if reset_all:
             await st.reset_chat_progress(delete_messages=delete_messages)
             _diag("Reset all chats.")
@@ -1342,8 +1318,6 @@ async def _state_reset(account, config_override, output_override, reset_all, del
                 msg += " Messages and files records deleted."
             _diag(msg)
         return EXIT_OK
-    finally:
-        await st.close()
 
 
 @main.command("purge")
@@ -1363,28 +1337,11 @@ def purge_chat(chat, account, config, output, yes):
 async def _purge_chat(chat_arg, account, config_override, output_override, skip_confirm):
     import shutil
 
-    from tg_export.config import load_config
-    from tg_export.state import ExportState
-
-    mgr = _mgr()
-    account = mgr.resolve_account(account)
-    config_path = mgr.resolve_config(account, config_override)
-    if not config_path.exists():
-        _error(f"Config not found: {config_path}")
-        raise click.exceptions.Exit(1)
-
-    cfg = load_config(config_path)
-    output_base = Path(output_override) if output_override else Path(cfg.output.path)
-    state_path = output_base / ".tg-export-state.db"
-
-    if not state_path.exists():
-        _error("No state database found.")
-        raise click.exceptions.Exit(1)
-
-    state = ExportState(state_path)
-    await state.open()
-
-    try:
+    async with _opened_state(account, config_override, output_override) as (
+        state,
+        output_base,
+        account,
+    ):
         # Resolve chat: by ID or by name search
         try:
             chat_id = int(chat_arg)
@@ -1480,9 +1437,6 @@ async def _purge_chat(chat_arg, account, config_override, output_override, skip_
 
         _diag("Done.")
 
-    finally:
-        await state.close()
-
 
 @main.command("verify")
 @click.option("--account", default=None, help="Account alias (default: from 'auth default')")
@@ -1569,28 +1523,15 @@ async def _redownload_broken_file(api, state, entry: dict) -> bool:
 
 
 async def _verify_files(account, config_override, output_override):
-    from tg_export.config import load_config
-    from tg_export.state import ExportState
+    async with _opened_state(account, config_override, output_override, required=False) as (
+        state,
+        output_base,
+        account,
+    ):
+        if state is None:
+            _diag("No state database found. Nothing to verify.")
+            return EXIT_OK
 
-    mgr = _mgr()
-    account = mgr.resolve_account(account)
-    config_path = mgr.resolve_config(account, config_override)
-    if not config_path.exists():
-        _error(f"Config not found: {config_path}")
-        raise click.exceptions.Exit(1)
-
-    cfg = load_config(config_path)
-    output_base = Path(output_override) if output_override else Path(cfg.output.path)
-    state_path = output_base / ".tg-export-state.db"
-
-    if not state_path.exists():
-        _diag("No state database found. Nothing to verify.")
-        return EXIT_OK
-
-    state = ExportState(state_path)
-    await state.open()
-
-    try:
         broken = await state.get_files_to_verify()
         if not broken:
             _diag("All files OK.")
@@ -1603,15 +1544,7 @@ async def _verify_files(account, config_override, output_override):
                 f"expected: {f['expected_size']}, actual: {f['actual_size']}"
             )
 
-        # Connect to Telegram and re-download
-        from tg_export.api import TgApi
-
-        api_id, api_hash = mgr.load_credentials()
-        proxy = mgr.load_proxy()
-        api = TgApi(mgr.session_path(account), api_id, api_hash, proxy=proxy)
-        await api.connect()
-
-        try:
+        async with _connected_api(account) as (api, account):
             _clean_verify_staging(output_base)
             redownloaded = 0
             for f in broken:
@@ -1625,29 +1558,11 @@ async def _verify_files(account, config_override, output_override):
             if redownloaded < len(broken):
                 return EXIT_FAILURE
             return EXIT_OK
-        finally:
-            await api.disconnect()
-    finally:
-        await state.close()
 
 
 # ---------------------------------------------------------------------------
 # tg send / tg download — additional direct Telegram API commands
 # ---------------------------------------------------------------------------
-
-
-async def _connect_tg(account_name):
-    """Helper: connect to Telegram API and return (api, account_name).
-    Caller must call api.disconnect() when done."""
-    from tg_export.api import TgApi
-
-    mgr = _mgr()
-    acc = mgr.resolve_account(account_name)
-    api_id, api_hash = mgr.load_credentials()
-    proxy = mgr.load_proxy()
-    api = TgApi(mgr.session_path(acc), api_id, api_hash, proxy=proxy)
-    await api.connect()
-    return api, acc
 
 
 @tg.command("send")
@@ -1813,8 +1728,7 @@ async def _send_files(client, recipient, file_paths, text, as_document):
 
 
 async def _tg_send(account_name, recipients, text, files, as_document=False):
-    api, _ = await _connect_tg(account_name)
-    try:
+    async with _connected_api(account_name) as (api, _):
         file_paths = [Path(f) for f in files] if files else None
         sent_count = 0
         failed: list[tuple[object, str]] = []
@@ -1842,8 +1756,6 @@ async def _tg_send(account_name, recipients, text, files, as_document=False):
             )
             return EXIT_FAILURE
         return EXIT_OK
-    finally:
-        await api.disconnect()
 
 
 @tg.command("download")
@@ -1909,11 +1821,9 @@ async def _download_if_new(client, msg, out: Path, downloaded: set) -> str | Non
 
 
 async def _tg_download(account_name, chat_id, msg_id, output_dir):
-    api, _ = await _connect_tg(account_name)
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
-
-    try:
+    async with _connected_api(account_name) as (api, _):
         tl_msg = await api.client.get_messages(chat_id, ids=msg_id)
         if isinstance(tl_msg, list):
             tl_msg = tl_msg[0] if tl_msg else None
@@ -1958,8 +1868,6 @@ async def _tg_download(account_name, chat_id, msg_id, output_dir):
         if not msg_text and not tl_msg.media:
             _diag("  (empty message, no text or media)")
         return EXIT_OK
-    finally:
-        await api.disconnect()
 
 
 def run_cli() -> None:

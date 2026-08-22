@@ -328,3 +328,20 @@ async def test_unused_tables_and_indexes_are_dropped(tmp_path):
 
     assert not names & {"takeout", "users_cache", "meta"}, names
     assert not names & {"idx_messages_grouped", "idx_files_local_path"}, names
+
+
+@pytest.mark.asyncio
+async def test_state_is_an_async_context_manager(tmp_path):
+    """Выход из `async with` закрывает БД и отпускает блокировку и по исключению."""
+    from tg_export.state import ExportState
+
+    state = ExportState(db_path=tmp_path / "ctx.db")
+
+    with pytest.raises(RuntimeError):
+        async with state as entered:
+            assert entered is state
+            await entered.get_chat_state(1)
+            raise RuntimeError("boom")
+
+    assert state._db is None
+    assert not state._lock.held

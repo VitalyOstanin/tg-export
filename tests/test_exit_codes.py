@@ -49,13 +49,41 @@ def test_auth_check_reports_broken_account(cfg_dir, monkeypatch):
     # Аккаунт есть, но подключиться к нему нельзя -- это отказ, а не норма.
     (cfg_dir / "sessions" / "acc.session").write_bytes(b"")
     api = MagicMock()
-    api.connect = AsyncMock(side_effect=RuntimeError("cannot connect"))
-    api.disconnect = AsyncMock()
+    # Соединение открывается входом в контекст, поэтому отказ имитируется на нём.
+    api.__aenter__ = AsyncMock(side_effect=RuntimeError("cannot connect"))
+    api.__aexit__ = AsyncMock(return_value=False)
     # TgApi импортируется внутри функции, поэтому подменяем его в модуле-источнике.
     monkeypatch.setattr("tg_export.api.TgApi", lambda *a, **k: api)
 
     result = CliRunner().invoke(main, ["auth", "check"])
     assert result.exit_code == 1
+
+
+def _fake_connected_api(api, account="me"):
+    """Подменяет _connected_api: тесту нужен готовый объект, а не соединение."""
+    import contextlib
+
+    @contextlib.asynccontextmanager
+    async def fake(_account_name):
+        yield api, account
+
+    return fake
+
+
+def _fake_opened_state(state, account="acc"):
+    """Подменяет _opened_state тем же способом."""
+    import contextlib
+    from unittest.mock import MagicMock as _MagicMock
+
+    @contextlib.asynccontextmanager
+    async def fake(*_args, **_kwargs):
+        await state.open()
+        try:
+            yield state, _MagicMock(), account
+        finally:
+            await state.close()
+
+    return fake
 
 
 def test_auth_check_without_accounts_is_ok(cfg_dir):
@@ -70,7 +98,7 @@ async def test_tg_send_reports_failed_delivery(monkeypatch):
     api = MagicMock()
     api.disconnect = AsyncMock()
     api.client.send_message = AsyncMock(side_effect=RuntimeError("no such user"))
-    monkeypatch.setattr(cli, "_connect_tg", AsyncMock(return_value=(api, "me")))
+    monkeypatch.setattr(cli, "_connected_api", _fake_connected_api(api))
 
     code = await cli._tg_send("acc", ["someone"], "hi", None)
     assert code == 1
@@ -83,7 +111,7 @@ async def test_tg_send_success_returns_zero(monkeypatch):
     api = MagicMock()
     api.disconnect = AsyncMock()
     api.client.send_message = AsyncMock()
-    monkeypatch.setattr(cli, "_connect_tg", AsyncMock(return_value=(api, "me")))
+    monkeypatch.setattr(cli, "_connected_api", _fake_connected_api(api))
 
     code = await cli._tg_send("acc", ["someone"], "hi", None)
     assert code == 0
@@ -96,7 +124,7 @@ async def test_tg_download_missing_message_is_error(monkeypatch, tmp_path):
     api = MagicMock()
     api.disconnect = AsyncMock()
     api.client.get_messages = AsyncMock(return_value=None)
-    monkeypatch.setattr(cli, "_connect_tg", AsyncMock(return_value=(api, "me")))
+    monkeypatch.setattr(cli, "_connected_api", _fake_connected_api(api))
 
     code = await cli._tg_download("acc", 1, 2, str(tmp_path))
     assert code == 1
@@ -134,7 +162,7 @@ async def test_state_reset_unknown_chat_is_error(tmp_path, monkeypatch):
     from tg_export.state import ExportState
 
     st = ExportState(tmp_path / "state.db")
-    monkeypatch.setattr(cli, "_open_state", lambda *a, **k: (st, MagicMock(), "acc"))
+    monkeypatch.setattr(cli, "_opened_state", _fake_opened_state(st))
 
     code = await cli._state_reset("acc", None, None, False, False, 999)
     assert code == 1

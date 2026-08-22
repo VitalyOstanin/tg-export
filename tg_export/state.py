@@ -255,6 +255,14 @@ class ExportState:
     def _release_lock(self):
         self._lock.release()
 
+    async def __aenter__(self) -> ExportState:
+        """Open the database and hand it over; leaving the block always closes it."""
+        await self.open()
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        await self.close()
+
     async def open(self):
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._acquire_lock()
