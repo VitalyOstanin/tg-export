@@ -119,3 +119,42 @@ def test_run_without_config_reports_error(run_env):
     result = CliRunner().invoke(main, ["run"])
     assert result.exit_code == 1
     assert "Config not found" in result.output
+
+
+def test_run_keeps_the_takeout_session_for_the_next_run(run_env):
+    """Завершение takeout после экспорта стоит суток ожидания на следующем
+    запуске: Telegram отвечает на новый InitTakeoutSessionRequest откатом до
+    24 часов. Команда обязана отпустить сессию, а не финализировать её."""
+    run_env.api.takeout = MagicMock()
+
+    result = CliRunner().invoke(main, ["run"])
+
+    assert result.exit_code == 0, result.output
+    run_env.api.stop_takeout.assert_awaited_once_with()
+
+
+def test_takeout_clear_finishes_the_session_on_the_server(tmp_path, monkeypatch):
+    """Раз экспорт намеренно оставляет сессию живой, clear должен закрыть её и
+    на сервере, иначе takeout остаётся запущенным без способа к нему обратиться."""
+    import tg_export.cli as cli
+
+    cfg_dir = tmp_path / "config"
+    mgr = AccountManager(config_dir=cfg_dir)
+    mgr.ensure_dirs()
+    mgr.save_credentials(1, "hash")
+    mgr.set_default_account("acc")
+    mgr.session_path("acc").write_bytes(b"")
+    monkeypatch.setattr(cli, "_mgr", lambda: AccountManager(config_dir=cfg_dir))
+
+    api = MagicMock()
+    api.connect = AsyncMock()
+    api.disconnect = AsyncMock()
+    api.client.session.takeout_id = 4242
+    api.client.end_takeout = AsyncMock(return_value=True)
+    monkeypatch.setattr("tg_export.api.TgApi", lambda *a, **k: api)
+
+    result = CliRunner().invoke(main, ["takeout", "clear"])
+
+    assert result.exit_code == 0, result.output
+    api.client.end_takeout.assert_awaited_once_with(success=True)
+    assert "4242" in result.output

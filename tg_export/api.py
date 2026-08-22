@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import logging
 from pathlib import Path
@@ -16,6 +17,7 @@ from telethon.tl.functions.account import (
 from telethon.tl.functions.channels import GetLeftChannelsRequest
 from telethon.tl.functions.contacts import GetContactsRequest, GetTopPeersRequest
 from telethon.tl.functions.messages import GetDialogFiltersRequest
+from telethon.tl.functions.updates import GetStateRequest
 from telethon.tl.functions.users import GetFullUserRequest
 from telethon.tl.types import InputPeerSelf, InputUserSelf
 
@@ -42,65 +44,99 @@ class TgApi:
         session = FixedSQLiteSession(str(session_path))
         self.client = TelegramClient(session, api_id, api_hash, **kwargs)
         self.takeout = None
+        self._takeout_stack: contextlib.AsyncExitStack | None = None
 
     async def connect(self):
         await self.client.connect()
 
     async def disconnect(self):
-        if self.takeout:
-            self.takeout = None
+        # Release the takeout context first: it must not outlive the connection
+        # it is proxying. Releasing keeps the takeout session alive on the
+        # server -- see stop_takeout.
+        with contextlib.suppress(Exception):
+            await self.stop_takeout()
         result = self.client.disconnect()
         if result is not None:
             await result
 
     async def start_takeout(self, **kwargs):
-        """Start Takeout session. Raises TakeoutInitDelayError if cooldown active.
+        """Open a Takeout session, reusing the one a previous run left behind.
 
-        Why: previously errors were classified by string matching on the
-        message ("takeout" or "invalidat"); a Telethon update or localised
-        message would silently break this. Now we catch the explicit
-        TakeoutInvalidError/TakeoutRequiredError types and let everything else
-        propagate.
+        Telegram answers ``InitTakeoutSessionRequest`` with a cooldown of up to
+        24 hours, so an id must never be discarded while it still works. Reuse
+        has two conditions imposed by Telethon's ``AccountMethods.takeout``:
+        the init request is built whenever the stored id is empty *or* any
+        argument is set, and ``_TakeoutClient.__aenter__`` refuses to send that
+        request over a live id. Hence the reuse call passes no argument at all,
+        and the export parameters are only supplied when a session is created
+        from scratch.
 
-        Why pre-clear stale takeout_id: Telethon's TakeoutClient.__aenter__
-        raises a plain ValueError ("Can't send a takeout request while
-        another takeout for the current session still not been finished
-        yet.") without ever contacting the server when session.takeout_id
-        is non-None. We finish such a stale takeout before initiating a new
-        one so the user does not have to run `takeout clear` manually.
+        Raises TakeoutInitDelayError when the cooldown is active.
         """
         session = self.client.session
-        if session is not None and getattr(session, "takeout_id", None) is not None:
-            stale_id = session.takeout_id
-            logger.info("Finishing stale local takeout_id=%s before starting a new one.", stale_id)
-            try:
-                await self.client.end_takeout(success=False)
-            except Exception as e:
-                logger.debug("end_takeout for stale id=%s failed: %s; clearing locally.", stale_id, e)
-                session.takeout_id = None
+        stored_id = getattr(session, "takeout_id", None) if session is not None else None
 
+        if stored_id is not None:
+            if await self._resume_takeout(stored_id):
+                return
+            await self._discard_takeout_id()
+
+        await self._enter_takeout(kwargs)
+
+    async def _resume_takeout(self, stored_id) -> bool:
+        """Return True when the stored takeout_id is still usable.
+
+        Entering the context never reaches the server while an id is stored, so
+        a takeout the server has already forgotten would only surface on the
+        first export request, deep inside the run. One cheap probe request
+        settles it here instead.
+        """
+        stack = contextlib.AsyncExitStack()
         try:
-            takeout_ctx = self.client.takeout(**kwargs)
-            self.takeout = await takeout_ctx.__aenter__()
-            self._takeout_ctx = takeout_ctx
-        except (TakeoutInvalidError, TakeoutRequiredError) as e:
-            logger.info("Finishing stale takeout session before creating a new one: %s", e)
-            try:
-                await self.client.end_takeout(success=False)
-            except Exception:
-                # If end_takeout also fails, clear takeout_id manually so the
-                # next takeout() call doesn't hit the same stale id.
-                if self.client.session is not None:
-                    self.client.session.takeout_id = None
-            takeout_ctx = self.client.takeout(**kwargs)
-            self.takeout = await takeout_ctx.__aenter__()
-            self._takeout_ctx = takeout_ctx
+            takeout = await stack.enter_async_context(self.client.takeout(finalize=False))
+            await takeout(GetStateRequest())
+        except (TakeoutInvalidError, TakeoutRequiredError, ValueError) as e:
+            logger.info("Stored takeout_id=%s is no longer usable (%s); starting a new one.", stored_id, e)
+            with contextlib.suppress(Exception):
+                await stack.aclose()
+            return False
+        self._takeout_stack = stack
+        self.takeout = takeout
+        logger.info("Reusing takeout session id=%s from a previous run.", stored_id)
+        return True
 
-    async def stop_takeout(self, success: bool = True):
-        if hasattr(self, "_takeout_ctx") and self._takeout_ctx:
-            await self._takeout_ctx.__aexit__(None, None, None)
-            self.takeout = None
-            self._takeout_ctx = None
+    async def _discard_takeout_id(self):
+        """Finish a takeout the server no longer honours, locally if need be."""
+        try:
+            await self.client.end_takeout(success=False)
+        except Exception as e:
+            logger.debug("end_takeout failed (%s); clearing takeout_id locally.", e)
+            if self.client.session is not None:
+                self.client.session.takeout_id = None
+
+    async def _enter_takeout(self, kwargs):
+        """Create a takeout session with the export parameters.
+
+        finalize=False keeps the session on the server once the context is
+        released, which is what makes the id reusable on the next run.
+        """
+        stack = contextlib.AsyncExitStack()
+        self.takeout = await stack.enter_async_context(self.client.takeout(finalize=False, **kwargs))
+        self._takeout_stack = stack
+
+    async def stop_takeout(self, success: bool | None = None):
+        """Release the takeout context; finish the session only when asked.
+
+        By default the session stays open on the server so the next run reuses
+        its id instead of paying the init cooldown. Pass an explicit ``success``
+        to finish it for good (``tg takeout clear``).
+        """
+        stack, self._takeout_stack = self._takeout_stack, None
+        self.takeout = None
+        if stack is not None:
+            await stack.aclose()
+        if success is not None:
+            await self.client.end_takeout(success=success)
 
     @property
     def _active_client(self):

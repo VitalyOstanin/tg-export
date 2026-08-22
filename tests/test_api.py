@@ -1,8 +1,9 @@
 import sqlite3
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 from telethon.errors import TakeoutInitDelayError
+from telethon.errors.rpcerrorlist import TakeoutInvalidError
 
 from tg_export.api import TgApi
 from tg_export.session import FixedSQLiteSession
@@ -279,77 +280,147 @@ def test_fixed_sqlite_session_recovers_after_crash_between_clear_and_restore(tmp
         sess.close()
 
 
+def _make_takeout_api(*, takeout_id=None):
+    """Build a TgApi whose client is a mock, shaped the way start_takeout reads it."""
+    api = TgApi.__new__(TgApi)
+    api.client = MagicMock()
+    api.takeout = None
+    api._takeout_stack = None
+    api.client.session = MagicMock()
+    api.client.session.takeout_id = takeout_id
+    api.client.end_takeout = AsyncMock(return_value=True)
+    return api
+
+
+def _make_takeout_ctx():
+    """Return (context manager, proxy client) mimicking client.takeout()."""
+    ctx = MagicMock()
+    takeout_client = AsyncMock()
+    ctx.__aenter__ = AsyncMock(return_value=takeout_client)
+    ctx.__aexit__ = AsyncMock(return_value=False)
+    return ctx, takeout_client
+
+
 @pytest.mark.asyncio
 async def test_start_takeout_creates_session():
-    """start_takeout should call client.takeout() and store result."""
-    api = TgApi.__new__(TgApi)
-    api.client = MagicMock()
-    api.takeout = None
-    mock_takeout_ctx = MagicMock()
-    mock_takeout_client = AsyncMock()
-    mock_takeout_ctx.__aenter__ = AsyncMock(return_value=mock_takeout_client)
-    mock_takeout_ctx.__aexit__ = AsyncMock(return_value=False)
-    api.client.takeout.return_value = mock_takeout_ctx
+    """A first run initialises the takeout with the requested export parameters."""
+    api = _make_takeout_api()
+    ctx, takeout_client = _make_takeout_ctx()
+    api.client.takeout.return_value = ctx
 
-    await api.start_takeout()
-    api.client.takeout.assert_called_once()
-    assert api.takeout is mock_takeout_client
+    await api.start_takeout(files=True)
+
+    api.client.takeout.assert_called_once_with(finalize=False, files=True)
+    assert api.takeout is takeout_client
 
 
 @pytest.mark.asyncio
-async def test_start_takeout_clears_stale_takeout_id_first():
-    """Stale session.takeout_id should be ended (or cleared) before new takeout.
+async def test_start_takeout_reuses_the_id_left_by_a_previous_run():
+    """A stored takeout_id must be picked up, not thrown away.
 
-    Why: Telethon's TakeoutClient.__aenter__ raises ValueError ("Can't send a
-    takeout request while another takeout for the current session still not
-    been finished yet.") without contacting the server when takeout_id is
-    non-None. We must finish/clear it first.
+    Telegram answers InitTakeoutSessionRequest with a cooldown of up to 24h,
+    so every discarded id costs a day of waiting. Reuse requires calling
+    takeout() without any argument: Telethon builds the init request when the
+    id is empty *or* any argument is set, and refuses to send it over a live
+    id.
     """
-    api = TgApi.__new__(TgApi)
-    api.client = MagicMock()
-    api.takeout = None
-    api.client.session = MagicMock()
-    api.client.session.takeout_id = 12345
-    api.client.end_takeout = AsyncMock(return_value=True)
-    mock_takeout_ctx = MagicMock()
-    mock_takeout_client = AsyncMock()
-    mock_takeout_ctx.__aenter__ = AsyncMock(return_value=mock_takeout_client)
-    api.client.takeout.return_value = mock_takeout_ctx
+    api = _make_takeout_api(takeout_id=12345)
+    ctx, takeout_client = _make_takeout_ctx()
+    api.client.takeout.return_value = ctx
 
-    await api.start_takeout()
+    await api.start_takeout(files=True, max_file_size=100)
 
-    api.client.end_takeout.assert_awaited_once_with(success=False)
-    api.client.takeout.assert_called_once()
-    assert api.takeout is mock_takeout_client
+    api.client.takeout.assert_called_once_with(finalize=False)
+    api.client.end_takeout.assert_not_awaited()
+    assert api.takeout is takeout_client
 
 
 @pytest.mark.asyncio
-async def test_start_takeout_clears_stale_id_locally_when_end_fails():
-    """If end_takeout raises (e.g. server already forgot the takeout), wipe
-    takeout_id locally and proceed."""
-    api = TgApi.__new__(TgApi)
-    api.client = MagicMock()
-    api.takeout = None
-    api.client.session = MagicMock()
-    api.client.session.takeout_id = 999
-    api.client.end_takeout = AsyncMock(side_effect=RuntimeError("server says no"))
-    mock_takeout_ctx = MagicMock()
-    mock_takeout_client = AsyncMock()
-    mock_takeout_ctx.__aenter__ = AsyncMock(return_value=mock_takeout_client)
-    api.client.takeout.return_value = mock_takeout_ctx
+async def test_start_takeout_starts_a_new_session_when_the_stored_id_is_dead():
+    """Reuse is verified by a probe request: entering the context never
+    contacts the server when the id is set, so a takeout the server has
+    already forgotten would only surface on the first export request."""
+    api = _make_takeout_api(takeout_id=999)
+    dead_ctx, dead_client = _make_takeout_ctx()
+    dead_client.side_effect = TakeoutInvalidError(request=None)
+    fresh_ctx, fresh_client = _make_takeout_ctx()
+    api.client.takeout.side_effect = [dead_ctx, fresh_ctx]
 
-    await api.start_takeout()
+    await api.start_takeout(files=True)
+
+    assert api.client.takeout.call_args_list == [
+        call(finalize=False),
+        call(finalize=False, files=True),
+    ]
+    api.client.end_takeout.assert_awaited_once_with(success=False)
+    assert api.takeout is fresh_client
+
+
+@pytest.mark.asyncio
+async def test_start_takeout_clears_a_dead_id_locally_when_end_takeout_fails():
+    """If the server refuses to finish the forgotten takeout, drop the id
+    locally so the fresh init request is not rejected by Telethon."""
+    api = _make_takeout_api(takeout_id=999)
+    dead_ctx, dead_client = _make_takeout_ctx()
+    dead_client.side_effect = TakeoutInvalidError(request=None)
+    fresh_ctx, fresh_client = _make_takeout_ctx()
+    api.client.takeout.side_effect = [dead_ctx, fresh_ctx]
+    api.client.end_takeout = AsyncMock(side_effect=RuntimeError("server says no"))
+
+    await api.start_takeout(files=True)
 
     assert api.client.session.takeout_id is None
-    api.client.takeout.assert_called_once()
+    assert api.takeout is fresh_client
+
+
+@pytest.mark.asyncio
+async def test_stop_takeout_keeps_the_session_for_the_next_run():
+    """Releasing the context must not finish the takeout: the id is the whole
+    point of keeping it."""
+    api = _make_takeout_api()
+    ctx, _ = _make_takeout_ctx()
+    api.client.takeout.return_value = ctx
+    await api.start_takeout(files=True)
+
+    await api.stop_takeout()
+
+    ctx.__aexit__.assert_awaited_once()
+    api.client.end_takeout.assert_not_awaited()
+    assert api.takeout is None
+
+
+@pytest.mark.asyncio
+async def test_stop_takeout_finishes_the_session_when_asked():
+    api = _make_takeout_api()
+    ctx, _ = _make_takeout_ctx()
+    api.client.takeout.return_value = ctx
+    await api.start_takeout(files=True)
+
+    await api.stop_takeout(success=True)
+
+    api.client.end_takeout.assert_awaited_once_with(success=True)
+    assert api.takeout is None
+
+
+@pytest.mark.asyncio
+async def test_disconnect_releases_takeout_without_finishing_it():
+    api = _make_takeout_api()
+    ctx, _ = _make_takeout_ctx()
+    api.client.takeout.return_value = ctx
+    api.client.disconnect = MagicMock(return_value=None)
+    await api.start_takeout(files=True)
+
+    await api.disconnect()
+
+    ctx.__aexit__.assert_awaited_once()
+    api.client.end_takeout.assert_not_awaited()
+    assert api.takeout is None
 
 
 @pytest.mark.asyncio
 async def test_start_takeout_handles_delay():
     """On TAKEOUT_INIT_DELAY should raise with wait time."""
-    api = TgApi.__new__(TgApi)
-    api.client = MagicMock()
-    api.takeout = None
+    api = _make_takeout_api()
     err = TakeoutInitDelayError(request=None, capture=0)
     err.seconds = 3600
     api.client.takeout.side_effect = err

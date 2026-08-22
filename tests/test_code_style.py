@@ -57,6 +57,15 @@ def test_no_manual_live_enter_exit_in_exporter():
     assert "live_ctx.__exit__" not in src, "Live должен использоваться через with-блок"
 
 
+def test_no_manual_async_context_calls_in_api():
+    """Takeout-контекст должен вестись через AsyncExitStack, а не ручными
+    __aenter__/__aexit__: при ручном вызове выход из контекста не привязан к
+    выходу из функции, и отпустить сессию на всех путях выполнения нечем."""
+    src = _read("api.py")
+    calls = re.findall(r"\.__a(?:enter|exit)__\(", src)
+    assert not calls, f"используй AsyncExitStack вместо ручного вызова контекста: {calls}"
+
+
 def test_strip_markup_function_removed():
     """_strip_markup дублирует Text.from_markup(s).plain и не нужен после рефактора _log."""
     src = _read("exporter.py")

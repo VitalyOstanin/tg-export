@@ -461,9 +461,19 @@ async def _takeout_clear(name):
         if old_id is None:
             _diag(f"  {account}: no active takeout session")
             return
-        session.takeout_id = None
-        session.save()
-        _diag(f"  {account}: takeout session cleared (was id={old_id})")
+        # Finish it on the server too: an export keeps the session alive on
+        # purpose, so wiping only the local id would leave a takeout running
+        # with no way to reach it.
+        finished = False
+        try:
+            finished = await api.client.end_takeout(success=True)
+        except Exception as e:
+            _diag(f"  {account}: could not finish takeout on the server ({e}); clearing locally")
+        if session.takeout_id is not None:
+            session.takeout_id = None
+            session.save()
+        state = "finished" if finished else "cleared locally"
+        _diag(f"  {account}: takeout session {state} (was id={old_id})")
     finally:
         await api.disconnect()
 
@@ -1010,8 +1020,12 @@ async def _run_export(
         _diag("\nForce shutdown — saving state...", essential=True)
     finally:
         if api.takeout:
+            # No success flag: the takeout session stays open on the server so
+            # the next run reuses its id. Finishing it here would force a new
+            # InitTakeoutSessionRequest, which Telegram answers with a cooldown
+            # of up to 24 hours. `tg takeout clear` finishes it explicitly.
             with contextlib.suppress(Exception, asyncio.CancelledError):
-                await api.stop_takeout(success=True)
+                await api.stop_takeout()
         with contextlib.suppress(Exception, asyncio.CancelledError):
             await api.disconnect()
         with contextlib.suppress(Exception, asyncio.CancelledError):
