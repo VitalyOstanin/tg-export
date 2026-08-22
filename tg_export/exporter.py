@@ -9,6 +9,7 @@ import logging
 import re
 import signal
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -303,6 +304,67 @@ def group_by_topic(messages: list[Message], topics: list[ForumTopic]) -> dict[in
             grouped[tid] = []
         grouped[tid].append(msg)
     return grouped
+
+
+class _MediaPipeline:
+    """Keeps several media downloads of one chat in flight at a time.
+
+    Awaiting each download inside the message loop made the configured
+    `concurrent_downloads` meaningless: a full request-wait-response round trip
+    to Telegram sat between two files, and the message iterator did not fetch
+    the next batch while a file was being downloaded.
+
+    A message may only be stored once its media is on disk -- the record
+    carries the local path -- so the pipeline hands a message back only after
+    its own download finished, and always in arrival order: the download
+    awaited is the oldest one in flight.
+    """
+
+    def __init__(self, exporter: Exporter, chat_dir: Path, stats: ExportStats, chat_id: int, limit: int):
+        self._exporter = exporter
+        self._chat_dir = chat_dir
+        self._stats = stats
+        self._chat_id = chat_id
+        # A window of one is exactly the previous sequential behaviour.
+        self._limit = max(1, limit)
+        self._pending: deque[tuple[asyncio.Task, Message]] = deque()
+
+    async def __aenter__(self) -> _MediaPipeline:
+        return self
+
+    async def __aexit__(self, *exc_info) -> bool:
+        # Whatever is still in flight when the loop is left -- a break, an
+        # error, a cancellation -- must not outlive the chat export.
+        for task, _ in self._pending:
+            task.cancel()
+        if self._pending:
+            await asyncio.gather(*(task for task, _ in self._pending), return_exceptions=True)
+            self._pending.clear()
+        return False
+
+    async def submit(self, msg: Message, tl_msg) -> list[Message]:
+        """Start this message's download; return messages that are now ready."""
+        task = asyncio.create_task(
+            self._exporter._process_media(msg, tl_msg, self._chat_dir, self._stats, chat_id=self._chat_id)
+        )
+        self._pending.append((task, msg))
+        ready = []
+        while len(self._pending) >= self._limit:
+            ready.append(await self._take_oldest())
+        return ready
+
+    async def drain(self) -> list[Message]:
+        """Wait for every download still in flight."""
+        ready = []
+        while self._pending:
+            ready.append(await self._take_oldest())
+        return ready
+
+    async def _take_oldest(self) -> Message:
+        task, msg = self._pending.popleft()
+        # _process_media records its own failures in stats and does not raise.
+        await task
+        return msg
 
 
 class Exporter:
@@ -750,25 +812,28 @@ class Exporter:
             p1_kwargs = {"min_id": last_msg_id}
             if date_to:
                 p1_kwargs["offset_date"] = iter_kwargs["offset_date"]
-            async for tl_msg in self.api.iter_messages(chat.id, **p1_kwargs):
-                if self._shutdown:
-                    break
-                if _before_date_from(tl_msg.date):
-                    break
-                msg = convert_message(tl_msg, chat_id=chat.id)
-                await self._process_media(msg, tl_msg, chat_dir, stats, chat_id=chat.id)
-                batch.append(msg)
-                if msg.id > new_max_id:
-                    new_max_id = msg.id
-                stats.messages_exported += 1
-                if len(batch) >= BATCH_SIZE:
-                    await self.state.store_messages_batch(batch)
-                    logger.debug("  %s: %d new msgs stored", chat.name, stats.messages_exported)
-                    batch.clear()
-                now = time.monotonic()
-                if not self._use_live and now - last_progress_time >= LOG_INTERVAL:
-                    _log(_chat_progress())
-                    last_progress_time = now
+            async with _MediaPipeline(self, chat_dir, stats, chat.id, self._download_window()) as media:
+                async for tl_msg in self.api.iter_messages(chat.id, **p1_kwargs):
+                    if self._shutdown:
+                        break
+                    if _before_date_from(tl_msg.date):
+                        break
+                    msg = convert_message(tl_msg, chat_id=chat.id)
+                    # A message joins the batch only once its own media is on
+                    # disk, so the stored record carries the local path.
+                    batch.extend(await media.submit(msg, tl_msg))
+                    if msg.id > new_max_id:
+                        new_max_id = msg.id
+                    stats.messages_exported += 1
+                    if len(batch) >= BATCH_SIZE:
+                        await self.state.store_messages_batch(batch)
+                        logger.debug("  %s: %d new msgs stored", chat.name, stats.messages_exported)
+                        batch.clear()
+                    now = time.monotonic()
+                    if not self._use_live and now - last_progress_time >= LOG_INTERVAL:
+                        _log(_chat_progress())
+                        last_progress_time = now
+                batch.extend(await media.drain())
             if batch:
                 await self.state.store_messages_batch(batch)
                 batch.clear()
@@ -806,33 +871,37 @@ class Exporter:
             reached_date_from = False
             iterator_exhausted = False
             last_progress_time = time.monotonic()
-            async for tl_msg in self.api.iter_messages(chat.id, **p2_kwargs):
-                if self._shutdown:
-                    break
-                if _before_date_from(tl_msg.date):
-                    reached_date_from = True
-                    break
-                msg = convert_message(tl_msg, chat_id=chat.id)
-                await self._process_media(msg, tl_msg, chat_dir, stats, chat_id=chat.id)
-                batch.append(msg)
-                if current_oldest == 0 or msg.id < current_oldest:
-                    current_oldest = msg.id
-                if msg.id > phase2_max_id:
-                    phase2_max_id = msg.id
-                stats.messages_exported += 1
-                if len(batch) >= BATCH_SIZE:
-                    await self.state.store_messages_batch(batch)
-                    logger.debug(
-                        "  %s: %d msgs stored (oldest=%d)", chat.name, stats.messages_exported, current_oldest
-                    )
-                    batch.clear()
-                now = time.monotonic()
-                if not self._use_live and now - last_progress_time >= LOG_INTERVAL:
-                    _log(_chat_progress())
-                    last_progress_time = now
-            else:
-                # for/else: iterator exhausted naturally (no break)
-                iterator_exhausted = True
+            async with _MediaPipeline(self, chat_dir, stats, chat.id, self._download_window()) as media:
+                async for tl_msg in self.api.iter_messages(chat.id, **p2_kwargs):
+                    if self._shutdown:
+                        break
+                    if _before_date_from(tl_msg.date):
+                        reached_date_from = True
+                        break
+                    msg = convert_message(tl_msg, chat_id=chat.id)
+                    batch.extend(await media.submit(msg, tl_msg))
+                    if current_oldest == 0 or msg.id < current_oldest:
+                        current_oldest = msg.id
+                    if msg.id > phase2_max_id:
+                        phase2_max_id = msg.id
+                    stats.messages_exported += 1
+                    if len(batch) >= BATCH_SIZE:
+                        await self.state.store_messages_batch(batch)
+                        logger.debug(
+                            "  %s: %d msgs stored (oldest=%d)",
+                            chat.name,
+                            stats.messages_exported,
+                            current_oldest,
+                        )
+                        batch.clear()
+                    now = time.monotonic()
+                    if not self._use_live and now - last_progress_time >= LOG_INTERVAL:
+                        _log(_chat_progress())
+                        last_progress_time = now
+                else:
+                    # for/else: iterator exhausted naturally (no break)
+                    iterator_exhausted = True
+                batch.extend(await media.drain())
 
             if batch:
                 await self.state.store_messages_batch(batch)
@@ -891,6 +960,15 @@ class Exporter:
             logger.debug("  %s: no messages in DB, skipping render", chat.name)
 
         return stats
+
+    def _download_window(self) -> int:
+        """How many media downloads may be in flight at once.
+
+        Comes from `concurrent_downloads`; anything unusable falls back to one,
+        which is the sequential behaviour.
+        """
+        limit = getattr(getattr(self.downloader, "config", None), "concurrent_downloads", 1)
+        return limit if isinstance(limit, int) and limit > 0 else 1
 
     async def _process_media(
         self, msg: Message, tl_msg, chat_dir: Path, stats: ExportStats, chat_id: int = 0
