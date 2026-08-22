@@ -277,26 +277,30 @@ def test_cli_version_option():
 
 
 # ---------------------------------------------------------------------------
-# _tg_send: force_document propagation
+# _tg_send: attachment mode and progress
 # ---------------------------------------------------------------------------
 
 
 class TestTgSend:
     @staticmethod
-    def _run_send(tmp_path, file_count, as_document):
+    def _run_send(tmp_path, file_count, as_document, text="caption"):
+        from tg_export import cli
         from tg_export.cli import _tg_send
 
         files = []
         for i in range(file_count):
             f = tmp_path / f"pic{i}.jpg"
-            f.write_bytes(b"data")
+            f.write_bytes(b"data" * (i + 1))
             files.append(str(f))
 
         api = AsyncMock()
         api.client = AsyncMock()
 
-        with patch("tg_export.cli._connect_tg", AsyncMock(return_value=(api, "acc"))):
-            asyncio.run(_tg_send("acc", [123], "caption", files, as_document))
+        with (
+            patch("tg_export.cli._connect_tg", AsyncMock(return_value=(api, "acc"))),
+            patch.object(cli, "_QUIET", True),
+        ):
+            asyncio.run(_tg_send("acc", [123], text, files, as_document))
 
         return api.client.send_file
 
@@ -306,14 +310,27 @@ class TestTgSend:
         assert send_file.await_count == 1
         assert send_file.await_args.kwargs["force_document"] is True
 
-    def test_multiple_files_sent_as_document_when_flag_set(self, tmp_path):
+    def test_documents_are_sent_one_by_one(self, tmp_path):
         send_file = self._run_send(tmp_path, 3, True)
 
+        assert send_file.await_count == 3
+        assert all(call.kwargs["force_document"] is True for call in send_file.await_args_list)
+        assert all(isinstance(call.args[1], str) for call in send_file.await_args_list)
+
+    def test_caption_goes_to_the_first_document_only(self, tmp_path):
+        send_file = self._run_send(tmp_path, 3, True, text="hello")
+        captions = [call.kwargs["caption"] for call in send_file.await_args_list]
+
+        assert captions == ["hello", "", ""]
+
+    def test_photos_keep_album_grouping(self, tmp_path):
+        send_file = self._run_send(tmp_path, 3, False)
+
         assert send_file.await_count == 1
-        assert send_file.await_args.kwargs["force_document"] is True
+        assert send_file.await_args.kwargs["force_document"] is False
         assert len(send_file.await_args.args[1]) == 3
 
-    def test_files_compressed_by_default(self, tmp_path):
-        send_file = self._run_send(tmp_path, 2, False)
+    def test_progress_callback_is_passed(self, tmp_path):
+        send_file = self._run_send(tmp_path, 2, True)
 
-        assert send_file.await_args.kwargs["force_document"] is False
+        assert all(callable(call.kwargs["progress_callback"]) for call in send_file.await_args_list)

@@ -1518,6 +1518,104 @@ def tg_send(account, files, text, as_document, recipients):
     asyncio.run(_tg_send(account, parsed, text, files, as_document))
 
 
+@contextlib.contextmanager
+def _upload_progress(by_bytes: bool):
+    """Progress bars for an upload: current file plus overall total.
+
+    Yields None under --quiet so callers keep a single code path.
+    """
+    if _QUIET:
+        yield None
+        return
+
+    from rich.progress import (
+        BarColumn,
+        DownloadColumn,
+        Progress,
+        TaskProgressColumn,
+        TextColumn,
+        TransferSpeedColumn,
+    )
+
+    from tg_export.exporter import console
+
+    columns = [TextColumn("[progress.description]{task.description}"), BarColumn()]
+    if by_bytes:
+        columns += [DownloadColumn(binary_units=True), TransferSpeedColumn()]
+    else:
+        columns.append(TaskProgressColumn())
+
+    with Progress(*columns, console=console) as progress:
+        yield progress
+
+
+async def _send_files(client, recipient, file_paths, text, as_document):
+    """Send attachments to one recipient, reporting upload progress.
+
+    Documents never join an album, so with ``as_document`` files go one by one
+    and progress is counted in bytes. Compressed photos keep the album grouping
+    Telethon does in chunks of 10; there the callback counts files, not bytes.
+    """
+    caption = text or ""
+    by_bytes = as_document or len(file_paths) == 1
+
+    with _upload_progress(by_bytes) as progress:
+        if not by_bytes:
+            task = (
+                progress.add_task(f"{len(file_paths)} files", total=len(file_paths))
+                if progress
+                else None
+            )
+
+            def album_progress(sent, total):
+                if progress is not None and task is not None:
+                    progress.update(task, completed=sent, total=total)
+
+            await client.send_file(
+                recipient,
+                [str(p) for p in file_paths],
+                caption=caption,
+                force_document=as_document,
+                progress_callback=album_progress,
+            )
+            return
+
+        sizes = [p.stat().st_size for p in file_paths]
+        total_task = None
+        if progress and len(file_paths) > 1:
+            total_task = progress.add_task(
+                f"total 0/{len(file_paths)} files", total=sum(sizes)
+            )
+        done_bytes = 0
+
+        for index, path in enumerate(file_paths):
+            task = progress.add_task(path.name, total=sizes[index]) if progress else None
+
+            def file_progress(sent, total, task=task, done=done_bytes):
+                if progress is None or task is None:
+                    return
+                progress.update(task, completed=sent, total=total)
+                if total_task is not None:
+                    progress.update(total_task, completed=done + sent)
+
+            await client.send_file(
+                recipient,
+                str(path),
+                caption=caption if index == 0 else "",
+                force_document=as_document,
+                progress_callback=file_progress,
+            )
+            done_bytes += sizes[index]
+            if progress is not None and task is not None:
+                progress.remove_task(task)
+                if total_task is not None:
+                    progress.update(
+                        total_task,
+                        completed=done_bytes,
+                        description=f"total {index + 1}/{len(file_paths)} files",
+                    )
+
+
 async def _tg_send(account_name, recipients, text, files, as_document=False):
     api, _ = await _connect_tg(account_name)
     try:
@@ -1529,20 +1627,7 @@ async def _tg_send(account_name, recipients, text, files, as_document=False):
         for recipient in recipients:
             try:
                 if file_paths:
-                    if len(file_paths) == 1:
-                        await api.client.send_file(
-                            recipient,
-                            str(file_paths[0]),
-                            caption=text or "",
-                            force_document=as_document,
-                        )
-                    else:
-                        await api.client.send_file(
-                            recipient,
-                            [str(p) for p in file_paths],
-                            caption=text or "",
-                            force_document=as_document,
-                        )
+                    await _send_files(api.client, recipient, file_paths, text, as_document)
                 elif text:
                     await api.client.send_message(recipient, text)
 
