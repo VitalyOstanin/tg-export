@@ -9,6 +9,7 @@ import os
 import random
 import shutil
 import sqlite3
+import tempfile
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,6 +25,13 @@ logger = logging.getLogger(__name__)
 # parallel downloads fail at once.
 _MAX_DOWNLOAD_ATTEMPTS = 3
 _RETRY_JITTER_SECONDS = 1.0
+
+# Every download goes to its own directory under the target one and is moved
+# into place only once complete. A shared target directory cannot tell whose
+# partial file is whose: the previous cleanup deleted everything that appeared
+# since a snapshot taken before the download started, which with concurrent
+# downloads means deleting the files a neighbour had just finished writing.
+DOWNLOAD_STAGING_PREFIX = ".tg-export-download-"
 
 
 MEDIA_SUBDIRS = {
@@ -142,6 +150,10 @@ class MediaDownloader:
         # once no coroutine holds or waits on it. Without this the dict grows
         # monotonically for the whole export (one Lock per unique file_id).
         self._file_id_lock_users: dict[int, int] = {}
+        # Target directories whose leftover staging dirs were already removed.
+        # Anything found on the first visit within this process belongs to a
+        # previous run that was killed mid-download.
+        self._staging_cleaned: set[Path] = set()
 
     def snapshot_active_downloads(self) -> dict[int, DownloadProgress]:
         """Return a consistent copy of active_downloads (thread-safe).
@@ -230,15 +242,21 @@ class MediaDownloader:
         target_dir = chat_dir / subdir
         target_dir.mkdir(parents=True, exist_ok=True)
 
-        existing_files = set(target_dir.iterdir())
+        self._clean_stale_staging(target_dir)
         try:
-            async with self.semaphore:
-                path = await self._download_with_retry(tl_message, target_dir, media)
+            # TemporaryDirectory drops whatever the download left behind on any
+            # exit path, and it can only contain this download's own files.
+            # dir=target_dir keeps it on the same filesystem, so the move below
+            # is a rename rather than a copy.
+            with tempfile.TemporaryDirectory(dir=target_dir, prefix=DOWNLOAD_STAGING_PREFIX) as staging:
+                async with self.semaphore:
+                    path = await self._download_with_retry(tl_message, Path(staging), media)
 
-            if path is None:
-                return None, "no_file"
+                if path is None:
+                    return None, "no_file"
 
-            local_path = Path(path)
+                local_path = self._move_into_place(Path(path), target_dir)
+
             await self._register(tl_message, media, local_path, chat_id)
             return local_path, "downloaded"
         except _FileTooLargeError as e:
@@ -248,20 +266,37 @@ class MediaDownloader:
                 self.config.max_file_size_bytes,
                 tl_message.id,
             )
-            self._cleanup_new_files(target_dir, existing_files)
             await self._register_skip(tl_message, media, chat_id, "skipped_by_size")
             return None, "skipped_by_size"
-        except (asyncio.CancelledError, Exception):
-            self._cleanup_new_files(target_dir, existing_files)
-            raise
+
+    def _clean_stale_staging(self, target_dir: Path) -> None:
+        """Drop staging directories left by a run that was killed mid-download."""
+        if target_dir in self._staging_cleaned:
+            return
+        self._staging_cleaned.add(target_dir)
+        for entry in target_dir.iterdir():
+            if entry.is_dir() and entry.name.startswith(DOWNLOAD_STAGING_PREFIX):
+                shutil.rmtree(entry, ignore_errors=True)
+                logger.debug("removed stale staging dir: %s", entry)
 
     @staticmethod
-    def _cleanup_new_files(target_dir: Path, existing_files: set):
-        """Remove files created since existing_files snapshot."""
-        for f in target_dir.iterdir():
-            if f not in existing_files:
-                f.unlink(missing_ok=True)
-                logger.debug("removed partial file: %s", f)
+    def _move_into_place(downloaded: Path, target_dir: Path) -> Path:
+        """Move a finished download out of its staging directory.
+
+        Picks a free name the way Telethon does when it writes straight into
+        the target directory: downloading into an empty staging directory means
+        Telethon always chooses the base name, so a same-named neighbour would
+        be overwritten without this.
+        """
+        final_path = target_dir / downloaded.name
+        if final_path.exists():
+            stem, suffix = final_path.stem, final_path.suffix
+            counter = 1
+            while final_path.exists():
+                final_path = target_dir / f"{stem} ({counter}){suffix}"
+                counter += 1
+        os.replace(downloaded, final_path)
+        return final_path
 
     async def _register_skip(self, tl_message, media: Media, chat_id: int, status: str):
         """Record a skipped file in DB (no actual file on disk)."""
