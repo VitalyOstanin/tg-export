@@ -179,3 +179,103 @@ def test_config_dir_can_be_overridden_by_the_environment(tmp_path, monkeypatch):
     """Отдельные наборы аккаунтов (рабочий и личный) задать было нечем."""
     monkeypatch.setenv("TG_EXPORT_CONFIG_DIR", str(tmp_path / "work"))
     assert AccountManager().config_dir == tmp_path / "work"
+
+
+def _login_client(sign_in_effects, monkeypatch):
+    """Подставной TelegramClient, у которого sign_in отдаёт заданную последовательность."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    client = MagicMock()
+    client.connect = AsyncMock()
+    client.is_user_authorized = AsyncMock(return_value=False)
+    client.send_code_request = AsyncMock(
+        return_value=MagicMock(type=MagicMock(), next_type=None, timeout=None)
+    )
+    client.sign_in = AsyncMock(side_effect=sign_in_effects)
+    client.get_me = AsyncMock(return_value=MagicMock(first_name="Test", id=1))
+    client.disconnect = MagicMock(return_value=None)
+    monkeypatch.setattr("telethon.TelegramClient", lambda *a, **k: client)
+    return client
+
+
+@pytest.mark.asyncio
+async def test_two_factor_login_is_recognised_by_type_not_by_name(tmp_path, monkeypatch):
+    """Ветка 2FA выбиралась по подстроке в имени класса исключения.
+
+    Проект уже отказался от такого разбора в TgApi.start_takeout: переименование
+    класса в Telethon тихо ломает ветку, и вместо запроса пароля пользователь
+    получает трассировку. Telethon экспортирует нужные типы явно.
+    """
+    from telethon.errors import SessionPasswordNeededError
+
+    class SessionPasswordRequiredError(SessionPasswordNeededError):
+        """Тот же тип под другим именем -- проверка по подстроке его не узнаёт."""
+
+    mgr = AccountManager(config_dir=tmp_path)
+    mgr.ensure_dirs()
+    mgr.save_credentials(1, "hash")
+
+    client = _login_client([SessionPasswordRequiredError(request=None), None], monkeypatch)
+    monkeypatch.setattr("click.prompt", lambda *a, **k: "secret")
+
+    await mgr.add_account("acc")
+
+    assert client.sign_in.await_count == 2
+    assert client.sign_in.await_args.kwargs == {"password": "secret"}
+
+
+@pytest.mark.asyncio
+async def test_a_wrong_password_is_retried_and_then_reported(tmp_path, monkeypatch):
+    """Неверный пароль -- три попытки, после чего исключение уходит наружу."""
+    from telethon.errors import PasswordHashInvalidError, SessionPasswordNeededError
+
+    mgr = AccountManager(config_dir=tmp_path)
+    mgr.ensure_dirs()
+    mgr.save_credentials(1, "hash")
+
+    client = _login_client(
+        [
+            SessionPasswordNeededError(request=None),
+            PasswordHashInvalidError(request=None),
+            PasswordHashInvalidError(request=None),
+            PasswordHashInvalidError(request=None),
+        ],
+        monkeypatch,
+    )
+    monkeypatch.setattr("click.prompt", lambda *a, **k: "wrong")
+
+    with pytest.raises(PasswordHashInvalidError):
+        await mgr.add_account("acc")
+
+    assert client.sign_in.await_count == 4
+
+
+@pytest.mark.asyncio
+async def test_an_unrelated_login_error_is_not_reclassified(tmp_path, monkeypatch):
+    """`except Exception` с разбором по имени пропускал через ту же ветку всё подряд."""
+    mgr = AccountManager(config_dir=tmp_path)
+    mgr.ensure_dirs()
+    mgr.save_credentials(1, "hash")
+
+    _login_client([ValueError("phone number invalid")], monkeypatch)
+    monkeypatch.setattr("click.prompt", lambda *a, **k: "123")
+
+    with pytest.raises(ValueError):
+        await mgr.add_account("acc")
+
+
+@pytest.mark.asyncio
+async def test_login_status_goes_to_stderr(tmp_path, monkeypatch, capsys):
+    """stdout занят машиночитаемым выводом команд -- статус входа туда не пишут."""
+    mgr = AccountManager(config_dir=tmp_path)
+    mgr.ensure_dirs()
+    mgr.save_credentials(1, "hash")
+
+    _login_client([None], monkeypatch)
+    monkeypatch.setattr("click.prompt", lambda *a, **k: "123")
+
+    await mgr.add_account("acc")
+
+    captured = capsys.readouterr()
+    assert captured.out == "", f"в stdout попал статус входа: {captured.out!r}"
+    assert "Logged in as" in captured.err

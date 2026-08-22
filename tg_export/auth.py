@@ -47,6 +47,20 @@ def validate_account_name(name: str) -> str:
 # string in the output of `tg-export config`.
 DEFAULT_MIN_FREE_SPACE = "20GB"
 
+# How many times the two-factor password is asked before the login is given up.
+_PASSWORD_ATTEMPTS = 3
+
+
+def _notify(message: str) -> None:
+    """Print a login status line to stderr.
+
+    stdout carries the machine-readable output of the query commands, so status
+    lines of an interactive login belong on the other stream -- the same rule
+    the CLI applies through its own ``_diag``.
+    """
+    click.echo(message, err=True)
+
+
 # Keys the global config.yaml may carry.
 _KNOWN_GLOBAL_KEYS = {"proxy", "min_free_space"}
 
@@ -239,6 +253,7 @@ class AccountManager:
     async def add_account(self, name: str):
         """Interactive Telethon login. Requires terminal interaction."""
         from telethon import TelegramClient
+        from telethon.errors import SessionPasswordNeededError
 
         from tg_export.session import FixedSQLiteSession
 
@@ -263,38 +278,46 @@ class AccountManager:
         if not await client.is_user_authorized():
             phone = click.prompt("Phone number (with +)", type=str)
             sent = await client.send_code_request(phone)
-            click.echo(f"Code type: {type(sent.type).__name__}")
-            click.echo(f"Next type: {sent.next_type.__class__.__name__ if sent.next_type else 'none'}")
-            click.echo(f"Timeout: {sent.timeout}s" if sent.timeout else "No timeout")
+            _notify(f"Code type: {type(sent.type).__name__}")
+            _notify(f"Next type: {sent.next_type.__class__.__name__ if sent.next_type else 'none'}")
+            _notify(f"Timeout: {sent.timeout}s" if sent.timeout else "No timeout")
 
             code = click.prompt("Enter code", type=str)
             try:
                 await client.sign_in(phone, code)
-            except Exception as e:
-                if "SessionPasswordNeeded" in type(e).__name__:
-                    for attempt in range(3):
-                        password = click.prompt("2FA password", hide_input=True, type=str)
-                        try:
-                            await client.sign_in(password=password)
-                            break
-                        except Exception as e2:
-                            if "PasswordHashInvalid" in type(e2).__name__:
-                                remaining = 2 - attempt
-                                if remaining > 0:
-                                    click.echo(f"Wrong password. {remaining} attempts left.")
-                                else:
-                                    click.echo("Too many wrong attempts.")
-                                    disc = client.disconnect()
-                                    if disc is not None:
-                                        await disc
-                                    raise
-                            else:
-                                raise
-                else:
-                    raise
+            except SessionPasswordNeededError:
+                await self._sign_in_with_password(client)
 
         me = await client.get_me()
-        click.echo(f"Logged in as: {getattr(me, 'first_name', '?')} (id={getattr(me, 'id', '?')})")
+        _notify(f"Logged in as: {getattr(me, 'first_name', '?')} (id={getattr(me, 'id', '?')})")
         disc = client.disconnect()
         if disc is not None:
             await disc
+
+    @staticmethod
+    async def _sign_in_with_password(client) -> None:
+        """Ask for the two-factor password until it is accepted or attempts run out.
+
+        The branch is chosen by exception type rather than by a substring of the
+        class name: the project already dropped name matching in
+        ``TgApi.start_takeout``, since a rename in Telethon breaks it silently --
+        the user would get a traceback instead of a password prompt. Errors other
+        than a wrong password now propagate on their own, without an `else: raise`.
+        """
+        from telethon.errors import PasswordHashInvalidError
+
+        for attempt in range(_PASSWORD_ATTEMPTS):
+            password = click.prompt("2FA password", hide_input=True, type=str)
+            try:
+                await client.sign_in(password=password)
+                return
+            except PasswordHashInvalidError:
+                remaining = _PASSWORD_ATTEMPTS - 1 - attempt
+                if remaining > 0:
+                    _notify(f"Wrong password. {remaining} attempts left.")
+                    continue
+                _notify("Too many wrong attempts.")
+                disc = client.disconnect()
+                if disc is not None:
+                    await disc
+                raise
