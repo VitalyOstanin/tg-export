@@ -143,8 +143,27 @@ def _resolve_output(account, config_override, output_override, *, missing_config
         raise click.exceptions.Exit(EXIT_FAILURE)
 
     cfg = load_config(config_path)
-    output_base = Path(output_override).expanduser() if output_override else Path(cfg.output.path)
+    if output_override:
+        output_base = Path(output_override).expanduser()
+    else:
+        output_base = _account_output_dir(Path(cfg.output.path), account)
     return account, cfg, output_base
+
+
+def _account_output_dir(base: Path, account: str) -> Path:
+    """Return the export directory of one account under the configured base.
+
+    The documented layout is ``{output.path}/{alias}``: accounts sharing one
+    directory would share one state database, and the dedup scan would take a
+    neighbour's files for its own. Two shapes are left alone -- a base whose
+    last component is already the alias, and a base that already holds an
+    export -- because configs written by earlier versions named the account
+    directory itself, and appending the alias there would silently restart the
+    export in an empty ``{path}/{alias}/{alias}``.
+    """
+    if base.name == account or (base / STATE_DB_NAME).exists():
+        return base
+    return base / account
 
 
 @contextlib.asynccontextmanager

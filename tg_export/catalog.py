@@ -199,7 +199,9 @@ def format_catalog_json(chats: list[Chat]) -> str:
 
 def generate_config_template(chats: list[Chat], account: str | None = None) -> str:
     """Generate config YAML template from catalog."""
-    output_path = f"./export_output/{account}" if account else "./export_output"
+    # The alias is appended by the exporter, so the template names the base
+    # directory only -- writing it here as well gave ``export_output/acc/acc``.
+    output_path = "./export_output"
     lines = [
         "# tg-export config template",
         "# Uncomment and customize sections as needed",

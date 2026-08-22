@@ -149,7 +149,7 @@ AI-агенты (Claude Code, Cursor и т.д.) могут помочь с на�
 
 ```yaml
 output:
-  path: ./export_output/myaccount
+  path: ./export_output    # экспорт аккаунта ляжет в ./export_output/<alias>/
 
 defaults:
   media:
@@ -232,7 +232,7 @@ uv run tg-export takeout clear
 
 ### 7. Sibling-дедупликация
 
-При экспорте нескольких аккаунтов в один каталог (`./export_output/`), tg-export автоматически находит соседние базы данных и использует уже скачанные файлы через hardlink:
+Каждый аккаунт экспортируется в свой подкаталог `./export_output/<alias>/`. Соседние базы данных tg-export находит автоматически и использует уже скачанные файлы через hardlink:
 
 ```
 export_output/
