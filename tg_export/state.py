@@ -338,7 +338,6 @@ class ExportState:
             CREATE INDEX IF NOT EXISTS idx_messages_date ON messages(chat_id, date);
             CREATE INDEX IF NOT EXISTS idx_messages_from ON messages(chat_id, from_id);
             CREATE INDEX IF NOT EXISTS idx_messages_media ON messages(chat_id, media_type);
-            CREATE INDEX IF NOT EXISTS idx_messages_grouped ON messages(chat_id, grouped_id);
 
             CREATE TABLE IF NOT EXISTS files (
                 file_id        INTEGER NOT NULL,
@@ -355,20 +354,6 @@ class ExportState:
 
             CREATE INDEX IF NOT EXISTS idx_files_chat ON files(chat_id);
             CREATE INDEX IF NOT EXISTS idx_files_status ON files(status);
-            CREATE INDEX IF NOT EXISTS idx_files_local_path ON files(local_path);
-
-            CREATE TABLE IF NOT EXISTS takeout (
-                account    TEXT PRIMARY KEY,
-                takeout_id INTEGER,
-                created_at TIMESTAMP
-            );
-
-            CREATE TABLE IF NOT EXISTS users_cache (
-                user_id      INTEGER PRIMARY KEY,
-                display_name TEXT NOT NULL,
-                username     TEXT,
-                updated_at   TIMESTAMP
-            );
 
             CREATE TABLE IF NOT EXISTS catalog_cache (
                 chat_id           INTEGER PRIMARY KEY,
@@ -384,13 +369,27 @@ class ExportState:
                 is_monoforum      INTEGER DEFAULT 0,
                 updated_at        TIMESTAMP
             );
-
-            CREATE TABLE IF NOT EXISTS meta (
-                key   TEXT PRIMARY KEY,
-                value TEXT
-            );
         """)
+        await self._drop_unused_schema()
         await self.commit()
+
+    async def _drop_unused_schema(self):
+        """Remove schema objects nothing reads.
+
+        `takeout` was a second, parallel store for takeout_id next to the one
+        in the Telethon session file, and was never written to; `users_cache`
+        and `meta` were never touched either. The two indexes had no reader but
+        were paid for on every insert. Dropping them here also cleans databases
+        created by earlier versions -- IF EXISTS makes it a no-op afterwards.
+        """
+        for statement in (
+            "DROP TABLE IF EXISTS takeout",
+            "DROP TABLE IF EXISTS users_cache",
+            "DROP TABLE IF EXISTS meta",
+            "DROP INDEX IF EXISTS idx_messages_grouped",
+            "DROP INDEX IF EXISTS idx_files_local_path",
+        ):
+            await self.db.execute(statement)
 
     # -- export_state --
 
@@ -658,23 +657,6 @@ class ExportState:
             rows = await cur.fetchall()
             return [r["m"] for r in rows]
 
-    async def load_messages_for_month(self, chat_id: int, month_key: str) -> list[Message]:
-        """Load messages for a single (chat, "YYYY-MM") bucket, ordered by msg_id.
-
-        Why: streaming render reads one month at a time to keep peak memory
-        proportional to one month rather than the whole chat.
-        """
-        if month_key == "0000-00":
-            sql = "SELECT * FROM messages WHERE chat_id=? AND date IS NULL ORDER BY msg_id"
-            params: tuple = (chat_id,)
-        else:
-            start, end = _month_range(month_key)
-            sql = "SELECT * FROM messages WHERE chat_id=? AND date >= ? AND date < ? ORDER BY msg_id"
-            params = (chat_id, start, end)
-        async with self.db.execute(sql, params) as cur:
-            rows = await cur.fetchall()
-            return [_row_to_message(dict(r)) for r in rows]
-
     async def count_messages(self, chat_id: int) -> int:
         """Count messages for a chat."""
         async with self.db.execute("SELECT COUNT(*) FROM messages WHERE chat_id=?", (chat_id,)) as cur:
@@ -799,37 +781,6 @@ class ExportState:
             rows = await cur.fetchall()
             return [_row_to_message(dict(r)) for r in rows]
 
-    # -- takeout --
-
-    async def save_takeout(self, account: str, takeout_id: int):
-        await self.db.execute(
-            """INSERT INTO takeout (account, takeout_id, created_at)
-               VALUES (?, ?, ?)
-               ON CONFLICT(account) DO UPDATE SET takeout_id=?, created_at=?""",
-            (account, takeout_id, datetime.now(), takeout_id, datetime.now()),
-        )
-        await self.commit()
-
-    async def get_takeout(self, account: str) -> int | None:
-        async with self.db.execute("SELECT takeout_id FROM takeout WHERE account=?", (account,)) as cur:
-            row = await cur.fetchone()
-            return row["takeout_id"] if row else None
-
-    # -- users_cache --
-
-    async def cache_user(self, user_id: int, display_name: str, username: str | None):
-        await self.db.execute(
-            """INSERT INTO users_cache (user_id, display_name, username, updated_at)
-               VALUES (?, ?, ?, ?)
-               ON CONFLICT(user_id) DO UPDATE SET display_name=?, username=?, updated_at=?""",
-            (user_id, display_name, username, datetime.now(), display_name, username, datetime.now()),
-        )
-
-    async def get_user(self, user_id: int) -> dict | None:
-        async with self.db.execute("SELECT * FROM users_cache WHERE user_id=?", (user_id,)) as cur:
-            row = await cur.fetchone()
-            return dict(row) if row else None
-
     # -- catalog_cache --
 
     async def cache_catalog(
@@ -885,23 +836,3 @@ class ExportState:
         # iter_messages threw before the first batch the catalog entry would
         # be lost and statistics would show an empty chat.
         await self.commit()
-
-    async def get_catalog(self) -> list[dict]:
-        async with self.db.execute("SELECT * FROM catalog_cache") as cur:
-            rows = await cur.fetchall()
-            return [dict(r) for r in rows]
-
-    # -- meta --
-
-    async def set_meta(self, key: str, value: str):
-        await self.db.execute(
-            """INSERT INTO meta (key, value) VALUES (?, ?)
-               ON CONFLICT(key) DO UPDATE SET value=?""",
-            (key, value, value),
-        )
-        await self.commit()
-
-    async def get_meta(self, key: str) -> str | None:
-        async with self.db.execute("SELECT value FROM meta WHERE key=?", (key,)) as cur:
-            row = await cur.fetchone()
-            return row["value"] if row else None

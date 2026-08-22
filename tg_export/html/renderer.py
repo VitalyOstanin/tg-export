@@ -431,29 +431,38 @@ def _safe_href(url: str) -> str:
     return "#"
 
 
+# Types that differ only by the CSS class of a plain <span>. The forms that
+# need more than that -- pre, blockquote, links, email, phone -- stay in the
+# chain below.
+_SIMPLE_SPAN_CLASSES: dict[TextType, str] = {
+    TextType.bold: "bold",
+    TextType.italic: "italic",
+    TextType.underline: "underline",
+    TextType.strikethrough: "strikethrough",
+    TextType.code: "code",
+    TextType.spoiler: "spoiler",
+    TextType.mention: "mention",
+    TextType.mention_name: "mention",
+    TextType.hashtag: "hashtag",
+    TextType.bot_command: "bot-command",
+    TextType.cashtag: "cashtag",
+}
+
+
 def render_text_parts(parts: list[TextPart]) -> Markup:
     """Render TextPart list to HTML Markup (safe for autoescape templates)."""
     result = []
     for tp in parts:
         text = escape(tp.text)
-        if tp.type == TextType.text:
+        span_class = _SIMPLE_SPAN_CLASSES.get(tp.type)
+        if span_class is not None:
+            result.append(f'<span class="{span_class}">{text}</span>')
+        elif tp.type == TextType.text:
             result.append(text.replace("\n", "<br>"))
-        elif tp.type == TextType.bold:
-            result.append(f'<span class="bold">{text}</span>')
-        elif tp.type == TextType.italic:
-            result.append(f'<span class="italic">{text}</span>')
-        elif tp.type == TextType.underline:
-            result.append(f'<span class="underline">{text}</span>')
-        elif tp.type == TextType.strikethrough:
-            result.append(f'<span class="strikethrough">{text}</span>')
-        elif tp.type == TextType.code:
-            result.append(f'<span class="code">{text}</span>')
         elif tp.type == TextType.pre:
             result.append(f'<pre class="pre">{text}</pre>')
         elif tp.type == TextType.blockquote:
             result.append(f'<div class="blockquote">{text}</div>')
-        elif tp.type == TextType.spoiler:
-            result.append(f'<span class="spoiler">{text}</span>')
         elif tp.type == TextType.url:
             href = escape(_safe_href(tp.text))
             result.append(
@@ -464,10 +473,6 @@ def render_text_parts(parts: list[TextPart]) -> Markup:
             result.append(
                 f'<a class="text-url" href="{href}" target="_blank" rel="noopener noreferrer">{text}</a>'
             )
-        elif tp.type == TextType.mention or tp.type == TextType.mention_name:
-            result.append(f'<span class="mention">{text}</span>')
-        elif tp.type == TextType.hashtag:
-            result.append(f'<span class="hashtag">{text}</span>')
         elif tp.type == TextType.email:
             if _EMAIL_RE.match(tp.text):
                 href = escape(_safe_href(f"mailto:{tp.text}"))
@@ -480,10 +485,6 @@ def render_text_parts(parts: list[TextPart]) -> Markup:
                 result.append(f'<a href="{href}">{text}</a>')
             else:
                 result.append(text)
-        elif tp.type == TextType.bot_command:
-            result.append(f'<span class="bot-command">{text}</span>')
-        elif tp.type == TextType.cashtag:
-            result.append(f'<span class="cashtag">{text}</span>')
         elif tp.type == TextType.custom_emoji:
             result.append(text)
         else:

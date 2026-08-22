@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from enum import Enum, StrEnum
@@ -828,7 +827,7 @@ def _action_from_dict(d: dict) -> ServiceAction:
 
 
 # ---------------------------------------------------------------------------
-# Message with JSON methods
+# Message
 # ---------------------------------------------------------------------------
 
 
@@ -854,75 +853,3 @@ class Message:
     inline_buttons: list[list[InlineButton]] | None
     topic_id: int | None
     grouped_id: int | None
-
-    def to_json(self) -> str:
-        d = {}
-        for k, v in self.__dict__.items():
-            if k == "text":
-                d[k] = [asdict(tp) for tp in v]
-            elif k == "media" and v is not None:
-                d[k] = _media_to_dict(v)
-            elif k == "action" and v is not None:
-                d[k] = _action_to_dict(v)
-            elif k == "forwarded_from" and v is not None:
-                d[k] = asdict(v)
-            elif k == "reactions":
-                d[k] = [asdict(r) for r in (v or [])]
-            elif k == "inline_buttons" and v is not None:
-                d[k] = [[asdict(btn) for btn in row] for row in v]
-            else:
-                d[k] = v
-        return json.dumps(d, default=_encode_default, ensure_ascii=False)
-
-    @classmethod
-    def from_json(cls, s: str) -> Message:
-        d = json.loads(s, object_hook=_decode_hook)
-
-        # text
-        text_parts = []
-        for tp in d.get("text", []):
-            if isinstance(tp, dict):
-                tp_type = TextType(tp.pop("type"))
-                text_parts.append(TextPart(type=tp_type, **tp))
-            else:
-                text_parts.append(tp)
-        d["text"] = text_parts
-
-        # media
-        if d.get("media") is not None and isinstance(d["media"], dict):
-            d["media"] = _media_from_dict(d["media"])
-
-        # action
-        if d.get("action") is not None and isinstance(d["action"], dict):
-            d["action"] = _action_from_dict(d["action"])
-
-        # forwarded_from
-        if d.get("forwarded_from") is not None and isinstance(d["forwarded_from"], dict):
-            fwd = d["forwarded_from"]
-            d["forwarded_from"] = ForwardInfo(**fwd)
-
-        # reactions
-        reactions = []
-        for r in d.get("reactions", []):
-            if isinstance(r, dict):
-                r["type"] = ReactionType(r["type"])
-                reactions.append(Reaction(**r))
-            else:
-                reactions.append(r)
-        d["reactions"] = reactions
-
-        # inline_buttons
-        if d.get("inline_buttons") is not None:
-            buttons = []
-            for row in d["inline_buttons"]:
-                btn_row = []
-                for btn in row:
-                    if isinstance(btn, dict):
-                        btn["type"] = InlineButtonType(btn["type"])
-                        btn_row.append(InlineButton(**btn))
-                    else:
-                        btn_row.append(btn)
-                buttons.append(btn_row)
-            d["inline_buttons"] = buttons
-
-        return cls(**d)

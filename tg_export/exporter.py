@@ -34,7 +34,7 @@ from rich.text import Text
 from tg_export.api import TgApi
 from tg_export.config import ChatExportConfig, Config
 from tg_export.converter import convert_message
-from tg_export.format import format_size
+from tg_export.format import format_size, format_speed
 from tg_export.html.renderer import HtmlRenderer
 from tg_export.media import DiskSpaceError, MediaDownloader
 from tg_export.models import Chat, ForumTopic, Message
@@ -98,18 +98,8 @@ def file_progress_description(filename: str) -> str:
 _format_size = format_size
 
 
-def _format_speed(bytes_count: int, elapsed_s: float) -> str:
-    """Format download speed as human-readable string."""
-    if elapsed_s <= 0:
-        return "-- B/s"
-    bps = bytes_count / elapsed_s
-    if bps < 1024:
-        return f"{bps:.0f} B/s"
-    if bps < 1024**2:
-        return f"{bps / 1024:.1f} KB/s"
-    if bps < 1024**3:
-        return f"{bps / 1024**2:.1f} MB/s"
-    return f"{bps / 1024**3:.2f} GB/s"
+# Re-exported for backward compatibility; the same size ladder serves both.
+_format_speed = format_speed
 
 
 def _format_elapsed(elapsed_s: float) -> str:

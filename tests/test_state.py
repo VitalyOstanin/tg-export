@@ -1,4 +1,5 @@
 import contextlib
+import sqlite3
 from datetime import datetime
 
 import pytest
@@ -276,3 +277,54 @@ async def test_lock_is_not_released_by_removing_its_file(tmp_path):
         with contextlib.suppress(OSError):
             fcntl.flock(fd_b, fcntl.LOCK_UN)
         os.close(fd_b)
+
+
+@pytest.mark.asyncio
+async def test_message_with_reactions_roundtrip(state):
+    """Реакции переживают запись и чтение по-колоночным путём.
+
+    Раньше сохранность реакций проверялась через Message.to_json/from_json --
+    вторую, не используемую в продукте сериализацию.
+    """
+    from tg_export.models import Reaction, ReactionType
+
+    msg = _make_msg(msg_id=1, text="hi")
+    msg.reactions = [
+        Reaction(type=ReactionType.emoji, emoji="\U0001f44d", document_id=None, count=5, recent=None)
+    ]
+    await state.store_message(msg)
+
+    loaded = (await state.load_messages(chat_id=123))[0]
+
+    assert len(loaded.reactions) == 1
+    assert loaded.reactions[0].emoji == "\U0001f44d"
+    assert loaded.reactions[0].count == 5
+
+
+@pytest.mark.asyncio
+async def test_unused_tables_and_indexes_are_dropped(tmp_path):
+    """Таблицы takeout, users_cache и meta и два индекса создавались при каждом
+    открытии, но ничем не читались; индексы при этом оплачивались на каждой
+    записи. Базы прежних версий тоже приводятся в порядок."""
+    from tg_export.state import ExportState
+
+    db = tmp_path / "legacy.db"
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        "CREATE TABLE takeout (account TEXT PRIMARY KEY, takeout_id INTEGER, created_at TIMESTAMP);"
+        "CREATE TABLE users_cache (user_id INTEGER PRIMARY KEY, display_name TEXT NOT NULL);"
+        "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);"
+    )
+    conn.commit()
+    conn.close()
+
+    state = ExportState(db)
+    await state.open()
+    try:
+        async with state.db.execute("SELECT name FROM sqlite_master") as cur:
+            names = {row[0] for row in await cur.fetchall()}
+    finally:
+        await state.close()
+
+    assert not names & {"takeout", "users_cache", "meta"}, names
+    assert not names & {"idx_messages_grouped", "idx_files_local_path"}, names

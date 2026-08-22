@@ -9,11 +9,19 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 # Media subdirs in tdesktop HTML export
-_MEDIA_SUBDIRS = {"photos", "files", "video_files", "voice_messages", "video_messages", "stickers", "gifs"}
+_TDESKTOP_MEDIA_SUBDIRS = {
+    "photos",
+    "files",
+    "video_files",
+    "voice_messages",
+    "video_messages",
+    "stickers",
+    "gifs",
+}
 
 # Regex patterns for tdesktop HTML parsing
 _MSG_ID_RE = re.compile(r'id="message(\d+)"')
-_HREF_RE = re.compile(r'href="[^"]*?/chats/[^"]*?/(' + "|".join(_MEDIA_SUBDIRS) + r')/([^"]+)"')
+_HREF_RE = re.compile(r'href="[^"]*?/chats/[^"]*?/(' + "|".join(_TDESKTOP_MEDIA_SUBDIRS) + r')/([^"]+)"')
 
 
 class TdesktopIndex:
@@ -59,12 +67,6 @@ class TdesktopIndex:
         assert self._chat_map is not None
         return self._chat_map.get(chat_name)
 
-    def get_chat_names(self) -> list[str]:
-        """Return list of indexed chat names."""
-        self._ensure_chat_map()
-        assert self._chat_map is not None
-        return list(self._chat_map.keys())
-
     def load_chat_index(self, chat_name: str) -> bool:
         """Build msg_id -> file_paths index for a specific chat.
 
@@ -105,12 +107,6 @@ class TdesktopIndex:
             if f.exists():
                 return f
         return None
-
-    def find_files(self, msg_id: int) -> list[Path]:
-        """Find all file paths for a message (e.g. album with multiple photos)."""
-        if self._current_index is None:
-            return []
-        return self._current_index.get(msg_id, [])
 
 
 def _extract_chat_name(msg_html: Path) -> str | None:

@@ -220,28 +220,6 @@ class TgApi:
         async for msg in client.iter_messages(chat_id, **kwargs):
             yield msg
 
-    async def iter_topic_messages(self, chat_id: int, topic_id: int, min_id: int = 0):
-        client = self._active_client
-        async for msg in client.iter_messages(chat_id, reply_to=topic_id, min_id=min_id):
-            yield msg
-
-    async def get_forum_topics(self, chat_id: int):
-        """Get forum topics for a supergroup."""
-        from telethon.tl.functions.channels import (
-            GetForumTopicsRequest,  # pyright: ignore[reportAttributeAccessIssue]
-        )
-
-        result = await self.client(
-            GetForumTopicsRequest(
-                channel=chat_id,
-                offset_date=0,
-                offset_id=0,
-                offset_topic=0,
-                limit=100,
-            )
-        )
-        return result.topics
-
     async def download_media(self, message, path: Path, progress_cb=None):
         client = self._active_client
         return await client.download_media(message, file=str(path), progress_callback=progress_cb)  # pyright: ignore[reportArgumentType]
