@@ -147,6 +147,10 @@ class ExportStats:
         """Reset per-chat tracking at start of each chat."""
         self.messages_in_db = messages_in_db
         self.messages_total = messages_total
+        # Rates shown on the status line divide per-chat counters, so they need
+        # the start of this chat: dividing them by the whole run's elapsed time
+        # made the reported speed fall the longer the export went on.
+        self._chat_started_at = time.monotonic()
         self._chat_snapshot = {
             "messages_exported": self.messages_exported,
             "files_downloaded": self.files_downloaded,
@@ -158,6 +162,12 @@ class ExportStats:
             "files_skipped_by_type": self.files_skipped_by_type,
             "data_size": self.data_size,
         }
+
+    @property
+    def chat_elapsed(self) -> float:
+        """Seconds since the current chat started, 0 before the first chat."""
+        started = getattr(self, "_chat_started_at", 0.0)
+        return time.monotonic() - started if started else 0.0
 
     @property
     def chat_messages_new(self) -> int:
@@ -364,6 +374,23 @@ class _MediaPipeline:
         return msg
 
 
+def phase_two_kwargs(iter_kwargs: dict, *, oldest_msg_id: int, last_msg_id: int) -> dict:
+    """Arguments for the descending pass over a chat.
+
+    Telethon applies ``offset_date`` only when ``offset_id`` is zero, so the
+    date is dropped whenever an id anchor exists. With no lower bound recorded
+    but a known upper one -- what an interruption between the phases leaves
+    behind -- the pass starts at ``last_msg_id``: it used to start at the newest
+    message instead and walk the whole chat again.
+    """
+    kwargs = dict(iter_kwargs)
+    anchor = oldest_msg_id or last_msg_id
+    if anchor > 0:
+        kwargs.pop("offset_date", None)
+        kwargs["offset_id"] = anchor
+    return kwargs
+
+
 class StatusView:
     """Two status lines of the live display, formatted from ExportStats.
 
@@ -381,8 +408,11 @@ class StatusView:
         stats = self.stats
         elapsed = time.monotonic() - self.start_time
         elapsed_str = _format_elapsed(elapsed)
+        # Both rates below count what this chat produced, so they are measured
+        # from the start of this chat and not from the start of the run.
+        chat_elapsed = stats.chat_elapsed
         chat_data = stats.chat_data_size
-        speed_str = format_speed(chat_data, elapsed) if chat_data > 0 else ""
+        speed_str = format_speed(chat_data, chat_elapsed) if chat_data > 0 else ""
 
         # Per-chat message counts
         chat_msgs = stats.chat_messages_new
@@ -393,8 +423,8 @@ class StatusView:
         msgs_str += "[/]"
         if chat_msgs > 0:
             msgs_str += f" ([green]+{chat_msgs}[/]"
-            if elapsed > 0:
-                msgs_str += f", [green]{chat_msgs / elapsed:.0f}/s[/]"
+            if chat_elapsed > 0:
+                msgs_str += f", [green]{chat_msgs / chat_elapsed:.0f}/s[/]"
             msgs_str += ")"
 
         line = f"  chats: [cyan]{stats.chats_exported}/{stats.chats_included}[/] | msgs: {msgs_str}"
@@ -1024,15 +1054,9 @@ class Exporter:
         batch: list[Message] = []
         current_oldest = oldest_msg_id
         phase2_max_id = last_msg_id
-        p2_kwargs = dict(iter_kwargs)  # includes offset_date if set
-        if oldest_msg_id > 0:
-            # Telethon uses offset_id when both offset_id and offset_date are
-            # given (offset_date only applies when offset_id == 0). Passing
-            # both is redundant and confusing; drop offset_date here. The
-            # date_from/date_to bounds are still enforced per-message via
-            # before_date_from below.
-            p2_kwargs.pop("offset_date", None)
-            p2_kwargs["offset_id"] = oldest_msg_id
+        # The date_from/date_to bounds are still enforced per-message via
+        # before_date_from below.
+        p2_kwargs = phase_two_kwargs(iter_kwargs, oldest_msg_id=oldest_msg_id, last_msg_id=last_msg_id)
 
         reached_date_from = False
         iterator_exhausted = False
@@ -1502,6 +1526,7 @@ class Exporter:
             return
 
         self._status_print(f"[yellow]Found {len(broken)} files to re-download[/]")
+        errors_before = len(stats.errors)
         redownloaded = 0
         for f in broken:
             if self._shutdown:
@@ -1550,8 +1575,12 @@ class Exporter:
 
         if redownloaded:
             self._status_print(f"[green]Re-downloaded {redownloaded}/{len(broken)} files[/]")
-        if stats.errors:
-            console.print(f"[red]{len(stats.errors)} files still have issues[/]")
+        # Only the failures of this pass: the shared list already holds the
+        # errors of the export itself, and printing its length reported "100
+        # files still have issues" after a verification that found none.
+        failed_here = len(stats.errors) - errors_before
+        if failed_here:
+            console.print(f"[red]{failed_here} files still have issues[/]")
 
     async def _cleanup_orphaned_files(self, chat_id: int, chat_dir: Path):
         """Remove media files on disk that have no record in DB.

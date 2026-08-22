@@ -105,6 +105,26 @@ def _link_or_copy(src: Path, dst: Path) -> bool:
             return False
 
 
+def _reusable_target(dst: Path, expected_size: int) -> Path | None:
+    """Return ``dst`` when it already holds the expected bytes, else None.
+
+    A name match alone is no proof of content: an interrupted run leaves a
+    truncated file under the same name, and reusing it registers a partial
+    download as complete. A leftover of the wrong size is dropped so the
+    caller can link or copy the file again.
+    """
+    try:
+        actual_size = dst.stat().st_size
+    except OSError:
+        return None
+    if expected_size and actual_size != expected_size:
+        logger.debug("stale target %s: %d bytes, expected %d -- replacing", dst, actual_size, expected_size)
+        with contextlib.suppress(OSError):
+            dst.unlink()
+        return None
+    return dst
+
+
 def _lookup_file_in_db(db_path: Path, file_id: int) -> str | None:
     """Look up file_id in a sibling state DB (synchronous, read-only).
 
@@ -407,7 +427,9 @@ class MediaDownloader:
         dst = target_dir / src.name
 
         if dst.exists():
-            return dst
+            reused = _reusable_target(dst, media.file.size or 0)
+            if reused is not None:
+                return reused
 
         # to_thread: os.link is a syscall and the copy fallback reads and writes
         # the whole file. Both stall every other download and the Telegram
@@ -485,7 +507,9 @@ class MediaDownloader:
             dst = target_dir / src.name
 
             if dst.exists():
-                return dst
+                reused = _reusable_target(dst, expected_size)
+                if reused is not None:
+                    return reused
 
             if _link_or_copy(src, dst):
                 logger.debug("linked from sibling: file_id=%d %s -> %s", file_id, src, dst)
@@ -517,9 +541,12 @@ class MediaDownloader:
             target_dir = chat_dir / subdir
             target_dir.mkdir(parents=True, exist_ok=True)
             dst = target_dir / src.name
-            # Avoid overwriting if already exists
+            # Reuse an existing file only when its size matches; a leftover of
+            # the wrong size is replaced by the copy below.
             if dst.exists():
-                return dst
+                reused = _reusable_target(dst, media.file.size if media.file else 0)
+                if reused is not None:
+                    return reused
             try:
                 shutil.copy2(src, dst)
             except OSError as e:

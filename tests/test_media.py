@@ -251,3 +251,29 @@ async def test_a_telegram_server_error_is_retried_like_a_network_one(tmp_path, m
     assert status == "downloaded", f"ServerError не был повторён: {status}"
     assert len(calls) == 2
     assert local_path is not None and local_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_reuse_replaces_a_truncated_leftover_instead_of_returning_it(tmp_path):
+    """Совпадения имени недостаточно: обрыв прошлого прогона оставляет файл
+    того же имени и меньшего размера, а путь переиспользования возвращал его
+    как готовый и регистрировал в состоянии со статусом done.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    src = tmp_path / "other_chat" / "photos" / "photo.jpg"
+    src.parent.mkdir(parents=True)
+    src.write_bytes(b"full")
+
+    chat_dir = tmp_path / "chat"
+    dst = chat_dir / "photos" / "photo.jpg"
+    dst.parent.mkdir(parents=True)
+    dst.write_bytes(b"tr")
+
+    dl = _downloader(MagicMock(), tmp_path)
+    dl.state.get_file_any_chat = AsyncMock(return_value={"chat_id": 2, "local_path": str(src)})
+
+    result = await dl._try_link_intra_account(_photo(), chat_dir, chat_id=1)
+
+    assert result == dst
+    assert dst.read_bytes() == b"full"

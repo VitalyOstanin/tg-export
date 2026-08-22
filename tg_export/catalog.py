@@ -309,18 +309,17 @@ async def fetch_catalog(api, include_left: bool = False) -> list[Chat]:
             continue  # already in main list
         folder = peer_to_folder.get(entity_id)
         chat = convert_chat(dialog, folder=folder)
-        # Archive-only = not in main list and not in any named folder
-        if entity_id not in non_archived_ids:
-            chat.is_archived = True
-            archived_count += 1
+        # Everything left here is archive-only: the main list and the named
+        # folders were skipped by the `continue` above.
+        chat.is_archived = True
+        archived_count += 1
         chats.append(chat)
     log.debug("Got archived dialogs, %d are archive-only", archived_count)
     log.debug("Total chats: %d", len(chats))
 
     if include_left:
         try:
-            left_result = await api.get_left_channels()
-            for ch in getattr(left_result, "chats", []):
+            for ch in await api.get_left_channels():
                 chat = Chat(
                     id=ch.id,
                     name=getattr(ch, "title", ""),

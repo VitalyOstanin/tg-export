@@ -26,6 +26,9 @@ from tg_export.session import FixedSQLiteSession
 
 logger = logging.getLogger(__name__)
 
+# Safety cap on the left-channel paging loop.
+_MAX_LEFT_CHANNEL_PAGES = 100
+
 
 class TgApi:
     def __init__(self, session_path: str | Path, api_id: int, api_hash: str, proxy: tuple | None = None):
@@ -179,9 +182,37 @@ class TgApi:
             async for dialog in self.client.iter_dialogs(archived=archived):
                 yield dialog
 
-    async def get_left_channels(self):
-        result = await self.client(GetLeftChannelsRequest(offset=0))
-        return result
+    async def get_left_channels(self) -> list:
+        """Return every left channel, following the offset pages.
+
+        The server answers with a slice, so one request at offset 0 drops
+        everything past the first page without a word. Paging stops on an
+        empty page, on the announced total, or when a page repeats ids
+        already seen -- that last case means the server ignored the offset.
+        """
+        channels: list = []
+        seen: set[int] = set()
+        offset = 0
+        for _ in range(_MAX_LEFT_CHANNEL_PAGES):
+            result = await self.client(GetLeftChannelsRequest(offset=offset))
+            page = list(getattr(result, "chats", None) or [])
+            if not page:
+                break
+            fresh = [ch for ch in page if getattr(ch, "id", 0) not in seen]
+            if not fresh:
+                break
+            seen.update(getattr(ch, "id", 0) for ch in fresh)
+            channels.extend(fresh)
+            offset += len(page)
+            count = getattr(result, "count", None)
+            if count is not None and offset >= count:
+                break
+        else:
+            logger.warning(
+                "Left channels: stopped after %d pages, later ones are missing from the catalog",
+                _MAX_LEFT_CHANNEL_PAGES,
+            )
+        return channels
 
     async def get_folders(self) -> list[dict]:
         """Get Telegram folders as list of dicts with name, peer_ids, and type flags."""

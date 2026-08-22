@@ -1387,7 +1387,7 @@ async def _state_show(account, config_override, output_override, chat_id, as_jso
 @click.argument("chat_id", type=int, required=False)
 def state_reset(account, config, output, reset_all, delete_messages, chat_id):
     """Reset export state to force re-download. Specify chat_id or --all."""
-    if not chat_id and not reset_all:
+    if chat_id is None and not reset_all:
         _error("Specify chat_id or --all")
         raise click.exceptions.Exit(1)
     exit_code = asyncio.run(_state_reset(account, config, output, reset_all, delete_messages, chat_id))

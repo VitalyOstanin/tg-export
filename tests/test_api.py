@@ -680,3 +680,35 @@ async def test_api_is_an_async_context_manager(tmp_path):
     assert seen == ["body"]
     assert not api._session_lock.held
     _close_session(api)
+
+
+@pytest.mark.asyncio
+async def test_left_channels_are_read_page_by_page(tmp_path):
+    """Читалась только первая страница: `offset` есть, а цикла по нему не было.
+
+    При числе покинутых каналов больше страницы остальные не попадали в
+    каталог и не обрабатывались правилом `left_channels_action`.
+    """
+    api = TgApi(str(tmp_path / "left.session"), 1, "hash")
+
+    def _chat(cid):
+        chat = MagicMock()
+        chat.id = cid
+        return chat
+
+    pages = [
+        MagicMock(chats=[_chat(1), _chat(2)], count=3),
+        MagicMock(chats=[_chat(3)], count=3),
+    ]
+    calls: list[int] = []
+
+    async def send(request):
+        calls.append(request.offset)
+        return pages[len(calls) - 1]
+
+    api.client = MagicMock(side_effect=send)
+
+    channels = await api.get_left_channels()
+
+    assert [ch.id for ch in channels] == [1, 2, 3]
+    assert calls == [0, 2]
