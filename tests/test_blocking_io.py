@@ -128,6 +128,7 @@ async def test_index_render_leaves_the_event_loop(tmp_path):
 
     state = MagicMock()
     state.count_messages = AsyncMock(return_value=0)
+    state.message_counts = AsyncMock(return_value={})
 
     await cli._render_index(renderer, [], cfg, state)
 

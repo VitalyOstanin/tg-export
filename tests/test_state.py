@@ -550,3 +550,40 @@ async def test_service_timestamps_carry_their_offset(tmp_path):
     assert row is not None
     stamp = datetime.fromisoformat(row[0])
     assert stamp.tzinfo is not None, f"метка без смещения: {row[0]}"
+
+
+@pytest.mark.asyncio
+async def test_message_counts_are_read_for_all_chats_at_once(tmp_path):
+    """Индексная страница ходила в базу по одному-двум запросам на каждый чат.
+
+    В соседней команде `state show` та же задача давно решена одним запросом.
+    """
+    from tg_export.state import ExportState
+
+    async with ExportState(tmp_path / "state.db") as state:
+        await state.store_messages_batch([_make_msg(msg_id=1, chat_id=10), _make_msg(msg_id=2, chat_id=10)])
+        await state.store_messages_batch([_make_msg(msg_id=1, chat_id=20)])
+        await state.update_messages_count(20, 500)
+        await state.commit()
+
+        counts = await state.message_counts()
+
+    # Для чата 10 сохранённого счётчика нет -- считаются строки таблицы; для
+    # чата 20 берётся записанное состоянием значение.
+    assert counts == {10: 2, 20: 500}
+
+
+@pytest.mark.asyncio
+async def test_search_can_be_limited(state):
+    """Стоимость поиска не должна зависеть от числа совпадений.
+
+    Отбор идёт по `LIKE '%...%'` -- индекс тут неприменим, и каждая найденная
+    строка проходит полную сборку Message с разбором JSON-полей.
+    """
+    for msg_id in range(1, 6):
+        await state.store_message(_make_msg(msg_id=msg_id, chat_id=123, text="Привет мир"))
+    await state.commit()
+
+    results = await state.search_messages(chat_id=123, text_query="Привет", limit=2)
+
+    assert [m.id for m in results] == [1, 2]

@@ -884,8 +884,29 @@ class Exporter:
             if msg_count > 0:
                 await self.state.update_messages_count(chat.id, msg_count)
 
-        await self._render_chat_html(chat, chat_dir)
+        await self._render_chat_html(chat, chat_dir, stats)
         return stats
+
+    @staticmethod
+    def _pages_are_current(chat_dir: Path, stats: ExportStats) -> bool:
+        """True when the pages on disk already show everything the database holds.
+
+        The render used to run on every chat of every run: all pages were
+        deleted and rebuilt month by month -- loading each month from SQLite and
+        deserialising the JSON columns of every message -- even when the run
+        brought neither a message nor a file. Anything written during this chat
+        changes what a page shows, so any non-zero counter forces the rebuild.
+        """
+        written = (
+            stats.chat_messages_new
+            + stats.chat_files_downloaded
+            + stats.chat_files_reused_chat
+            + stats.chat_files_reused_tdesktop
+            + stats.chat_files_reused_sibling
+        )
+        if written:
+            return False
+        return any(chat_dir.glob("messages*.html")) if chat_dir.is_dir() else False
 
     @staticmethod
     def _keep_message(msg: Message, *, export_service_messages: bool) -> bool:
@@ -1070,8 +1091,11 @@ class Exporter:
         if new_full:
             logger.debug("  %s: full history complete", chat.name)
 
-    async def _render_chat_html(self, chat: Chat, chat_dir: Path) -> None:
+    async def _render_chat_html(self, chat: Chat, chat_dir: Path, stats: ExportStats) -> None:
         """Render the chat pages, one month at a time, off the event loop."""
+        if self._pages_are_current(chat_dir, stats):
+            logger.debug("  %s: nothing new, keeping the rendered pages", chat.name)
+            return
         # Streaming month-by-month from SQLite avoids loading the full message
         # list into memory.
         month_keys = await self.state.list_message_months(chat.id)

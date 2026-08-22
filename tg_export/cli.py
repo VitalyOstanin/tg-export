@@ -1187,25 +1187,21 @@ async def _group_chats_for_index(chats, cfg, state, should_stop):
     folders = defaultdict(list)
     unfiled = []
 
+    try:
+        counts = await state.message_counts()
+    except aiosqlite.Error as e:
+        logger.debug("_render_index: message_counts failed: %s", e)
+        counts = {}
+
     for chat in chats:
         if should_stop and should_stop():
             return None
         chat_cfg = cfg.resolve_chat_config(chat.id, chat.name, chat.folder, chat.type.value)
         if chat_cfg is None:
             continue
-        # Get real message count from DB if available
-        msg_count = chat.messages_count
-        chat_state = await state.get_chat_state(chat.id)
-        if chat_state and chat_state.get("messages_count"):
-            msg_count = chat_state["messages_count"]
-        else:
-            # Count from messages table
-            try:
-                msgs = await state.count_messages(chat.id)
-                if msgs > 0:
-                    msg_count = msgs
-            except aiosqlite.Error as e:
-                logger.debug("_render_index: count_messages failed for %s: %s", chat.id, e)
+        # Counts for every chat were read once before the loop: asking per chat
+        # meant one or two round-trips through aiosqlite for each of them.
+        msg_count = counts.get(chat.id) or chat.messages_count
 
         dir_name = f"{sanitize_name(chat.name)}_{chat.id}"
         # Why sanitize_name(folder): the on-disk folder directory is created via

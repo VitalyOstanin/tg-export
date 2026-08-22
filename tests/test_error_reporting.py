@@ -135,3 +135,70 @@ def test_the_all_suffix_lifts_the_libraries_too():
     finally:
         for name in cli._THIRD_PARTY_LOGGERS:
             logging.getLogger(name).setLevel(logging.NOTSET)
+
+
+@pytest.mark.asyncio
+async def test_pages_are_not_rebuilt_when_the_chat_did_not_change(tmp_path):
+    """Рендер шёл безусловно: страницы всех месяцев перерисовывались каждый запуск.
+
+    Инкрементальный запуск, не добавивший ни одного сообщения и ни одного файла,
+    всё равно удалял готовые страницы и собирал их заново -- по загрузке месяца
+    из SQLite и разбору JSON каждого сообщения на каждую страницу.
+    """
+    from tg_export.exporter import ExportStats
+
+    state = MagicMock()
+    state.list_message_months = AsyncMock(return_value=["2024-01"])
+    exporter = _exporter(state=state)
+
+    chat_dir = tmp_path / "chat"
+    chat_dir.mkdir()
+    (chat_dir / "messages_2024-01.html").write_text("<html>", encoding="utf-8")
+
+    stats = ExportStats()
+    stats.begin_chat(messages_in_db=10, messages_total=10)
+    chat = MagicMock(id=1, name="Chat")
+
+    await exporter._render_chat_html(chat, chat_dir, stats)
+
+    state.list_message_months.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_pages_are_rebuilt_when_a_message_arrived(tmp_path):
+    """Новое сообщение обязано попасть на страницу -- пропуск рендера тут недопустим."""
+    from tg_export.exporter import ExportStats
+
+    state = MagicMock()
+    state.list_message_months = AsyncMock(return_value=[])
+    exporter = _exporter(state=state)
+
+    chat_dir = tmp_path / "chat"
+    chat_dir.mkdir()
+    (chat_dir / "messages_2024-01.html").write_text("<html>", encoding="utf-8")
+
+    stats = ExportStats()
+    stats.begin_chat(messages_in_db=10, messages_total=10)
+    stats.messages_exported += 1
+    chat = MagicMock(id=1, name="Chat")
+
+    await exporter._render_chat_html(chat, chat_dir, stats)
+
+    state.list_message_months.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_pages_are_built_when_they_are_missing(tmp_path):
+    """Пустой каталог чата -- страницы нужно собрать, даже если ничего не пришло."""
+    from tg_export.exporter import ExportStats
+
+    state = MagicMock()
+    state.list_message_months = AsyncMock(return_value=[])
+    exporter = _exporter(state=state)
+
+    stats = ExportStats()
+    stats.begin_chat(messages_in_db=10, messages_total=10)
+
+    await exporter._render_chat_html(MagicMock(id=1, name="Chat"), tmp_path / "absent", stats)
+
+    state.list_message_months.assert_awaited_once()

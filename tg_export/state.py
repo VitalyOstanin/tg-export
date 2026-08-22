@@ -658,8 +658,12 @@ class ExportState:
         await self.commit()
 
     async def get_file(self, file_id: int, chat_id: int) -> dict | None:
+        # Named columns, not *: this runs once per media file, and the callers
+        # read only these two -- the rest (paths, hashes) would be materialised
+        # into Python strings for nothing.
         async with self.db.execute(
-            "SELECT * FROM files WHERE file_id=? AND chat_id=?", (file_id, chat_id)
+            "SELECT status, local_path, expected_size FROM files WHERE file_id=? AND chat_id=?",
+            (file_id, chat_id),
         ) as cur:
             row = await cur.fetchone()
             return dict(row) if row else None
@@ -667,7 +671,7 @@ class ExportState:
     async def get_file_any_chat(self, file_id: int) -> dict | None:
         """Find file_id in any chat (for intra-account deduplication)."""
         async with self.db.execute(
-            "SELECT * FROM files WHERE file_id=? AND status='done' LIMIT 1", (file_id,)
+            "SELECT chat_id, local_path FROM files WHERE file_id=? AND status='done' LIMIT 1", (file_id,)
         ) as cur:
             row = await cur.fetchone()
             return dict(row) if row else None
@@ -787,6 +791,25 @@ class ExportState:
                 counts[table] = row[0] if row else 0
         return counts
 
+    async def message_counts(self) -> dict[int, int]:
+        """Number of messages per chat, for every chat at once.
+
+        The index page asked for this chat by chat -- one or two round-trips
+        each -- while `state show` had long been doing it in a single query.
+        The count recorded in ``export_state`` wins when it is set, exactly as
+        the per-chat path decided.
+        """
+        counts: dict[int, int] = {}
+        async with self.db.execute("SELECT chat_id, COUNT(*) FROM messages GROUP BY chat_id") as cur:
+            for chat_id, count in await cur.fetchall():
+                counts[chat_id] = count
+        async with self.db.execute(
+            "SELECT chat_id, messages_count FROM export_state WHERE messages_count > 0"
+        ) as cur:
+            for chat_id, count in await cur.fetchall():
+                counts[chat_id] = count
+        return counts
+
     async def list_chat_states(self) -> list:
         """Return the export progress of every known chat, newest update first."""
         async with self.db.execute(
@@ -888,8 +911,15 @@ class ExportState:
         from_id: int | None = None,
         date_from: datetime | None = None,
         date_to: datetime | None = None,
+        limit: int | None = None,
     ) -> list[Message]:
-        """Search messages using SQL columns (no JSON parsing needed)."""
+        """Search messages using SQL columns (no JSON parsing needed).
+
+        ``limit`` caps the result set: the text predicate is a ``LIKE '%...%'``
+        no index can serve, and every matching row is then rebuilt into a
+        Message with up to six JSON columns parsed, so the cost otherwise grows
+        with the number of matches.
+        """
         clauses = ["chat_id = ?"]
         params: list[Any] = [chat_id]
 
@@ -910,7 +940,13 @@ class ExportState:
             params.append(date_to.isoformat())
 
         where = " AND ".join(clauses)
-        async with self.db.execute(f"SELECT * FROM messages WHERE {where} ORDER BY msg_id", params) as cur:
+        tail = ""
+        if limit is not None:
+            tail = " LIMIT ?"
+            params.append(limit)
+        async with self.db.execute(
+            f"SELECT * FROM messages WHERE {where} ORDER BY msg_id{tail}", params
+        ) as cur:
             rows = await cur.fetchall()
             return [_row_to_message(dict(r)) for r in rows]
 
