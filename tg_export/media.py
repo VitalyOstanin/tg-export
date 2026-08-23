@@ -290,7 +290,7 @@ class MediaDownloader:
 
     async def _download_inner(
         self, tl_message, media: Media, chat_dir: Path, chat_id: int
-    ) -> tuple[Path | None, str]:
+    ) -> tuple[Path | None, DownloadStatus]:
         # Already downloaded?
         if media.file:
             existing = await self.state.get_file(media.file.id, chat_id)

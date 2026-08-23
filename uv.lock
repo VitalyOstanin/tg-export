@@ -527,6 +527,11 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+proxy = [
+    { name = "python-socks" },
+]
+
+[package.dev-dependencies]
 dev = [
     { name = "pyright" },
     { name = "pytest" },
@@ -535,27 +540,28 @@ dev = [
     { name = "pytest-timeout" },
     { name = "ruff" },
 ]
-proxy = [
-    { name = "python-socks" },
-]
 
 [package.metadata]
 requires-dist = [
     { name = "aiosqlite", specifier = ">=0.20" },
     { name = "click", specifier = ">=8.3.3" },
     { name = "jinja2", specifier = ">=3.1.6" },
-    { name = "pyright", marker = "extra == 'dev'", specifier = ">=1.1.411" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.1" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=1.4" },
-    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=7.1" },
-    { name = "pytest-timeout", marker = "extra == 'dev'", specifier = ">=2.4" },
     { name = "python-socks", extras = ["asyncio"], marker = "extra == 'proxy'", specifier = ">=2.0,<3" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "rich", specifier = ">=15.0" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.16" },
     { name = "telethon", specifier = ">=1.36,<2" },
 ]
-provides-extras = ["proxy", "dev"]
+provides-extras = ["proxy"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pyright", specifier = ">=1.1.411" },
+    { name = "pytest", specifier = ">=9.1" },
+    { name = "pytest-asyncio", specifier = ">=1.4" },
+    { name = "pytest-cov", specifier = ">=7.1" },
+    { name = "pytest-timeout", specifier = ">=2.4" },
+    { name = "ruff", specifier = ">=0.16" },
+]
 
 [[package]]
 name = "tomli"

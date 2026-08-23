@@ -112,6 +112,4 @@ def test_declared_python_versions_match_the_ci_matrix():
     assert match, "в ci.yml не найдена матрица python-version"
     tested = set(re.findall(r'"([^"]+)"', match.group(1)))
 
-    assert declared == tested, (
-        f"классификаторы обещают {sorted(declared)}, а CI проверяет {sorted(tested)}"
-    )
+    assert declared == tested, f"классификаторы обещают {sorted(declared)}, а CI проверяет {sorted(tested)}"

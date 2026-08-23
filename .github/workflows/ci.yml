@@ -39,7 +39,7 @@ jobs:
         run: uv python install ${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: uv sync --extra dev
+        run: uv sync
 
       - name: Verify uv.lock is in sync with pyproject.toml
         run: uv lock --check

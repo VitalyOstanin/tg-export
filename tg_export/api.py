@@ -48,7 +48,8 @@ class TgApi:
                     "Proxy is configured, but the 'python-socks' package is not "
                     "installed. Telethon would ignore the proxy and connect "
                     "directly, exposing the real IP. Install the proxy extra: "
-                    "pip install 'tg-export[proxy]' (or uv pip install 'tg-export[proxy]')."
+                    "`uv sync --extra proxy` in a checkout of this project, or "
+                    "`pip install 'tg-export[proxy]'` when tg-export comes from PyPI."
                 )
             kwargs["proxy"] = proxy
         session = FixedSQLiteSession(str(session_path))

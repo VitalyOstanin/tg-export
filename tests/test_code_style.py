@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import ast
 import re
+from collections.abc import Iterator
 from pathlib import Path
 
 PROJECT = Path(__file__).resolve().parent.parent / "tg_export"
@@ -40,6 +41,11 @@ def _called_name(node: ast.AST) -> str | None:
     if isinstance(func, ast.Attribute):
         return func.attr
     return getattr(func, "id", None)
+
+
+def _calls(tree: ast.AST) -> Iterator[ast.Call]:
+    """Только узлы вызова: номер строки объявлен у ast.Call, у ast.AST его нет."""
+    return (node for node in ast.walk(tree) if isinstance(node, ast.Call))
 
 
 def _qualified_call(node: ast.AST) -> str | None:
@@ -110,9 +116,7 @@ def test_log_function_uses_rich_console_not_bare_print():
 
 def test_no_console_log_calls_in_exporter():
     """Унификация: console.log смешан с console.print. Используем только console.print."""
-    lines = [
-        node.lineno for node in ast.walk(_tree("exporter.py")) if _qualified_call(node) == "console.log"
-    ]
+    lines = [node.lineno for node in _calls(_tree("exporter.py")) if _qualified_call(node) == "console.log"]
     assert not lines, f"console.log() не должен использоваться, строки: {lines}"
 
 
@@ -120,7 +124,7 @@ def test_no_manual_live_enter_exit_in_exporter():
     """Live должен использоваться через with-блок, а не ручным __enter__/__exit__."""
     manual = [
         (node.lineno, _called_name(node))
-        for node in ast.walk(_tree("exporter.py"))
+        for node in _calls(_tree("exporter.py"))
         if _called_name(node) in {"__enter__", "__exit__"}
     ]
     assert not manual, f"Live должен использоваться через with-блок: {manual}"
@@ -227,7 +231,7 @@ def test_no_manual_async_context_calls_in_api():
     выходу из функции, и отпустить сессию на всех путях выполнения нечем."""
     manual = [
         (node.lineno, _called_name(node))
-        for node in ast.walk(_tree("api.py"))
+        for node in _calls(_tree("api.py"))
         if _called_name(node) in {"__aenter__", "__aexit__"}
     ]
     assert not manual, f"используй AsyncExitStack вместо ручного вызова контекста: {manual}"
@@ -319,6 +323,43 @@ def test_exporter_imports_rich_escape():
         for node in ast.walk(_tree("exporter.py"))
     )
     assert imported, "exporter.py должен импортировать escape из rich.markup для эскейпа имён чатов/файлов"
+
+
+def test_development_tools_are_declared_as_a_group_not_as_an_extra():
+    """pytest, ruff и pyright объявляются группой, а не extra проекта.
+
+    Extra попадает в метаданные колеса и предлагается тому, кто ставит пакет из
+    PyPI, хотя инструменты проверки нужны только в исходном дереве. Практическое
+    следствие важнее: `uv sync` ставит группы по умолчанию, а любой явный
+    `--extra` заменяет набор extras целиком, и объявленный через extra dev
+    вымывался из окружения при `uv sync --extra proxy`.
+    """
+    import tomllib
+
+    root = PROJECT.parent
+    with (root / "pyproject.toml").open("rb") as fh:
+        pyproject = tomllib.load(fh)
+
+    tools = {"pytest", "ruff", "pyright", "pytest-asyncio", "pytest-cov", "pytest-timeout"}
+    groups = pyproject.get("dependency-groups", {})
+    declared_in_groups = {
+        req.split(">")[0].split("=")[0].split("[")[0].strip()
+        for reqs in groups.values()
+        for req in reqs
+        if isinstance(req, str)
+    }
+    assert tools <= declared_in_groups, (
+        f"инструменты разработки не объявлены в [dependency-groups]: {sorted(tools - declared_in_groups)}"
+    )
+
+    extras = pyproject["project"].get("optional-dependencies", {})
+    misplaced = {
+        name: req
+        for name, reqs in extras.items()
+        for req in reqs
+        if req.split(">")[0].split("=")[0].split("[")[0].strip() in tools
+    }
+    assert not misplaced, f"инструменты разработки объявлены как extra проекта: {misplaced}"
 
 
 def test_every_package_data_file_is_declared_for_packaging():
@@ -451,7 +492,7 @@ def test_cli_does_not_run_sql_of_its_own():
     hits = []
     for path in CLI_MODULES:
         tree = ast.parse(path.read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
+        for node in _calls(tree):
             call = _qualified_call(node)
             if call and re.match(r"^(?:state|st)\.db\.", call):
                 hits.append((path.name, node.lineno, call))

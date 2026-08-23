@@ -234,6 +234,34 @@ def test_tgapi_raises_when_proxy_set_but_python_socks_missing():
         TgApi("/tmp/test.session", 1, "hash", proxy=proxy)
 
 
+def test_the_missing_proxy_hint_names_an_extra_the_project_actually_declares():
+    """Подсказка в ошибке должна называть extra, который есть в pyproject.
+
+    Переименование или удаление extra оставляет текст ошибки прежним, и
+    пользователь выполняет команду, которая ничего не ставит. Тест сверяет имя
+    из подсказки с объявленными extras, а не с константой в тесте.
+    """
+    import tomllib
+
+    from tg_export.api import TgApi
+
+    root = Path(__file__).resolve().parent.parent
+    with (root / "pyproject.toml").open("rb") as fh:
+        extras = set(tomllib.load(fh)["project"]["optional-dependencies"])
+    assert extras, "в pyproject не объявлено ни одного extra — проверять нечего"
+
+    proxy = ("socks5", "127.0.0.1", 1080, True, None, None)
+    with (
+        patch("tg_export.api.importlib.util.find_spec", return_value=None),
+        pytest.raises(RuntimeError) as excinfo,
+    ):
+        TgApi("/tmp/test.session", 1, "hash", proxy=proxy)
+
+    message = str(excinfo.value)
+    named = {name for name in extras if f"--extra {name}" in message and f"tg-export[{name}]" in message}
+    assert named, f"подсказка не называет ни один объявленный extra {sorted(extras)}: {message}"
+
+
 def test_tgapi_passes_proxy_to_client_when_python_socks_available():
     from tg_export.api import TgApi
 
