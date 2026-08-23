@@ -412,3 +412,22 @@ def test_the_bucket_for_dateless_messages_is_one_constant():
     ]
 
     assert not copies, f"ключ выписан литералом мимо UNKNOWN_MONTH_KEY: {copies}"
+
+
+def test_a_link_that_leaves_the_export_tree_is_dropped():
+    """Ветка «относительная ссылка» пропускала адреса, ведущие на чужой хост.
+
+    Экспорт открывают файлом, и в документе `file:` адрес `//host/path`
+    разрешается в `file://host/path`, а `\\\\host\\share` браузеры на движке
+    Chromium приводят к тому же виду. Отправитель сообщения выбирает `url`
+    целиком, поэтому такая ссылка -- его решение, а не решение владельца
+    выгрузки.
+    """
+    from tg_export.html.renderer import _safe_href
+
+    assert _safe_href("//evil.example/x") == "#"
+    assert _safe_href("\\\\evil.example\\share") == "#"
+    assert _safe_href("photos/file.jpg") == "photos/file.jpg"
+    assert _safe_href("/photos/file.jpg") == "/photos/file.jpg"
+    assert _safe_href("#anchor") == "#anchor"
+    assert _safe_href("https://example.com/x") == "https://example.com/x"

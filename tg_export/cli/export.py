@@ -372,6 +372,16 @@ def _show_account_config(config_path):
         click.echo(f"      {entry.type}: {entry.path}")
 
 
+def _save_catalog(path: Path, text: str) -> None:
+    """Write the catalog private from the start.
+
+    It carries a line per chat of the account -- ids, names and message counts
+    -- which is exactly why the config template `init` writes is private, and
+    this file is what `init --from-catalog` reads back.
+    """
+    write_private_text(path, text)
+
+
 @click.command("list")
 @click.option("--account", default=None, help=common.ACCOUNT_HELP)
 @click.option(
@@ -403,7 +413,7 @@ async def _list_chats(account, output, fmt, include_left):
         result = format_catalog_json(chats) if fmt == "json" else format_catalog_yaml(chats)
 
         if output:
-            output.write_text(result, encoding="utf-8")
+            _save_catalog(output, result)
             common.diag(f"Catalog saved to {output}")
         else:
             click.echo(result)

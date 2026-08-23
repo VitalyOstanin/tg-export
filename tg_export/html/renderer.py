@@ -438,7 +438,15 @@ def _safe_href(url: str) -> str:
     stripped = url.lstrip().lower()
     if stripped.startswith(_SAFE_URL_SCHEMES):
         return url
-    if stripped.startswith("/") or stripped.startswith("#") or stripped.startswith("?"):
+    # A pages of the export is opened as a file, so what the document resolves
+    # a scheme-less address against is `file:`. `//host/path` becomes
+    # `file://host/path`, and `\\host\share` is normalised into the same
+    # thing by Chromium-based browsers -- on Windows that is a request to an
+    # SMB share. The sender of the message chooses the address in full, so
+    # neither shape is a relative link inside the export.
+    if stripped.startswith("//") or stripped.startswith("\\\\"):
+        return "#"
+    if stripped.startswith(("/", "#", "?")):
         return url
     if "://" not in stripped and ":" not in stripped:
         # likely relative URL like "photos/file.jpg"

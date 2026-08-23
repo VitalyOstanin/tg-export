@@ -261,3 +261,40 @@ def test_a_loose_account_config_is_tightened_when_it_is_read(tmp_path, relaxed_u
         load_config(path)
 
     assert _mode(path) == 0o600
+
+
+def test_the_files_query_commands_write_are_private(tmp_path, monkeypatch):
+    """Каталог и сведения о чатах несут то же, ради чего конфиг пишется приватным.
+
+    В `init` рядом стоит пояснение: шаблон несёт строку на чат -- id, имена и
+    счётчики сообщений, -- поэтому пишется приватным с самого начала. Каталог
+    из `list --output-file` несёт ровно это же и служит входом для
+    `init --from-catalog`, а `tg info --output-file` -- ещё и тексты последних
+    сообщений; обе точки писали файл по umask, то есть 0644.
+    """
+    from tg_export.cli.tg import _write_info_results
+
+    catalog = tmp_path / "catalog.yaml"
+    info = tmp_path / "info.json"
+
+    from tg_export.cli.export import _save_catalog
+
+    _save_catalog(catalog, "chats: []\n")
+    _write_info_results([{"id": 1}], as_json=False, output_file=info)
+
+    assert _mode(catalog) == 0o600, oct(_mode(catalog))
+    assert _mode(info) == 0o600, oct(_mode(info))
+
+
+def test_the_text_tg_download_saves_is_private(tmp_path):
+    """`tg download` кладёт на диск текст сообщения -- те же данные, ради которых
+    каталог выгрузки создаётся доступным только владельцу."""
+    from tg_export.cli.tg import _save_message_text
+
+    out = tmp_path / "downloads"
+    out.mkdir()
+
+    path = _save_message_text(out, 42, "секрет")
+
+    assert path.read_text(encoding="utf-8") == "секрет"
+    assert _mode(path) == 0o600, oct(_mode(path))

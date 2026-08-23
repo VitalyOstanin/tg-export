@@ -26,6 +26,7 @@ from tg_export.errors import (
     EXIT_OK,
 )
 from tg_export.format import format_moment
+from tg_export.privacy import ensure_private_dir, write_private_text
 
 logger = logging.getLogger(__name__)
 
@@ -181,8 +182,10 @@ def _write_info_results(results: list[dict], output_file, as_json: bool) -> None
     if as_json:
         click.echo(json.dumps(results, ensure_ascii=False, indent=2))
     if output_file:
-        with open(output_file, "w", encoding="utf-8") as f:
-            json.dump(results, f, ensure_ascii=False, indent=2)
+        # Private from the start: the records carry chat names and, with
+        # --last-n, the sender and text of the last messages -- the very data
+        # the export directory is created 0700 for.
+        write_private_text(output_file, json.dumps(results, ensure_ascii=False, indent=2))
         common.diag(f"Saved {len(results)} entries to {output_file}")
 
 
@@ -339,7 +342,22 @@ async def _tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_fi
     type=click.Path(exists=True, path_type=Path),
     help="File(s) to attach (can be specified multiple times)",
 )
-@click.option("--text", "-t", default=None, help="Message text")
+@click.option(
+    "--text",
+    "-t",
+    default=None,
+    help=(
+        "Message text (passing it here puts it on the command line, where other "
+        "local users can read it; use --text-file for anything private)"
+    ),
+)
+@click.option(
+    "--text-file",
+    "text_file",
+    default=None,
+    type=click.Path(path_type=Path, allow_dash=True),
+    help="Read the message text from this file, or from standard input when given as -",
+)
 @click.option(
     "--as-document",
     is_flag=True,
@@ -347,7 +365,7 @@ async def _tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_fi
     help="Send files as documents without compression (keeps original quality)",
 )
 @click.argument("recipients", nargs=-1, required=True)
-def tg_send(account, files, text, as_document, recipients):
+def tg_send(account, files, text, text_file, as_document, recipients):
     """Send message to one or more recipients.
 
     RECIPIENTS: chat IDs or usernames (multiple allowed).
@@ -358,8 +376,16 @@ def tg_send(account, files, text, as_document, recipients):
     recipients (network/RPC error), re-running this command will resend to all
     recipients, including those who already received the message.
     """
+    if text and text_file:
+        raise click.UsageError("give the text either with --text or with --text-file, not both")
+    if text_file:
+        text = (
+            click.get_text_stream("stdin").read()
+            if str(text_file) == "-"
+            else Path(text_file).read_text(encoding="utf-8")
+        )
     if not text and not files:
-        raise click.UsageError("specify --text and/or --file")
+        raise click.UsageError("specify --text, --text-file and/or --file")
 
     parsed = []
     for r in recipients:
@@ -592,7 +618,15 @@ async def _download_if_new(client, msg, out: Path, downloaded: set[Path]) -> str
     return path
 
 
+def _save_message_text(out: Path, msg_id: int, text: str) -> Path:
+    """Save the text of a message, readable by its owner alone."""
+    path = out / f"{msg_id}.txt"
+    write_private_text(path, text)
+    return path
+
+
 async def _tg_download(account_name: str | None, chat_id: int, msg_id: int, out: Path) -> int:
+    ensure_private_dir(out)
     out.mkdir(parents=True, exist_ok=True)
     async with common.connected_api(account_name) as (api, _):
         from tg_export.api import one_message
@@ -604,8 +638,7 @@ async def _tg_download(account_name: str | None, chat_id: int, msg_id: int, out:
 
         msg_text = getattr(tl_msg, "text", None)
         if msg_text:
-            text_file = out / f"{msg_id}.txt"
-            text_file.write_text(msg_text, encoding="utf-8")
+            text_file = _save_message_text(out, msg_id, msg_text)
             common.diag(f"  text: {text_file}")
 
         # Only what this call downloaded: the set decides whether a new file is a

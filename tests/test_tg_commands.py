@@ -831,3 +831,47 @@ async def test_download_compares_only_with_what_this_call_downloaded(monkeypatch
 
     assert code == 0
     assert (tmp_path / "media.bin").exists(), "скачанный файл удалён из-за постороннего файла каталога"
+
+
+def test_the_message_text_can_be_given_without_the_command_line(tmp_path, monkeypatch):
+    """Текст сообщения проходил только через argv, видимый в `ps` и истории оболочки.
+
+    Проект уже считает этот канал своим: у `--api-hash` стоит скрытый ввод, а
+    справка предупреждает про историю оболочки. Текст сообщения -- данные того
+    же класса, ради которых каталог выгрузки создаётся доступным только
+    владельцу.
+    """
+    from click.testing import CliRunner
+
+    from tg_export.cli import tg as tg_cli
+
+    sent: list[str | None] = []
+
+    async def fake_send(account, parsed, text, files, as_document):
+        sent.append(text)
+        return 0
+
+    monkeypatch.setattr(tg_cli, "_tg_send", fake_send)
+
+    text_file = tmp_path / "message.txt"
+    text_file.write_text("секрет", encoding="utf-8")
+
+    result = CliRunner().invoke(tg_cli.tg_send, ["--text-file", str(text_file), "42"])
+    assert result.exit_code == 0, result.output
+
+    result = CliRunner().invoke(tg_cli.tg_send, ["--text-file", "-", "42"], input="со входа")
+    assert result.exit_code == 0, result.output
+
+    assert sent == ["секрет", "со входа"]
+
+
+def test_the_text_option_says_it_goes_through_the_command_line():
+    """Предупреждение стоит там же, где у `--api-hash`: в справке самой опции."""
+    import click
+
+    from tg_export.cli.tg import tg_send
+
+    option = next(param for param in tg_send.params if param.name == "text")
+    assert isinstance(option, click.Option)
+
+    assert "command line" in (option.help or "").lower()
