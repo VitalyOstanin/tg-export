@@ -32,7 +32,7 @@ from tg_export.errors import (
     TakeoutUnavailableError,
 )
 from tg_export.privacy import ensure_private_dir, write_private_text
-from tg_export.verify import RedownloadResult, clean_staging, redownload_broken_file
+from tg_export.verify import RedownloadResult, clean_staging, redownload_broken_files
 
 logger = logging.getLogger(__name__)
 
@@ -939,22 +939,28 @@ async def _verify_files(account, config_override, output_override):
                 f"expected: {f['expected_size']}, actual: {f['actual_size']}"
             )
 
+        # The config is read again here for one number: how many downloads may
+        # run at once. `_opened_state` drops it, and the alternative -- one file
+        # at a time -- leaves the network idle for a whole round-trip per file.
+        _, cfg, _ = common._resolve_output(account, config_override, output_override)
+
         async with common._connected_api(account) as (api, account):
             clean_staging(output_base)
             redownloaded = 0
-            for f in broken:
-                try:
-                    result, final_path = await redownload_broken_file(api, state, f)
-                except Exception as e:
-                    common._diag(f"  [error] {f['local_path']}: {e}", essential=True)
-                    continue
-                if result is RedownloadResult.no_media:
-                    common._error(f"  [skip] msg {f['msg_id']}: not found or no media")
-                elif result is RedownloadResult.nothing_downloaded:
-                    common._error(f"  [fail] {f['local_path']}")
-                else:
+            outcomes = await redownload_broken_files(
+                api, state, broken, concurrency=cfg.defaults.media.concurrent_downloads
+            )
+            for outcome in outcomes:
+                entry = outcome.entry
+                if outcome.error is not None:
+                    common._diag(f"  [error] {entry['local_path']}: {outcome.error}", essential=True)
+                elif outcome.result is RedownloadResult.no_media:
+                    common._error(f"  [skip] msg {entry['msg_id']}: not found or no media")
+                elif outcome.result is RedownloadResult.nothing_downloaded:
+                    common._error(f"  [fail] {entry['local_path']}")
+                elif outcome.result is not None:
                     redownloaded += 1
-                    common._diag(f"  [ok] {final_path}")
+                    common._diag(f"  [ok] {outcome.path}")
 
             common._diag(f"\nRe-downloaded: {redownloaded}/{len(broken)}", essential=True)
             if redownloaded < len(broken):

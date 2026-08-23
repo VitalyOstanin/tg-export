@@ -51,7 +51,7 @@ from tg_export.media import (
 )
 from tg_export.models import Chat, ForumTopic, Message
 from tg_export.state import ExportState
-from tg_export.verify import RedownloadResult, clean_staging, redownload_broken_file
+from tg_export.verify import RedownloadResult, clean_staging, redownload_broken_files
 
 logger = logging.getLogger(__name__)
 
@@ -1704,21 +1704,25 @@ class Exporter:
         clean_staging(Path(self.config.output.path))
         errors_before = len(stats.errors)
         redownloaded = 0
-        for f in broken:
-            if self._shutdown:
-                break
-            local_path = Path(f["local_path"])
-            try:
-                result, _final_path = await redownload_broken_file(self.api, self.state, f)
-            except Exception as e:
-                stats.errors.append(f"Re-download error for {local_path}: {e}")
-                logger.debug("verify re-download error: %s", e)
-                continue
-            if result is RedownloadResult.no_media:
-                stats.errors.append(f"Cannot re-download: msg {f['msg_id']} not found or no media")
-            elif result is RedownloadResult.nothing_downloaded:
+        outcomes = await redownload_broken_files(
+            self.api,
+            self.state,
+            broken,
+            concurrency=self.config.defaults.media.concurrent_downloads,
+            should_stop=lambda: self._shutdown,
+        )
+        for outcome in outcomes:
+            local_path = Path(outcome.entry["local_path"])
+            if outcome.error is not None:
+                stats.errors.append(f"Re-download error for {local_path}: {outcome.error}")
+                logger.debug("verify re-download error: %s", outcome.error)
+            elif outcome.result is RedownloadResult.no_media:
+                stats.errors.append(
+                    f"Cannot re-download: msg {outcome.entry['msg_id']} not found or no media"
+                )
+            elif outcome.result is RedownloadResult.nothing_downloaded:
                 stats.errors.append(f"Re-download failed: {local_path}")
-            else:
+            elif outcome.result is not None:
                 redownloaded += 1
 
         if redownloaded:

@@ -137,10 +137,13 @@ async def test_the_run_verify_pass_keeps_the_file_when_the_download_fails(tmp_pa
     state.register_file = AsyncMock()
     state.commit = AsyncMock()
 
+    config = MagicMock()
+    config.defaults.media.concurrent_downloads = 2
+
     exporter = Exporter(  # pyright: ignore[reportArgumentType]
         api=api,
         state=state,
-        config=MagicMock(),
+        config=config,
         renderer=MagicMock(),
         downloader=MagicMock(),
         account="acc",
@@ -153,3 +156,77 @@ async def test_the_run_verify_pass_keeps_the_file_when_the_download_fails(tmp_pa
     assert existing.read_bytes() == b"partial", "битый файл удалён, замена не скачалась"
     assert stats.errors, "неудачное перекачивание не попало в сводку"
     state.register_file.assert_not_called()
+
+
+def _broken(file_id: int, chat_id: int, msg_id: int, path: Path) -> dict:
+    return {
+        "file_id": file_id,
+        "chat_id": chat_id,
+        "msg_id": msg_id,
+        "expected_size": 1000,
+        "actual_size": 10,
+        "local_path": str(path),
+        "status": "partial",
+    }
+
+
+@pytest.mark.asyncio
+async def test_broken_files_are_asked_for_in_batches_per_chat(tmp_path):
+    """Каждому битому файлу доставался свой круг «запрос -- ответ» к серверу.
+
+    Telegram принимает список идентификаторов, а список битых файлов содержит
+    и чат, и сообщение: чат опрашивается одним запросом на пачку.
+    """
+    from tg_export.verify import redownload_broken_files
+
+    entries = [_broken(i, 100 + i % 2, 200 + i, tmp_path / f"f{i}.jpg") for i in range(6)]
+    for entry in entries:
+        Path(entry["local_path"]).write_bytes(b"partial")
+
+    calls: list[tuple[int, list[int]]] = []
+
+    async def get_messages(chat_id, ids: list[int]):
+        calls.append((chat_id, ids))
+        return [MagicMock(media=object()) for _ in ids]
+
+    api = MagicMock()
+    api.client.get_messages = get_messages
+    api.download_media = AsyncMock(return_value=None)
+
+    await redownload_broken_files(api, AsyncMock(), entries, concurrency=3)
+
+    assert len(calls) == 2, f"на два чата должно приходиться два запроса: {calls}"
+    assert sorted(chat_id for chat_id, _ in calls) == [100, 101]
+    assert sorted(len(ids) for _, ids in calls) == [3, 3]
+
+
+@pytest.mark.asyncio
+async def test_broken_files_are_downloaded_with_the_configured_parallelism(tmp_path):
+    """Скачивание шло строго по одному: настройка concurrent_downloads к пути
+    проверки не применялась, и сеть простаивала на каждом круге."""
+    import asyncio
+
+    from tg_export.verify import redownload_broken_files
+
+    entries = [_broken(i, 100, 200 + i, tmp_path / f"f{i}.jpg") for i in range(6)]
+    for entry in entries:
+        Path(entry["local_path"]).write_bytes(b"partial")
+
+    running = 0
+    peak = 0
+
+    async def download_media(tl_msg, staging):
+        nonlocal running, peak
+        running += 1
+        peak = max(peak, running)
+        await asyncio.sleep(0.01)
+        running -= 1
+        return None
+
+    api = MagicMock()
+    api.client.get_messages = AsyncMock(return_value=[MagicMock(media=object()) for _ in entries])
+    api.download_media = download_media
+
+    await redownload_broken_files(api, AsyncMock(), entries, concurrency=3)
+
+    assert peak == 3, f"одновременных загрузок: {peak}"

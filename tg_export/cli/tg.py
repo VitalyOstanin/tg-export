@@ -161,10 +161,98 @@ def _write_info_results(results: list[dict], output_file, as_json: bool) -> None
         common._diag(f"Saved {len(results)} entries to {output_file}")
 
 
-async def _tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_file, as_json=False):
+async def _resolve_entities(api, ids: list) -> dict:
+    """Entities of the given chats, resolved in one request when it works.
 
+    An id missing from the session cache costs `get_entity` a request of its
+    own, so a catalog of hundreds of chats used to mean hundreds of round-trips
+    in a row. Telethon takes a list and resolves them together; the request
+    fails as a whole if any one id cannot be resolved, and then the caller
+    falls back to asking per chat, which is what reports the failing one
+    without losing the rest.
+    """
+    if len(ids) < 2:
+        return {}
+    try:
+        answered = await api.client.get_entity(list(ids))
+    except Exception as e:  # noqa: BLE001 - the per-chat path reports what failed
+        logger.debug("batch entity resolution failed (%s); falling back to one by one", e)
+        return {}
+    if not isinstance(answered, list):
+        answered = [answered]
+    return {cid: entity for cid, entity in zip(ids, answered, strict=False) if entity is not None}
+
+
+# How many chats are asked for their history at once. GetHistoryRequest takes
+# one peer, so the only way to stop waiting out a full round-trip per chat is to
+# overlap the requests -- kept low, since the server counts them per account.
+INFO_CONCURRENCY = 4
+
+
+async def _one_chat_info(api, cid, entity, *, last_n: int) -> dict:
+    """Counters and the last messages of one chat, or the error it answered with."""
     from telethon.tl.functions.messages import GetHistoryRequest
 
+    try:
+        if entity is None:
+            entity = await api.client.get_entity(cid)
+        title = getattr(entity, "title", None) or _entity_name(entity)
+        result: Any = await api.client(
+            GetHistoryRequest(
+                peer=entity,  # pyright: ignore[reportArgumentType]
+                offset_id=0,
+                offset_date=None,
+                add_offset=0,
+                limit=max(last_n, 1),
+                max_id=0,
+                min_id=0,
+                hash=0,
+            )
+        )
+    except Exception as e:  # noqa: BLE001 - one unreachable chat must not end the rest
+        return {"id": cid, "error": str(e), "messages": 0}
+
+    last_date = None
+    messages = []
+    for msg in result.messages:
+        date_str = format_moment(msg.date, missing="?")
+        if last_date is None:
+            last_date = date_str
+        if last_n > 0:
+            sender, text = _message_preview(msg)
+            messages.append({"date": date_str, "sender": sender, "text": text})
+
+    entry = {"id": cid, "name": title, "messages": _result_count(result), "last_date": last_date}
+    if messages:
+        entry["last_messages"] = messages
+    return entry
+
+
+def _result_count(result: Any) -> int:
+    """Total messages of a chat, as the history answer reports it."""
+    return getattr(result, "count", len(result.messages))
+
+
+def _report_info_lines(results: list[dict], *, output_file, as_json: bool) -> None:
+    """Progress and the human-readable lines of `tg info`.
+
+    The counter is progress, not data: mixed into stdout it reached
+    `tg info ... | grep` together with the results.
+    """
+    total = len(results)
+    for idx, entry in enumerate(results, 1):
+        cid = entry["id"]
+        if "error" in entry:
+            if not output_file:
+                common._diag(f"[{idx}/{total}] id={cid}: ERROR {entry['error']}", essential=True)
+            continue
+        if total > 1:
+            common._diag(f"  [{idx}/{total}] {entry['name']} (id={cid})")
+        if not output_file and not as_json:
+            click.echo(f"{entry['name']} (id={cid}): {entry['messages']} msgs, last: {entry['last_date']}")
+
+
+async def _tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_file, as_json=False):
     # Collect IDs
     ids = list(chat_ids)
     if catalog_file:
@@ -182,60 +270,18 @@ async def _tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_fi
         _write_info_results([], output_file, as_json)
         return EXIT_OK
 
-    results = []
     async with common._connected_api(account) as (api, account):
-        total = len(ids)
-        for idx, cid in enumerate(ids, 1):
-            try:
-                entity = await api.client.get_entity(cid)
-                title = getattr(entity, "title", None) or _entity_name(entity)
-                limit = max(last_n, 1)
-                result: Any = await api.client(
-                    GetHistoryRequest(
-                        peer=entity,  # pyright: ignore[reportArgumentType]
-                        offset_id=0,
-                        offset_date=None,
-                        add_offset=0,
-                        limit=limit,
-                        max_id=0,
-                        min_id=0,
-                        hash=0,
-                    )
-                )
-                count = getattr(result, "count", len(result.messages))
-                last_date = None
-                messages = []
-                for msg in result.messages:
-                    date_str = format_moment(msg.date, missing="?")
-                    if last_date is None:
-                        last_date = date_str
-                    if last_n > 0:
-                        sender, text = _message_preview(msg)
-                        messages.append({"date": date_str, "sender": sender, "text": text})
+        entities = await _resolve_entities(api, ids)
+        semaphore = asyncio.Semaphore(INFO_CONCURRENCY)
 
-                entry = {
-                    "id": cid,
-                    "name": title,
-                    "messages": count,
-                    "last_date": last_date,
-                }
-                if messages:
-                    entry["last_messages"] = messages
-                results.append(entry)
+        async def one(cid):
+            async with semaphore:
+                return await _one_chat_info(api, cid, entities.get(cid), last_n=last_n)
 
-                # The counter is progress, not data: mixed into stdout it
-                # reached `tg info ... | grep` together with the results.
-                if total > 1:
-                    common._diag(f"  [{idx}/{total}] {title} (id={cid})")
-                if not output_file and not as_json:
-                    click.echo(f"{title} (id={cid}): {count} msgs, last: {last_date}")
-
-            except Exception as e:
-                entry = {"id": cid, "error": str(e), "messages": 0}
-                results.append(entry)
-                if not output_file:
-                    common._diag(f"[{idx}/{total}] id={cid}: ERROR {e}", essential=True)
-
+        # gather keeps the order of the input, so the report follows the order
+        # the chats were asked for even though the requests overlap.
+        results = list(await asyncio.gather(*(one(cid) for cid in ids)))
+        _report_info_lines(results, output_file=output_file, as_json=as_json)
         _write_info_results(results, output_file, as_json)
         # A chat that could not be queried is a failure even when the rest
         # succeeded: the JSON carries an "error" key the caller may miss.

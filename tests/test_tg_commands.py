@@ -529,18 +529,31 @@ async def test_album_progress_never_passes_the_file_count(tmp_path, monkeypatch)
 # ---------------------------------------------------------------------------
 
 
-def _invoke_tg_info(args: list[str], *, chat_ids=("123",), fail_on=()):
-    """Запустить `tg info` на подставном API; чаты из fail_on отвечают ошибкой."""
+def _invoke_tg_info(args: list[str], *, chat_ids=("123",), fail_on=(), calls: list | None = None):
+    """Запустить `tg info` на подставном API; чаты из fail_on отвечают ошибкой.
+
+    `calls` собирает аргументы каждого обращения к get_entity: по ним видно,
+    разрешаются ли идентификаторы одним запросом или по одному.
+    """
     from click.testing import CliRunner
 
     from tg_export.cli import main
 
-    def get_entity(cid):
+    def one_entity(cid):
         if cid in fail_on:
             raise RuntimeError("chat unavailable")
         entity = MagicMock()
         entity.title = f"Chat {cid}"
         return entity
+
+    def get_entity(cid):
+        if calls is not None:
+            calls.append(cid)
+        if isinstance(cid, list):
+            # Telethon разрешает список одним запросом, и отказ по любому из
+            # идентификаторов завершает весь запрос ошибкой.
+            return [one_entity(c) for c in cid]
+        return one_entity(cid)
 
     history = MagicMock()
     history.count = 7
@@ -695,3 +708,33 @@ def test_the_preview_is_cut_at_the_configured_length():
 
     assert len(cut) == cli_common.DEFAULT_MESSAGE_TEXT_LENGTH
     assert _message_preview(_preview_message(long_text), truncate=0)[1] == long_text
+
+
+def test_tg_info_resolves_the_whole_catalog_in_one_request():
+    """`--from-catalog --type` заведён ради пакетного опроса, а исполнялся поштучно.
+
+    Идентификатора, которого нет в кеше сессии, `get_entity` стоит запроса к
+    серверу: на каталоге в сотни чатов это столько же круговых задержек, идущих
+    одна за другой.
+    """
+    calls: list = []
+
+    result = _invoke_tg_info(["--json"], chat_ids=("123", "456", "789"), calls=calls)
+
+    assert result.exit_code == 0, result.output
+    assert calls == [[123, 456, 789]], f"идентификаторы разрешались по одному: {calls}"
+
+
+def test_tg_info_still_reports_the_chat_that_failed_alone():
+    """Пакетное разрешение падает целиком, поэтому остаётся поштучный проход.
+
+    Отказ по одному чату не должен превращаться в отказ по всему каталогу.
+    """
+    calls: list = []
+
+    result = _invoke_tg_info(["--json"], chat_ids=("123", "456"), fail_on=(456,), calls=calls)
+
+    assert result.exit_code != 0, result.output
+    assert '"id": 123' in result.output and '"error"' in result.output, result.output
+    assert calls[0] == [123, 456], calls
+    assert calls[1:] == [123, 456], f"после отказа пакета нужен поштучный проход: {calls}"
