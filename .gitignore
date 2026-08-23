@@ -39,6 +39,9 @@ htmlcov/
 # Tools
 .playwright-mcp/
 
+# Release notes prepared by the gate (publish.yml writes them into the tree)
+release_notes.md
+
 # Local scratch (notes, drafts, reviews)
 /tmp/
 docs/reviews/

@@ -14,7 +14,7 @@ import pytest
 SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "release_notes.py"
 
 
-def _run(tag, tmp_path, *, pyproject_version="1.5.1", changelog=None):
+def _run(tag, tmp_path, *, pyproject_version="1.5.1", changelog=None, extra=(), output=True):
     (tmp_path / "pyproject.toml").write_text(
         f'[project]\nname = "tg-export"\nversion = "{pyproject_version}"\n', encoding="utf-8"
     )
@@ -25,11 +25,11 @@ def _run(tag, tmp_path, *, pyproject_version="1.5.1", changelog=None):
         encoding="utf-8",
     )
     out = tmp_path / "release_notes.md"
-    return subprocess.run(
-        [sys.executable, str(SCRIPT), tag, "--root", str(tmp_path), "--output", str(out)],
-        capture_output=True,
-        text=True,
-    ), out
+    argv = [sys.executable, str(SCRIPT), tag, "--root", str(tmp_path)]
+    if output:
+        argv += ["--output", str(out)]
+    argv += list(extra)
+    return subprocess.run(argv, capture_output=True, text=True, cwd=tmp_path), out
 
 
 def test_release_notes_are_extracted_for_a_matching_tag(tmp_path):
@@ -140,6 +140,69 @@ def test_a_tag_without_the_v_prefix_is_accepted(tmp_path):
     result, _ = _run("1.5.1", tmp_path)
 
     assert result.returncode == 0, result.stderr
+
+
+def test_a_section_dated_far_from_the_tag_stops_the_release(tmp_path):
+    """Дата, скопированная из прошлого раздела, проходила проверку формы и уезжала в release notes.
+
+    Скрипт требовал лишь вида YYYY-MM-DD, поэтому переименование «Не выпущено»
+    с оставленной датой предыдущего релиза давало заголовок release notes с
+    чужим днём, и отличить это от двух релизов за сутки по файлу нельзя.
+    """
+    result, _ = _run("v1.5.1", tmp_path, extra=["--tag-date", "2026-08-23"])
+
+    assert result.returncode != 0
+    assert "2026-07-30" in result.stderr and "2026-08-23" in result.stderr, result.stderr
+
+
+def test_a_day_of_slack_is_allowed_between_the_section_and_the_tag(tmp_path):
+    """Раздел пишут накануне, тег ставят утром -- расхождение в сутки штатное."""
+    result, _ = _run("v1.5.1", tmp_path, extra=["--tag-date", "2026-07-31"])
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_without_an_output_path_the_notes_go_to_stdout_and_leave_no_file(tmp_path):
+    """Умолчание писало release_notes.md в текущий каталог, а `.gitignore` его не знал.
+
+    Повторная локальная проверка гейта без флага оставляла файл в корне
+    рабочего дерева, где его подхватывал `git add -A` релизного коммита.
+    """
+    result, _ = _run("v1.5.1", tmp_path, output=False)
+
+    assert result.returncode == 0, result.stderr
+    assert "Что-то починено" in result.stdout
+    assert not (tmp_path / "release_notes.md").exists(), "гейт создал файл без явного --output"
+
+
+def test_the_release_notes_file_is_ignored_by_git():
+    """`publish.yml` пишет его в рабочее дерево, и то же имя напрашивается локально."""
+    gitignore = (Path(__file__).resolve().parent.parent / ".gitignore").read_text(encoding="utf-8")
+
+    assert "release_notes.md" in gitignore.split(), gitignore
+
+
+def test_the_publishing_job_names_an_environment():
+    """Без окружения удостоверение OIDC выпускается любому прогону этого workflow.
+
+    Окружение сужает доверие на стороне PyPI (там его имя указывается у
+    доверенного издателя) и даёт место, куда можно повесить ручное
+    подтверждение перед необратимой загрузкой.
+    """
+    import yaml
+
+    root = Path(__file__).resolve().parent.parent
+    workflow = yaml.safe_load((root / ".github" / "workflows" / "publish.yml").read_text(encoding="utf-8"))
+
+    publishing = [
+        job
+        for job in workflow["jobs"].values()
+        if any("gh-action-pypi-publish" in (step.get("uses") or "") for step in job["steps"])
+    ]
+    assert len(publishing) == 1
+
+    environment = publishing[0].get("environment")
+    assert environment, "job публикации не объявляет environment"
 
 
 @pytest.mark.parametrize(

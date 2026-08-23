@@ -8,13 +8,17 @@ workflow -- and PyPI has no undo.
 
 Usage:
 
-    uv run python scripts/release_notes.py "$GITHUB_REF_NAME" --output release_notes.md
+    uv run python scripts/release_notes.py "$GITHUB_REF_NAME" \\
+        --tag-date "$(git log -1 --format=%cs "$GITHUB_REF_NAME")" \\
+        --output release_notes.md
 """
 
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import re
+import sys
 import tomllib
 from pathlib import Path
 
@@ -106,11 +110,41 @@ def _check_bump(changelog: str, version: str, body: str) -> None:
     )
 
 
+# The section is written before the tag is pushed, so a day apart is normal.
+DATE_SLACK = dt.timedelta(days=1)
+
+
+def _check_date(section_date: str, tag_date: str) -> None:
+    """Refuse a section whose date is not the date the tag was cut.
+
+    The gate used to check the shape of the date and nothing else, so a date
+    copied from the section above -- what renaming "Не выпущено" invites --
+    passed and became the heading of the release notes on GitHub. By the file
+    alone that is indistinguishable from two releases in one day.
+    """
+    try:
+        section = dt.date.fromisoformat(section_date)
+        tagged = dt.date.fromisoformat(tag_date)
+    except ValueError as e:
+        raise SystemExit(f"--tag-date must be a date in the form YYYY-MM-DD: {e}") from e
+    if abs(section - tagged) > DATE_SLACK:
+        raise SystemExit(
+            f"CHANGELOG section is dated {section_date}, but the tag points at a commit of "
+            f"{tag_date}. Fix the date of the section -- it is what the release notes are headed with."
+        )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("tag", help="release tag, with or without the leading 'v'")
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parent.parent)
-    parser.add_argument("--output", type=Path, default=Path("release_notes.md"))
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        help="write the notes here; without it they go to stdout and no file is left behind",
+    )
+    parser.add_argument("--tag-date", default=None, help="date of the tagged commit, YYYY-MM-DD")
     args = parser.parse_args()
 
     version = args.tag.removeprefix("v")
@@ -124,8 +158,18 @@ def main() -> None:
     changelog = (args.root / "CHANGELOG.md").read_text(encoding="utf-8")
     date, body = _section(changelog, version)
     _check_bump(changelog, version, body)
-    args.output.write_text(f"## tg-export v{version} -- {date}\n\n{body}\n", encoding="utf-8")
-    print(f"release notes for {version} ({date}): {len(body.splitlines())} lines -> {args.output}")
+    if args.tag_date:
+        _check_date(date, args.tag_date)
+    notes = f"## tg-export v{version} -- {date}\n\n{body}\n"
+    if args.output is None:
+        print(notes)
+    else:
+        args.output.write_text(notes, encoding="utf-8")
+    where = args.output or "stdout"
+    print(
+        f"release notes for {version} ({date}): {len(body.splitlines())} lines -> {where}",
+        file=sys.stderr,
+    )
 
 
 if __name__ == "__main__":

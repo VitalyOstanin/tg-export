@@ -71,7 +71,14 @@ jobs:
         # sit below the PyPI upload, so a missing section produced a published
         # version, no GitHub Release and a red workflow -- and PyPI has no
         # undo. The release notes are prepared by the same step.
-        run: uv run python scripts/release_notes.py "$GITHUB_REF_NAME" --output release_notes.md
+        # --tag-date: the date of the section is otherwise checked for shape
+        # only, and a date copied from the section above -- which is what
+        # renaming the unreleased section invites -- becomes the heading of
+        # the release notes.
+        run: |
+          uv run python scripts/release_notes.py "$GITHUB_REF_NAME" \
+            --tag-date "$(git log -1 --format=%cs "$GITHUB_REF_NAME")" \
+            --output release_notes.md
 
       - name: Build package
         run: uv build
@@ -112,6 +119,14 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # Without an environment the OIDC credential is issued to any run of this
+    # workflow. Naming one narrows the trust on the PyPI side (the same name
+    # goes into the trusted publisher there) and gives a place to hang manual
+    # approval on, right before the irreversible step. GitHub creates the
+    # environment on first use, without protection rules.
+    environment:
+      name: pypi
+      url: https://pypi.org/p/tg-export
     permissions:
       # The only power of this job: trade the OIDC token for a PyPI upload
       # token. No third-party code runs here.
