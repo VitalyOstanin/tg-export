@@ -166,50 +166,6 @@ class ForumTopic:
     messages_count: int
 
 
-@dataclass
-class PersonalInfo:
-    first_name: str
-    last_name: str | None
-    username: str | None
-    phone: str
-    bio: str | None
-    userpic: FileInfo | None
-
-
-@dataclass
-class ContactInfo:
-    user_id: int
-    first_name: str
-    last_name: str | None
-    phone: str | None
-    username: str | None
-
-
-@dataclass
-class ContactsList:
-    contacts: list[ContactInfo]
-    frequent: list[ContactInfo]
-
-
-@dataclass
-class SessionInfo:
-    device: str
-    platform: str
-    system_version: str
-    app_name: str
-    app_version: str
-    date_created: datetime
-    date_active: datetime
-    ip: str
-    country: str
-
-
-@dataclass
-class SessionsList:
-    sessions: list[SessionInfo]
-    web_sessions: list[SessionInfo]
-
-
 # ---------------------------------------------------------------------------
 # Chat
 # ---------------------------------------------------------------------------

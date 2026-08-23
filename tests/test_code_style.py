@@ -626,3 +626,24 @@ def test_no_action_repeats_its_class_name_as_a_string():
     ]
 
     assert not offenders, f"type= задан строковым литералом: {offenders}"
+
+
+def test_models_do_not_keep_types_nobody_builds():
+    """Пять типов описывали контакты и сессии, которых никто не строил.
+
+    `_export_contacts` и `_export_sessions` собирают для тех же данных обычные
+    словари, а типы остались от прежней схемы: ruff их не ловит (`F401` про
+    импорты, невызываемые классы вне его правил), и читатель принимает их за
+    описание формата выгрузки.
+    """
+    gone = ("PersonalInfo", "ContactInfo", "ContactsList", "SessionInfo", "SessionsList")
+    declared = {
+        node.name
+        for node in ast.walk(_tree("models.py"))
+        if isinstance(node, ast.ClassDef) and node.name in gone
+    }
+
+    assert not declared, (
+        f"типы удалены как неиспользуемые: {sorted(declared)} -- если выгрузка контактов и сессий "
+        "переводится на типы, вернуть их вместе с потребителем в exporter.py"
+    )
