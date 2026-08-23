@@ -1,4 +1,10 @@
-"""Main export loop with progress tracking."""
+"""The export itself: chat selection, two-phase fetching, media, rendering.
+
+`Exporter.run` is the entry point; the rest of the module serves it. Progress
+is shown by a `rich.Live` display whose two text lines come from `StatusView`
+and whose per-chat numbers come from `ChatView`; `ChatCounters` holds what the
+current chat has produced so far.
+"""
 
 from __future__ import annotations
 
@@ -58,6 +64,11 @@ logger = logging.getLogger(__name__)
 # long between progress lines when the live display is off.
 BATCH_SIZE = 500
 LOG_INTERVAL = 3  # seconds
+
+# How long after the first Ctrl+C a second one means "stop right now". Outside
+# the window the second signal is read as a fresh request to stop gracefully:
+# an accidental double press must not throw away the chat being committed.
+FORCE_SHUTDOWN_WINDOW_SECONDS = 3
 
 
 def _log(msg: str):
@@ -568,6 +579,27 @@ class StatusView:
 
 
 class Exporter:
+    """One export from start to finish, over the chats a config selects.
+
+    The order of work, as `run` performs it:
+
+    1. `_select_chats` -- apply the config to the catalog: skip, defaults, rules.
+    2. `_export_chat_entry` -> `export_chat` -- one chat at a time.
+    3. Inside a chat: phase 1 fetches messages newer than the last known id,
+       phase 2 walks the history older than the oldest known one, so an
+       interrupted run resumes instead of starting over. Media of a message is
+       downloaded through `_download_window`, which keeps a bounded number of
+       downloads in flight.
+    4. `_render_chat_html` writes the pages of the chat, month by month.
+    5. `export_global_data` saves what belongs to the account rather than to a
+       chat (personal info, contacts, sessions, userpics, stories), and
+       `_verify_files` re-downloads what is broken when asked to.
+
+    Signal handlers installed by `_install_signal_handlers` turn Ctrl+C into a
+    request to stop: the current chat is committed, and a second Ctrl+C within
+    `FORCE_SHUTDOWN_WINDOW_SECONDS` cancels the run outright.
+    """
+
     def __init__(
         self,
         api: TgApi,
@@ -1804,8 +1836,7 @@ class Exporter:
         now = time.monotonic()
         if signum is not None:
             self._shutdown_signal = signum
-        if self._shutdown and (now - self._first_signal_time) < 3:
-            # Second signal within 3s -> force exit via cancelling current task
+        if self._shutdown and (now - self._first_signal_time) < FORCE_SHUTDOWN_WINDOW_SECONDS:
             self._force_shutdown = True
             console.print("\n[bold red]Force shutdown![/]")
             if self._main_task is not None:
@@ -1813,4 +1844,7 @@ class Exporter:
             return
         self._shutdown = True
         self._first_signal_time = now
-        console.print("\n[yellow]Graceful shutdown requested (Ctrl+C again within 3s to force quit)...[/]")
+        console.print(
+            f"\n[yellow]Graceful shutdown requested "
+            f"(Ctrl+C again within {FORCE_SHUTDOWN_WINDOW_SECONDS}s to force quit)...[/]"
+        )

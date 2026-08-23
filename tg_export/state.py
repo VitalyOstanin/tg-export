@@ -1,4 +1,9 @@
-"""SQLite state management for incremental export."""
+"""The state database: what has been exported, and what is still missing.
+
+One file per export directory, opened by `ExportState`. The schema is declared
+by `SCHEMA_SQL` below and reconciled with the file on open; the JSON columns of
+`messages` follow the format described in `models.py`.
+"""
 
 from __future__ import annotations
 
@@ -391,6 +396,24 @@ SCHEMA_SQL = """
 
 
 class ExportState:
+    """The state database of one export directory.
+
+    The methods fall into groups:
+
+    - lifetime: `open` / `close` (or the async context manager), `commit`, and
+      the process lock that keeps two exports out of one file;
+    - schema: `_create_tables`, `_add_missing_columns`, `_drop_unused_schema`;
+    - progress per chat: `get_chat_state`, `set_last_msg_id`,
+      `set_oldest_msg_id`, `set_full_history`, `commit_phase_progress`,
+      `reset_chat_progress`;
+    - messages: `store_message` / `store_messages_batch`, `load_messages`,
+      `list_message_months`, `search_messages`, counters;
+    - files: `register_file`, `get_file`, `get_known_paths`,
+      `get_files_to_verify`;
+    - catalog: `cache_catalog`, `get_catalog_entry`, `find_chat_by_name`;
+    - removal: `purge_chat`, `count_chat_rows`, `count_all_rows`.
+    """
+
     def __init__(self, db_path: Path):
         self.db_path = db_path
         self._db: aiosqlite.Connection | None = None

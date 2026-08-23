@@ -143,3 +143,35 @@ async def test_cancellation_is_not_mistaken_for_a_failed_chat(tmp_path):
         await exporter._export_chat_entry(
             chat, MagicMock(), tmp_path, ExportStats(), MagicMock(), MagicMock()
         )
+
+
+def test_a_second_ctrl_c_forces_the_exit_only_inside_the_window():
+    """Документация обещала немедленный выход по любому повторному Ctrl+C.
+
+    Принудительное завершение включается только внутри окна: позже второй
+    сигнал -- новая просьба остановиться мягко, иначе случайное двойное
+    нажатие отменяло бы чат, который в этот момент сохраняется.
+    """
+    from unittest.mock import MagicMock
+
+    from tg_export.exporter import FORCE_SHUTDOWN_WINDOW_SECONDS, Exporter
+
+    exporter = MagicMock()
+    exporter._shutdown = False
+    exporter._force_shutdown = False
+    exporter._main_task = None
+    exporter._first_signal_time = 0.0
+
+    with pytest.MonkeyPatch.context() as mp:
+        now = [1000.0]
+        mp.setattr("tg_export.exporter.time.monotonic", lambda: now[0])
+        Exporter._handle_shutdown(exporter, 2)
+        assert exporter._shutdown and not exporter._force_shutdown
+
+        now[0] += FORCE_SHUTDOWN_WINDOW_SECONDS + 1
+        Exporter._handle_shutdown(exporter, 2)
+        assert not exporter._force_shutdown, "второй сигнал вне окна прервал экспорт"
+
+        now[0] += FORCE_SHUTDOWN_WINDOW_SECONDS - 1
+        Exporter._handle_shutdown(exporter, 2)
+        assert exporter._force_shutdown, "второй сигнал внутри окна не прервал экспорт"

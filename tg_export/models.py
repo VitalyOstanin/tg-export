@@ -727,6 +727,18 @@ _ACTION_CLASSES: dict[str, type[ServiceAction]] = {
 # ---------------------------------------------------------------------------
 # JSON serialization
 # ---------------------------------------------------------------------------
+#
+# The layout of the JSON columns of `messages` (media, action, text_parts,
+# forwarded_from, reactions, inline_buttons) is part of the on-disk format, and
+# so are the names it carries: a record stores the *class name* of the dataclass
+# in a service key (`__media_class__`, `__action_class__`) and its *field names*
+# as the remaining keys, since reading is `cls(**d)`. A datetime is written as
+# `{"__datetime__": <isoformat>}`, an Enum as its value.
+#
+# Renaming a dataclass or one of its fields therefore breaks exports written by
+# earlier versions exactly the way a changed DDL would, and neither the type
+# checker nor the tests see it: the columns are declared TEXT. Treat such a
+# rename like a schema change: CONTRIBUTING describes it next to the DDL.
 
 
 def encode_default(obj: Any) -> Any:
@@ -745,6 +757,12 @@ def decode_hook(d: dict[str, Any]) -> dict[str, Any] | datetime:
     return d
 
 
+# The same classes by their own name: that is what `__media_class__` stores,
+# while `_MEDIA_CLASSES` is keyed by the value of `type` (several types share
+# one class).
+_MEDIA_CLASSES_BY_NAME: dict[str, type[Media]] = {cls.__name__: cls for cls in _MEDIA_CLASSES.values()}
+
+
 def media_to_dict(media: Media) -> dict[str, Any]:
     d = asdict(media)
     d["__media_class__"] = type(media).__name__
@@ -752,18 +770,19 @@ def media_to_dict(media: Media) -> dict[str, Any]:
 
 
 def media_from_dict(d: dict[str, Any]) -> Media:
+    """Rebuild media from a stored record; `type` stands in for a missing marker.
+
+    Every record this project writes carries `__media_class__`. The branch
+    without it is a guard for a record edited by hand or produced elsewhere:
+    the class is then guessed from `type`, which is stored anyway, instead of
+    the whole message failing to load.
+    """
     class_name = d.pop("__media_class__", None)
     if class_name is None:
         media_type = d.get("type", "unsupported")
         cls = _MEDIA_CLASSES.get(media_type, UnsupportedMedia)
     else:
-        # Find class by name
-        for c in _MEDIA_CLASSES.values():
-            if c.__name__ == class_name:
-                cls = c
-                break
-        else:
-            cls = UnsupportedMedia
+        cls = _MEDIA_CLASSES_BY_NAME.get(class_name, UnsupportedMedia)
 
     # Reconstruct enums and nested objects
     if "type" in d:
