@@ -69,6 +69,17 @@ def _error(message: str, **kwargs) -> None:
 # re-exported here because commands read them by these names.
 
 
+def _db_rows_line(counts: dict[str, int]) -> str:
+    """The row counts a destructive command is about to remove, as one line.
+
+    Printed by `purge` and by both branches of `state reset --delete-messages`,
+    always as an essential line: a prompt whose subject --quiet hid is a prompt
+    nobody can answer. The tables come from the count itself, so a table added
+    to CHAT_TABLES shows up in the warning without a second edit here.
+    """
+    return "  DB: " + ", ".join(f"{table}={number}" for table, number in counts.items())
+
+
 def _fail(message: str | None = None, code: int = EXIT_FAILURE):
     """Report a refusal and end the command with ``code``.
 
@@ -124,18 +135,24 @@ async def _connected_api(account_name):
         yield api, account
 
 
+# The way out of a missing config, named by every command that needs one.
+MISSING_CONFIG_HINT = "Create it with: tg-export init --account {account}"
+
+
 def _resolve_output(
     account: str | None,
     config_override: Path | None,
     output_override: Path | None,
     *,
-    missing_config_hint: str | None = None,
+    missing_config_hint: str | None = MISSING_CONFIG_HINT,
 ) -> tuple[str, Any, Path]:
     """Resolve ``(account, config, output_base)`` from the command options.
 
     Reported as a failure when the config file is missing: without it there is
-    neither an output directory nor a state database to work on. ``run`` passes
-    a hint telling how to create the file; ``{account}`` in it is filled in.
+    neither an output directory nor a state database to work on. The refusal
+    names the way out by default -- it used to be passed by ``run`` alone, and
+    the four other commands over a config stopped at the same wall without
+    saying what to do next. ``{account}`` in the hint is filled in.
     """
     from tg_export.config import load_config
 

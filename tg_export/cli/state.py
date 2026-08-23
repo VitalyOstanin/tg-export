@@ -29,7 +29,12 @@ def state():
 @click.option(
     "--config", type=click.Path(exists=True, path_type=Path), default=None, help="Override config path"
 )
-@click.option("--output", type=click.Path(path_type=Path), default=None, help="Export output directory")
+@click.option(
+    "--output",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Export output directory, overriding the config",
+)
 @click.option("--json", "as_json", is_flag=True, help="Output as machine-readable JSON")
 @click.argument("chat_id", type=int, required=False)
 def state_show(account, config, output, as_json, chat_id):
@@ -102,15 +107,20 @@ async def _state_show(account, config_override, output_override, chat_id, as_jso
 @click.option(
     "--config", type=click.Path(exists=True, path_type=Path), default=None, help="Override config path"
 )
-@click.option("--output", type=click.Path(path_type=Path), default=None, help="Export output directory")
+@click.option(
+    "--output",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Export output directory, overriding the config",
+)
 @click.option("--all", "reset_all", is_flag=True, help="Reset all chats")
 @click.option("--delete-messages", is_flag=True, help="Also delete messages from DB")
-@click.option("--yes", is_flag=True, help="Skip confirmation")
+@click.option("--yes", is_flag=True, help="Skip confirmation for destructive resets")
 @click.argument("chat_id", type=int, required=False)
 def state_reset(account, config, output, reset_all, delete_messages, yes, chat_id):
     """Reset export state to force re-download. Specify chat_id or --all."""
     if chat_id is None and not reset_all:
-        _fail("Specify chat_id or --all")
+        raise click.UsageError("Specify chat_id or --all")
     exit_code = asyncio.run(
         _state_reset(account, config, output, reset_all, delete_messages, chat_id, skip_confirm=yes)
     )
@@ -135,11 +145,7 @@ async def _state_reset(
             # subject was hidden by --quiet is a prompt nobody can answer.
             counts = await st.count_all_rows()
             common._diag(f"Account: {account}", essential=True)
-            common._diag(
-                f"  DB: messages={counts['messages']}, files={counts['files']}, "
-                f"export_state={counts['export_state']}, catalog_cache={counts['catalog_cache']}",
-                essential=True,
-            )
+            common._diag(common._db_rows_line(counts), essential=True)
             what = (
                 "Delete every message and file record and rewind all chats?"
                 if delete_messages
@@ -155,6 +161,18 @@ async def _state_reset(
             if not chat_state:
                 common._diag(f"No state for chat {chat_id}", essential=True)
                 return EXIT_FAILURE
+            if delete_messages:
+                # essential: for the same reason as the branch above -- the
+                # messages and file records of the chat go for good, and the
+                # question about it must not be hidden by --quiet.
+                counts = await st.count_chat_rows(chat_id)
+                common._diag(f"Chat: {chat_id}", essential=True)
+                common._diag(common._db_rows_line(counts), essential=True)
+                if not skip_confirm and not click.confirm(
+                    "Delete every message and file record of this chat?"
+                ):
+                    common._diag("Cancelled.", essential=True)
+                    return EXIT_OK
             await st.reset_chat_progress(chat_id, delete_messages=delete_messages)
             msg = f"Reset chat {chat_id}."
             if delete_messages:

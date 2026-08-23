@@ -279,7 +279,14 @@ async def _list_chats(account, output, fmt, include_left):
     type=click.Path(exists=True, path_type=Path),
     help="Build the config from this catalog file (--from is the old spelling)",
 )
-@click.option("--output", type=click.Path(path_type=Path), default=None, help="Override output config path")
+@click.option(
+    "--output-file",
+    "--output",
+    "output",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Write the config to this file instead of the path by convention (--output is the old spelling)",
+)
 @click.option(
     "--force",
     is_flag=True,
@@ -308,7 +315,7 @@ async def _init_config(account, from_catalog, output, force=False):
         _fail(
             f"Config {config_path} already exists. "
             f"Pass --force to overwrite it (the previous one is kept as {config_path.name}.bak), "
-            f"or --output to write elsewhere."
+            f"or --output-file to write elsewhere."
         )
 
     if from_catalog:
@@ -382,7 +389,9 @@ def _get_dir_size(path: Path) -> int | None:
 @click.option(
     "--config", type=click.Path(exists=True, path_type=Path), default=None, help="Override config path"
 )
-@click.option("--output", type=click.Path(path_type=Path), help="Override output directory")
+@click.option(
+    "--output", type=click.Path(path_type=Path), help="Export output directory, overriding the config"
+)
 @click.option("--verify", is_flag=True, help="Verify file integrity after export")
 @click.option("--dry-run", is_flag=True, help="Show what would be exported")
 @click.option(
@@ -403,7 +412,9 @@ def _get_dir_size(path: Path) -> int | None:
 def run_export(account, config, output, verify, dry_run, require_takeout, no_takeout, rerender):
     """Run export according to config. Config resolved by account name convention."""
     if require_takeout and no_takeout:
-        _fail("--require-takeout and --no-takeout ask for opposite things; pass one of them.")
+        raise click.UsageError(
+            "--require-takeout and --no-takeout ask for opposite things; pass one of them."
+        )
     exit_code = asyncio.run(
         _run_export(
             account,
@@ -587,7 +598,6 @@ def _export_destination(account, config_override, output_override):
         account,
         config_override,
         output_override,
-        missing_config_hint="Create it with: tg-export init --account {account}",
     )
     common._diag(f"Account: {account}")
     common._diag(f"Output: {output_base.resolve()}")
@@ -846,7 +856,9 @@ async def _render_index(renderer, chats, cfg, state, should_stop=None):
 @click.option(
     "--config", type=click.Path(exists=True, path_type=Path), default=None, help="Override config path"
 )
-@click.option("--output", type=click.Path(path_type=Path), help="Export output directory")
+@click.option(
+    "--output", type=click.Path(path_type=Path), help="Export output directory, overriding the config"
+)
 @click.option("--yes", is_flag=True, help="Skip confirmation")
 def purge_chat(chat, account, config, output, yes):
     """Purge chat data: messages, files, state, and rendered HTML.
@@ -929,11 +941,7 @@ async def _purge_chat(chat_arg, account, config_override, output_override, skip_
         # deletion, so the description of what it covers must not be suppressed.
         # A prompt with the subject hidden is a prompt the user cannot answer.
         common._diag(f"Chat: {chat_name} (id={chat_id})", essential=True)
-        common._diag(
-            f"  DB: messages={counts['messages']}, files={counts['files']}, "
-            f"export_state={counts['export_state']}, catalog_cache={counts['catalog_cache']}",
-            essential=True,
-        )
+        common._diag(common._db_rows_line(counts), essential=True)
         if chat_dirs:
             for d in chat_dirs:
                 size = sum(f.stat().st_size for f in d.rglob("*") if f.is_file())
@@ -962,7 +970,9 @@ async def _purge_chat(chat_arg, account, config_override, output_override, skip_
 @click.option(
     "--config", type=click.Path(exists=True, path_type=Path), default=None, help="Override config path"
 )
-@click.option("--output", type=click.Path(path_type=Path), help="Export output directory")
+@click.option(
+    "--output", type=click.Path(path_type=Path), help="Export output directory, overriding the config"
+)
 def verify_files(account, config, output):
     """Verify integrity of previously downloaded files."""
     exit_code = asyncio.run(_verify_files(account, config, output))

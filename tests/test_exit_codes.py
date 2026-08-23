@@ -239,3 +239,20 @@ def test_exit_codes_are_defined_once():
         errors.EXIT_FAILURE,
         errors.EXIT_SIGINT,
     )
+
+
+def test_a_refusal_over_the_call_shape_gives_code_two_with_usage():
+    """Один класс ситуаций -- один способ отказать.
+
+    «Аргументы не складываются в вызов» разбиралось тремя способами: код 2 с
+    блоком usage, код 1 без него и код 0. Таблица кодов возврата закрепляет за
+    2 именно эту ситуацию, а за 1 -- отказ по состоянию системы.
+    """
+    from click.testing import CliRunner
+
+    from tg_export.cli import main
+
+    for args in (["state", "reset"], ["tg", "send", "123"], ["tg", "info"]):
+        result = CliRunner().invoke(main, args)
+        assert result.exit_code == 2, (args, result.output)
+        assert "Usage:" in result.output, (args, result.output)

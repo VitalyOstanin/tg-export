@@ -317,7 +317,7 @@ def tg_send(account, files, text, as_document, recipients):
     recipients, including those who already received the message.
     """
     if not text and not files:
-        _fail("Error: specify --text and/or --file")
+        raise click.UsageError("specify --text and/or --file")
 
     parsed = []
     for r in recipients:

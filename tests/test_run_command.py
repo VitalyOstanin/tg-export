@@ -275,8 +275,14 @@ def test_no_takeout_skips_the_request_entirely(monkeypatch, run_env):
 
 
 def test_require_takeout_and_no_takeout_together_are_refused(run_env):
-    """Два флага просят противоположного: молча предпочесть один из них нельзя."""
+    """Два флага просят противоположного: молча предпочесть один из них нельзя.
+
+    Отказ по форме вызова -- это код 2 и блок usage, как у любой другой
+    непригодной комбинации аргументов; код 1 занят отказом по состоянию
+    системы (нет аккаунта, нет конфигурации, нет чата в базе).
+    """
     result = CliRunner().invoke(main, ["run", "--no-takeout", "--require-takeout"])
 
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "--no-takeout" in result.output
+    assert "Usage:" in result.output

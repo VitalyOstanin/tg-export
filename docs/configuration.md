@@ -125,7 +125,7 @@ min_free_space: 20GB
 Генерируется командой `tg-export init --account <alias>`: она запрашивает список чатов
 у Telegram и пишет шаблон. Если каталог уже выгружен командой
 `tg-export list --account <alias> --output-file catalog.yaml`, шаблон строится из файла без
-обращения к сети: `tg-export init --from-catalog catalog.yaml --output <alias>.yaml`. Принимается
+обращения к сети: `tg-export init --from-catalog catalog.yaml --output-file <alias>.yaml`. Принимается
 и YAML-каталог с разделами `folders`/`unfiled`/`archived`/`left`, и плоский JSON-каталог
 (`list --format json`).
 

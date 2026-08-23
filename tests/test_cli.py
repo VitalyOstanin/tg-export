@@ -460,6 +460,84 @@ def test_reset_of_the_whole_database_skips_the_question_with_yes(tmp_path, monke
     assert code == 0
 
 
+def _state_with_one_chat(tmp_path, monkeypatch, chat_id=42):
+    """Открытое состояние с записью одного чата, подставленное командам `state`."""
+    import contextlib
+    from unittest.mock import MagicMock
+
+    from tg_export.state import ExportState
+
+    st = ExportState(tmp_path / "state.db")
+
+    @contextlib.asynccontextmanager
+    async def fake(*_a, **_k):
+        await st.open()
+        await st.set_last_msg_id(chat_id, 100)
+        try:
+            yield st, MagicMock(), "acc"
+        finally:
+            await st.close()
+
+    monkeypatch.setattr(cli_common, "_opened_state", fake)
+    return st
+
+
+def test_reset_of_one_chat_asks_before_deleting_its_messages(tmp_path, monkeypatch):
+    """`state reset <chat_id> --delete-messages` стирал сообщения чата молча.
+
+    Вопрос стоял только в ветке `--all`, поэтому `--yes`, описанный в справке
+    как пропуск подтверждения, для одного чата пропускать было нечего. Соседние
+    необратимые операции -- `purge` и `state reset --all` -- сначала показывают
+    объём удаляемого строкой `essential`, чтобы вопрос не остался без предмета
+    под `--quiet`.
+    """
+    import asyncio
+
+    from tg_export import cli
+
+    _state_with_one_chat(tmp_path, monkeypatch)
+    lines = []
+    monkeypatch.setattr(cli_common, "_diag", lambda text, **kw: lines.append((text, kw)))
+    asked = []
+    monkeypatch.setattr(cli.click, "confirm", lambda text, **kw: asked.append(text) or False)
+
+    code = asyncio.run(cli_state._state_reset("acc", None, None, False, True, 42, skip_confirm=False))
+
+    assert asked, "подтверждение не запрошено"
+    assert code == 0
+    summary = [text for text, kw in lines if kw.get("essential") and "messages=" in text]
+    assert summary, f"объём удаляемого не показан: {lines}"
+
+
+def test_reset_of_one_chat_without_deleting_messages_asks_nothing(tmp_path, monkeypatch):
+    """Сброс прогресса обратим -- он стоит повторной выгрузки, а не данных."""
+    import asyncio
+
+    from tg_export import cli
+
+    _state_with_one_chat(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        cli.click, "confirm", lambda *a, **k: pytest.fail("вопрос задан о обратимой операции")
+    )
+
+    code = asyncio.run(cli_state._state_reset("acc", None, None, False, False, 42, skip_confirm=False))
+    assert code == 0
+
+
+def test_reset_of_one_chat_skips_the_question_with_yes(tmp_path, monkeypatch):
+    """`--yes` пропускает вопрос и для одного чата, а не только для `--all`."""
+    import asyncio
+
+    from tg_export import cli
+
+    st = _state_with_one_chat(tmp_path, monkeypatch)
+    monkeypatch.setattr(cli.click, "confirm", lambda *a, **k: pytest.fail("вопрос задан вопреки --yes"))
+
+    code = asyncio.run(cli_state._state_reset("acc", None, None, False, True, 42, skip_confirm=True))
+    assert code == 0
+    assert st is not None
+
+
 def _catalog_file(tmp_path):
     """Каталог чатов, из которого init строит шаблон."""
     import yaml
@@ -604,3 +682,50 @@ def test_a_date_range_reads_the_same_in_defaults_and_in_a_rule():
     assert _rule_summary(SimpleNamespace(skip=False, media=None, date_from=None, date_to=None)) == (
         "defaults"
     )
+
+
+def test_every_command_over_a_config_names_the_way_out(tmp_path, monkeypatch, account_env):
+    """Отсутствие конфигурации -- одна стена для пяти команд, выход из неё один.
+
+    Подсказку `tg-export init` передавала одна `run`, а `verify`, `state show`,
+    `state reset` и `purge` отказывали голым «Config not found».
+    """
+    for args in (["state", "show"], ["purge", "1"], ["verify"], ["run"]):
+        result = CliRunner().invoke(main, args)
+
+        assert result.exit_code == 1, (args, result.output)
+        assert "Config not found" in result.output, (args, result.output)
+        assert "tg-export init --account acc" in result.output, (args, result.output)
+
+
+def test_the_option_named_output_always_means_a_directory():
+    """`--output` -- каталог; файл результата называется `--output-file`.
+
+    `list` и `tg info` уже переведены на `--output-file`, а `init --output`
+    принимал путь файла конфигурации: по соседним командам он читается как
+    каталог, и `tg-export init --output ~/configs` создаёт файл с именем
+    `configs`. Каталог экспорта описывался тоже по-разному: `Override output
+    directory` у `run` против `Export output directory` у остальных.
+    """
+    import click
+
+    wrong_meaning = []
+    wordings = {}
+
+    def walk(command, path):
+        for param in command.params:
+            if not isinstance(param, click.Option) or param.opts[0] != "--output":
+                continue
+            where = " ".join(path)
+            if "directory" not in (param.help or "").lower():
+                wrong_meaning.append(f"{where} --output: {param.help!r}")
+            elif not any(len(opt) == 2 for opt in param.opts):
+                wordings.setdefault(param.help, []).append(where)
+        if isinstance(command, click.Group):
+            for name, sub in command.commands.items():
+                walk(sub, [*path, name])
+
+    walk(main, ["tg-export"])
+
+    assert not wrong_meaning, f"--output означает не каталог: {wrong_meaning}"
+    assert len(wordings) == 1, f"каталог экспорта описан по-разному: {wordings}"
