@@ -175,7 +175,7 @@ def _show_account_config(config_path):
 
 
 @click.command("list")
-@click.option("--account", default=None, help="Account alias (default: from 'auth default')")
+@click.option("--account", default=None, help=common.ACCOUNT_HELP)
 @click.option(
     "--output-file",
     "--output",
@@ -212,7 +212,7 @@ async def _list_chats(account, output, fmt, include_left):
 
 
 @click.command("init")
-@click.option("--account", default=None, help="Account alias (default: from 'auth default')")
+@click.option("--account", default=None, help=common.ACCOUNT_HELP)
 @click.option(
     "--from-catalog",
     "--from",
@@ -318,7 +318,7 @@ def _get_dir_size(path: Path) -> int | None:
 
 
 @click.command("run")
-@click.option("--account", default=None, help="Account alias (default: from 'auth default')")
+@click.option("--account", default=None, help=common.ACCOUNT_HELP)
 @click.option(
     "--config", type=click.Path(exists=True, path_type=Path), default=None, help="Override config path"
 )
@@ -774,7 +774,7 @@ async def _render_index(renderer, chats, cfg, state, should_stop=None):
 
 @click.command("purge")
 @click.argument("chat", required=True)
-@click.option("--account", default=None, help="Account alias (default: from 'auth default')")
+@click.option("--account", default=None, help=common.ACCOUNT_HELP)
 @click.option(
     "--config", type=click.Path(exists=True, path_type=Path), default=None, help="Override config path"
 )
@@ -886,7 +886,7 @@ async def _purge_chat(chat_arg, account, config_override, output_override, skip_
 
 
 @click.command("verify")
-@click.option("--account", default=None, help="Account alias (default: from 'auth default')")
+@click.option("--account", default=None, help=common.ACCOUNT_HELP)
 @click.option(
     "--config", type=click.Path(exists=True, path_type=Path), default=None, help="Override config path"
 )

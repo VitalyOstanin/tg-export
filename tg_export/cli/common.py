@@ -200,6 +200,9 @@ _LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
 # Default cut length for message text in `tg messages`; 0 disables the cut.
 DEFAULT_MESSAGE_TEXT_LENGTH = 200
 
+# Help for every --account option: one wording, and the command it names is real.
+ACCOUNT_HELP = "Account alias (default: the one set by 'account default')"
+
 
 def _resolve_log_level(debug: bool, log_level: str | None) -> tuple[int, bool]:
     """Resolve the effective log level and whether libraries share it.

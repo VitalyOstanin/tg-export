@@ -538,3 +538,49 @@ def test_init_force_keeps_the_previous_config_next_to_the_new_one(tmp_path, monk
     assert "Team" in existing.read_text(encoding="utf-8")
     backup = existing.with_suffix(existing.suffix + ".bak")
     assert backup.read_text(encoding="utf-8") == "chats:\n  - id: 1\n    skip: true\n"
+
+
+def test_help_never_names_a_command_that_does_not_exist():
+    """Справка одиннадцати объявлений `--account` отсылала к `auth default`.
+
+    Такой команды нет: аккаунт по умолчанию задаёт `account default`, и
+    сообщение об ошибке называет её верно, а справка -- нет. Пользователь,
+    следующий подсказке, получал `Error: No such command 'auth default'`.
+    Проверка общая: любое имя команды, названное справкой, должно резолвиться.
+    """
+    import re
+
+    import click
+
+    from tg_export.cli import main
+
+    def walk(command, path):
+        yield path, command
+        if isinstance(command, click.Group):
+            for name, sub in command.commands.items():
+                yield from walk(sub, (*path, name))
+
+    tree = dict(walk(main, ()))
+    assert tree, "дерево команд пусто -- проверка ничего не проверяет"
+    top_level = {name for (path, _) in tree.items() for name in path[:1]}
+    assert "account" in top_level, top_level
+
+    quoted = re.compile(r"[`']([a-z][a-z0-9 _-]*)[`']")
+    offenders = []
+    for path, command in tree.items():
+        texts = [
+            command.help or "",
+            command.short_help or "",
+            getattr(command, "epilog", None) or "",
+            *(getattr(param, "help", None) or "" for param in command.params),
+        ]
+        for text in texts:
+            for quote in quoted.findall(text):
+                words = quote.replace("tg-export", "", 1).split()
+                if not words or words[0] not in top_level:
+                    continue
+                named = tuple(words)
+                if named not in tree:
+                    offenders.append(f"{' '.join(path) or 'tg-export'}: {quote!r}")
+
+    assert not offenders, f"справка называет несуществующие команды: {offenders}"

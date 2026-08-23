@@ -25,7 +25,7 @@ def state():
 
 
 @state.command("show")
-@click.option("--account", default=None, help="Account alias")
+@click.option("--account", default=None, help=common.ACCOUNT_HELP)
 @click.option(
     "--config", type=click.Path(exists=True, path_type=Path), default=None, help="Override config path"
 )
@@ -98,7 +98,7 @@ async def _state_show(account, config_override, output_override, chat_id, as_jso
 
 
 @state.command("reset")
-@click.option("--account", default=None, help="Account alias")
+@click.option("--account", default=None, help=common.ACCOUNT_HELP)
 @click.option(
     "--config", type=click.Path(exists=True, path_type=Path), default=None, help="Override config path"
 )

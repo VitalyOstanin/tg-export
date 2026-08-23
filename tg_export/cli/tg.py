@@ -41,7 +41,7 @@ def tg():
 
 @tg.command("messages")
 @click.argument("chat_id", type=int)
-@click.option("--account", default=None, help="Account alias (default: from 'auth default')")
+@click.option("--account", default=None, help=common.ACCOUNT_HELP)
 @click.option("--limit", "-n", default=10, help="Number of messages to show")
 @click.option(
     "--truncate",
@@ -99,7 +99,7 @@ def _entity_name(entity) -> str:
 
 @tg.command("info")
 @click.argument("chat_ids", type=int, nargs=-1)
-@click.option("--account", default=None, help="Account alias")
+@click.option("--account", default=None, help=common.ACCOUNT_HELP)
 @click.option(
     "--from-catalog",
     "catalog_file",
@@ -244,7 +244,7 @@ async def _tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_fi
 
 
 @tg.command("send")
-@click.option("--account", default=None, help="Account alias")
+@click.option("--account", default=None, help=common.ACCOUNT_HELP)
 @click.option(
     "--file",
     "-f",
@@ -448,7 +448,7 @@ async def _tg_send(account_name, recipients, text, files, as_document=False):
 
 
 @tg.command("download")
-@click.option("--account", default=None, help="Account alias")
+@click.option("--account", default=None, help=common.ACCOUNT_HELP)
 @click.option("--output", "-o", type=click.Path(path_type=Path), default=".", help="Output directory")
 @click.argument("chat_id", type=int)
 @click.argument("msg_id", type=int)
