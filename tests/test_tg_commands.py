@@ -120,7 +120,7 @@ class TestDownloadIfNew:
 # ---------------------------------------------------------------------------
 
 
-def _invoke_tg_messages(args: list[str], text: str = "hello"):
+def _invoke_tg_messages(args: list[str], text: str = "hello", media: str | None = None):
     """Run `tg messages` against a mocked API returning a single message."""
     from click.testing import CliRunner
 
@@ -137,7 +137,10 @@ def _invoke_tg_messages(args: list[str], text: str = "hello"):
     mock_msg.sender.first_name = "Alice"
     mock_msg.sender.last_name = ""
     mock_msg.message = text
-    mock_msg.media = None
+    if media is None:
+        mock_msg.media = None
+    else:
+        mock_msg.media = type(f"MessageMedia{media}", (), {})()
     mock_msg.action = None
 
     async def _fake_iter(*a, **kw):
@@ -216,6 +219,57 @@ class TestTgMessagesOutput:
         result = _invoke_tg_messages(["-n", "1", "--truncate", "-5"])
 
         assert result.exit_code == 2
+
+
+class TestTgMessagesJson:
+    """`--json` был у пяти запросных команд, а здесь вывод разбирался регулярным выражением.
+
+    Текст сообщения может содержать переводы строк, поэтому построчный разбор
+    формата `  <дата>  [<id>]  <отправитель>: <текст>` ломается на первом же
+    многострочном сообщении.
+    """
+
+    def test_json_puts_an_array_of_messages_into_stdout_alone(self):
+        import json
+
+        result = _invoke_tg_messages(["-n", "1", "--json"])
+
+        payload = json.loads(result.stdout)
+        assert isinstance(payload, list) and len(payload) == 1, payload
+        entry = payload[0]
+        assert entry["id"] == 42
+        assert entry["sender"] == "Alice"
+        assert entry["text"] == "hello"
+        assert entry["media"] is None
+        assert entry["date"]
+
+    def test_json_keeps_the_text_whole_by_default(self):
+        """Обрезка нужна терминалу, а не разбирающей программе."""
+        import json
+
+        text = "x" * 250
+
+        result = _invoke_tg_messages(["-n", "1", "--json"], text=text)
+
+        assert json.loads(result.stdout)[0]["text"] == text
+
+    def test_json_keeps_the_media_type_in_its_own_field(self):
+        """В строке для терминала тип медиа приписан к тексту; разбирающей программе
+        нужен сам текст и тип отдельно."""
+        import json
+
+        result = _invoke_tg_messages(["-n", "1", "--json"], media="Photo")
+
+        entry = json.loads(result.stdout)[0]
+        assert entry["media"] == "Photo"
+        assert entry["text"] == "hello", entry
+
+    def test_json_still_cuts_when_asked_to(self):
+        import json
+
+        result = _invoke_tg_messages(["-n", "1", "--json", "--truncate", "10"], text="z" * 100)
+
+        assert json.loads(result.stdout)[0]["text"] == "z" * 10
 
 
 # ---------------------------------------------------------------------------

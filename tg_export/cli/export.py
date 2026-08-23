@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import shutil
 import subprocess
@@ -39,9 +40,13 @@ logger = logging.getLogger(__name__)
 
 @click.command("config")
 @click.option("--verbose", "-v", is_flag=True, help="Verbose: show per-account filters")
-def show_config(verbose):
+@click.option("--json", "as_json", is_flag=True, help="Output as machine-readable JSON")
+def show_config(verbose, as_json):
     """Show current configuration (global + per-account)."""
     mgr = common._mgr()
+    if as_json:
+        click.echo(json.dumps(_config_payload(mgr, verbose=verbose), ensure_ascii=False, indent=2))
+        return
 
     global_path = mgr.config_dir / "config.yaml"
     cred_path = mgr.config_dir / "api_credentials.yaml"
@@ -100,6 +105,70 @@ def show_config(verbose):
 
         if config_ok and verbose:
             _show_account_config(config_path)
+
+
+def _config_payload(mgr, *, verbose: bool) -> dict:
+    """The same summary as the human-readable output, as one document.
+
+    The lines of `config` are data -- paths, the reserve in force, which
+    accounts have a session -- and reading them back meant a regular expression
+    over `  key: value`. The api_hash is not here at all: the terminal shows
+    four characters of it to tell one credential from another, which a program
+    reading this has no use for.
+    """
+    global_path = mgr.config_dir / "config.yaml"
+    cred_path = mgr.config_dir / "api_credentials.yaml"
+    data = mgr.load_global_config() if global_path.exists() else {}
+    disk_check_path = _free_space_check_path(mgr)
+    usage = shutil.disk_usage(disk_check_path)
+    default = mgr.get_default_account()
+
+    payload: dict = {
+        "config_dir": str(mgr.config_dir),
+        "global_config": str(global_path) if global_path.exists() else None,
+        "proxy": data.get("proxy"),
+        "min_free_space": _min_free_space_caption(mgr, data) if global_path.exists() else None,
+        "free_space_checked_at": str(disk_check_path),
+        "free_bytes": usage.free,
+        "credentials": {"path": str(cred_path), "api_id": _credential_api_id(cred_path)}
+        if cred_path.exists()
+        else None,
+        "default_account": default,
+        "accounts": [],
+    }
+    for acc in mgr.list_accounts():
+        config_path = mgr.config_path(acc)
+        entry = {
+            "name": acc,
+            "default": acc == default,
+            "session": mgr.session_path(acc).exists(),
+            "config": str(config_path) if config_path.exists() else None,
+        }
+        if verbose and config_path.exists():
+            entry["settings"] = _account_settings(config_path)
+        payload["accounts"].append(entry)
+    return payload
+
+
+def _credential_api_id(cred_path: Path):
+    creds = yaml.safe_load(cred_path.read_text(encoding="utf-8")) or {}
+    return creds.get("api_id")
+
+
+def _account_settings(config_path: Path) -> dict:
+    """Output and media settings of one account, as the loader reads them."""
+    from tg_export.config import load_config
+    from tg_export.format import format_size
+
+    cfg = load_config(config_path)
+    return {
+        "output": {"path": str(cfg.output.path), "format": cfg.output.format},
+        "media": {
+            "types": list(cfg.defaults.media.types),
+            "max_file_size": format_size(cfg.defaults.media.max_file_size_bytes),
+            "concurrent_downloads": cfg.defaults.media.concurrent_downloads,
+        },
+    }
 
 
 def _min_free_space_caption(mgr, data: dict) -> str:

@@ -46,17 +46,20 @@ def tg():
     help=f"Cut message text to N characters (0 = no cut, default: {DEFAULT_MESSAGE_TEXT_LENGTH})",
 )
 @click.option("--no-truncate", is_flag=True, default=False, help="Print message text in full")
-def tg_messages(chat_id, account, limit, truncate, no_truncate):
+@click.option("--json", "as_json", is_flag=True, help="Output as machine-readable JSON")
+def tg_messages(chat_id, account, limit, truncate, no_truncate, as_json):
     """Show recent messages from a chat."""
     if no_truncate:
         if truncate:
             raise click.BadParameter("--no-truncate cannot be combined with --truncate")
         truncate = 0
     elif truncate is None:
-        truncate = DEFAULT_MESSAGE_TEXT_LENGTH
+        # Cutting is for the terminal: a program reading the JSON wants the
+        # text as it was sent, and asks for a cut explicitly when it wants one.
+        truncate = 0 if as_json else DEFAULT_MESSAGE_TEXT_LENGTH
     elif truncate < 0:
         raise click.BadParameter("--truncate must be 0 or greater")
-    asyncio.run(_tg_messages(chat_id, account, limit, truncate))
+    asyncio.run(_tg_messages(chat_id, account, limit, truncate, as_json))
 
 
 def _sender_name(sender) -> str:
@@ -83,17 +86,44 @@ def _message_preview(msg, *, truncate: int = DEFAULT_MESSAGE_TEXT_LENGTH) -> tup
     return sender, text[:truncate] if truncate else text
 
 
-async def _tg_messages(chat_id, account, limit, truncate=DEFAULT_MESSAGE_TEXT_LENGTH):
+async def _tg_messages(chat_id, account, limit, truncate=DEFAULT_MESSAGE_TEXT_LENGTH, as_json=False):
     """Print the last messages of a chat: date, sender and the cut text."""
     async with common._connected_api(account) as (api, account):
         entity = await api.client.get_entity(chat_id)
         title = getattr(entity, "title", None) or _entity_name(entity)
-        click.echo(f"# {title} (id={chat_id})\n")
+        if as_json:
+            common._diag(f"# {title} (id={chat_id})")
+        else:
+            click.echo(f"# {title} (id={chat_id})\n")
 
+        collected = []
         async for msg in api.client.iter_messages(entity, limit=limit):  # pyright: ignore[reportArgumentType]
             date_str = format_moment(msg.date, missing="?")
             sender, text = _message_preview(msg, truncate=truncate)
-            click.echo(f"  {date_str}  [{msg.id}]  {sender}: {text}")
+            if as_json:
+                # The line for the terminal carries the media type and the
+                # service action inside the text; a program reading this wants
+                # the text as it was sent and the rest in fields of its own.
+                body = msg.message or ""
+                collected.append(
+                    {
+                        "id": msg.id,
+                        "date": date_str,
+                        "sender": sender,
+                        "text": body[:truncate] if truncate else body,
+                        "media": _class_suffix(msg.media, "MessageMedia"),
+                        "action": _class_suffix(msg.action, "MessageAction"),
+                    }
+                )
+            else:
+                click.echo(f"  {date_str}  [{msg.id}]  {sender}: {text}")
+        if as_json:
+            click.echo(json.dumps(collected, ensure_ascii=False, indent=2))
+
+
+def _class_suffix(value, prefix: str) -> str | None:
+    """`MessageMediaPhoto` -> `Photo`; None when there is no such value."""
+    return value.__class__.__name__.replace(prefix, "") if value else None
 
 
 def _entity_name(entity) -> str:

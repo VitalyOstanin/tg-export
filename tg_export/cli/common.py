@@ -231,6 +231,22 @@ DEFAULT_MESSAGE_TEXT_LENGTH = 200
 ACCOUNT_HELP = "Account alias (default: the one set by 'account default')"
 
 
+def _one_account(positional: str | None, option: str | None) -> str | None:
+    """The account of a command that accepts both a positional NAME and --account.
+
+    Two commands took the alias positionally while nine took it as an
+    option, so a wrapper passing `--account "$ALIAS"` everywhere failed on
+    exactly those two. The positional spelling stays accepted; naming two
+    different accounts at once is a usage error rather than a silent choice
+    of one of them.
+    """
+    if positional and option and positional != option:
+        raise click.UsageError(
+            f"the account is named twice: {positional!r} as NAME and {option!r} as --account"
+        )
+    return option or positional
+
+
 # Libraries whose own debug stream would bury ours: telethon logs every MTProto
 # packet, aiosqlite every statement. --debug means "show me everything tg-export
 # knows", so their level is set independently of ours; LOG_LEVEL=DEBUG:all (or

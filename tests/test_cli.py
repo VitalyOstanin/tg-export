@@ -729,3 +729,107 @@ def test_the_option_named_output_always_means_a_directory():
 
     assert not wrong_meaning, f"--output означает не каталог: {wrong_meaning}"
     assert len(wordings) == 1, f"каталог экспорта описан по-разному: {wordings}"
+
+
+def test_account_default_prints_the_alias_alone_on_stdout(account_env):
+    """Пояснение в потоке данных попадало в подстановку `NAME=$(tg-export account default)`.
+
+    Правило проекта: stdout принадлежит машиночитаемому выводу, пояснения идут
+    в stderr. Команда печатала `Default account: acc` целиком в stdout, поэтому
+    значение приходилось выкусывать разбором строки.
+    """
+    result = CliRunner().invoke(main, ["account", "default"])
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout == "acc\n", result.stdout
+    assert "Default account" in result.stderr, result.stderr
+
+
+def test_account_default_without_a_default_leaves_stdout_empty(tmp_path, monkeypatch):
+    """«Не задан» -- это пояснение, а не значение: соседняя `account list` отвечает так же."""
+    from tg_export.auth import AccountManager
+    from tg_export.cli import common as cli_common
+
+    cfg_dir = tmp_path / "config"
+    mgr = AccountManager(config_dir=cfg_dir)
+    mgr.ensure_dirs()
+    monkeypatch.setattr(cli_common, "_mgr", lambda: AccountManager(config_dir=cfg_dir))
+
+    result = CliRunner().invoke(main, ["account", "default"])
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout == "", result.stdout
+    assert "No default account set" in result.stderr, result.stderr
+
+
+def test_account_default_speaks_json_like_its_neighbours(account_env):
+    """`--json` есть у `account list`, `auth check`, `state show` и `tg info`."""
+    import json as json_mod
+
+    result = CliRunner().invoke(main, ["account", "default", "--json"])
+
+    assert result.exit_code == 0, result.output
+    assert json_mod.loads(result.stdout) == {"default": "acc"}
+
+
+def test_auth_check_takes_the_account_as_an_option_too(tmp_path, monkeypatch):
+    """Девять команд принимают `--account`, а `auth check` -- только позиционный NAME.
+
+    Обёртка, подставляющая `--account "$ALIAS"` во все вызовы, на этой команде
+    прежде отказывала: опции с таким именем у неё не было.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    from tg_export.auth import AccountManager
+    from tg_export.cli import common as cli_common
+
+    cfg_dir = tmp_path / "config"
+    mgr = AccountManager(config_dir=cfg_dir)
+    mgr.ensure_dirs()
+    mgr.save_credentials(1, "hash")
+    for alias in ("first", "second"):
+        mgr.session_path(alias).write_bytes(b"")
+    monkeypatch.setattr(cli_common, "_mgr", lambda: AccountManager(config_dir=cfg_dir))
+
+    api = MagicMock()
+    api.__aenter__ = AsyncMock(side_effect=RuntimeError("cannot connect"))
+    api.__aexit__ = AsyncMock(return_value=False)
+    monkeypatch.setattr("tg_export.api.TgApi", lambda *a, **k: api)
+
+    result = CliRunner().invoke(main, ["auth", "check", "--account", "second"])
+
+    assert "second" in result.output, result.output
+    assert "first" not in result.output, result.output
+
+
+def test_takeout_clear_takes_the_account_as_an_option_too(tmp_path, monkeypatch):
+    import contextlib
+    from unittest.mock import MagicMock
+
+    from tg_export.cli import common as cli_common
+
+    seen = []
+
+    @contextlib.asynccontextmanager
+    async def fake(account_name):
+        seen.append(account_name)
+        api = MagicMock()
+        api.client.session = None
+        yield api, account_name or "acc"
+
+    monkeypatch.setattr(cli_common, "_connected_api", fake)
+
+    result = CliRunner().invoke(main, ["takeout", "clear", "--account", "second"])
+
+    assert result.exit_code == 0, result.output
+    assert seen == ["second"], seen
+
+
+def test_naming_the_account_twice_in_two_ways_is_refused(account_env):
+    """Позиционное имя и `--account` -- одно и то же поле; два разных значения молча
+    терять нельзя."""
+    result = CliRunner().invoke(main, ["auth", "check", "first", "--account", "second"])
+
+    assert result.exit_code == 2, result.output
+    assert "usage" in result.output.lower(), result.output
+    assert "twice" in result.output, result.output

@@ -106,3 +106,37 @@ def test_an_unparsable_min_free_space_is_named_as_such(account_env, tmp_path):
     assert result.exit_code == 0, result.output
     assert "20 GBs" in result.output, result.output
     assert "invalid" in result.output.lower(), result.output
+
+
+def test_config_speaks_json_like_the_other_query_commands(account_env, tmp_path):
+    """Сводку настроек приходилось разбирать регулярным выражением по строкам вида `  key: value`.
+
+    Флаг `--json` есть у `list`, `account list`, `account default`, `auth check`,
+    `state show` и `tg info`; здесь его не было, хотя вывод команды -- данные.
+    """
+    import json
+
+    (account_env / "config.yaml").write_text("min_free_space: 20GB\n", encoding="utf-8")
+    (account_env / "acc.yaml").write_text(f"output:\n  path: {tmp_path / 'exports'}\n", encoding="utf-8")
+
+    result = CliRunner().invoke(main, ["config", "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["default_account"] == "acc"
+    assert payload["min_free_space"] == "20.00 GB", payload
+    assert payload["proxy"] is None
+    assert payload["credentials"]["api_id"] == 1
+    assert [acc["name"] for acc in payload["accounts"]] == ["acc"]
+    assert payload["accounts"][0]["session"] is True
+
+
+def test_the_json_of_config_never_carries_the_api_hash(account_env):
+    """В человекочитаемом выводе печатаются четыре первых знака -- в машинном не должно быть и их."""
+    import json
+
+    result = CliRunner().invoke(main, ["config", "--json"])
+
+    payload = json.loads(result.stdout)
+
+    assert "api_hash" not in payload["credentials"], payload

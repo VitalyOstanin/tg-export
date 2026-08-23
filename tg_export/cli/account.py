@@ -39,7 +39,8 @@ def account_list(as_json):
 
 @account.command("default")
 @click.argument("name", required=False, default=None)
-def account_default(name):
+@click.option("--json", "as_json", is_flag=True, help="Output as machine-readable JSON")
+def account_default(name, as_json):
     """Set or show default account."""
     mgr = common._mgr()
     if name:
@@ -47,12 +48,19 @@ def account_default(name):
             _fail(f"Account '{name}' not found.")
         mgr.set_default_account(name)
         common._diag(f"Default account set to '{name}'.")
+        return
+    default = mgr.get_default_account()
+    if as_json:
+        click.echo(json.dumps({"default": default}, ensure_ascii=False, indent=2))
+        return
+    # stdout carries the value alone: `NAME=$(tg-export account default)` used
+    # to receive the caption too, and "No default account set." as the value
+    # when there was none. The caption goes to stderr like every other one.
+    if default:
+        click.echo(default)
+        common._diag(f"Default account: {default}")
     else:
-        default = mgr.get_default_account()
-        if default:
-            click.echo(f"Default account: {default}")
-        else:
-            click.echo("No default account set.")
+        common._diag("No default account set.")
 
 
 @account.command("remove")

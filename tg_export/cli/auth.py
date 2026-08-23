@@ -54,9 +54,11 @@ def auth_add(name):
 
 @auth.command("check")
 @click.argument("name", required=False, default=None)
+@click.option("--account", default=None, help=common.ACCOUNT_HELP)
 @click.option("--json", "as_json", is_flag=True, help="Output as machine-readable JSON")
-def auth_check(name, as_json):
+def auth_check(name, account, as_json):
     """Check if account sessions are valid."""
+    name = common._one_account(name, account)
     exit_code = asyncio.run(_auth_check(name, as_json))
     if exit_code:
         _fail(code=exit_code)

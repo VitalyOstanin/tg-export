@@ -19,9 +19,10 @@ def takeout():
 
 @takeout.command("clear")
 @click.argument("name", required=False, default=None)
-def takeout_clear(name):
+@click.option("--account", default=None, help=common.ACCOUNT_HELP)
+def takeout_clear(name, account):
     """Clear stale takeout session ID from local session file."""
-    asyncio.run(_takeout_clear(name))
+    asyncio.run(_takeout_clear(common._one_account(name, account)))
 
 
 async def _takeout_clear(name):
