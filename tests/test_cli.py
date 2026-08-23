@@ -458,3 +458,83 @@ def test_reset_of_the_whole_database_skips_the_question_with_yes(tmp_path, monke
 
     code = asyncio.run(cli_state._state_reset("acc", None, None, True, True, None, skip_confirm=True))
     assert code == 0
+
+
+def _catalog_file(tmp_path):
+    """Каталог чатов, из которого init строит шаблон."""
+    import yaml
+
+    catalog = tmp_path / "catalog.yaml"
+    catalog.write_text(
+        yaml.dump(
+            {
+                "folders": {"Work": [{"id": 10, "name": "Team", "type": "private_group", "messages": 5}]},
+                "unfiled": [],
+            },
+            allow_unicode=True,
+        ),
+        encoding="utf-8",
+    )
+    return catalog
+
+
+def test_init_refuses_to_overwrite_an_existing_config(tmp_path, monkeypatch):
+    """Конфиг -- единственный неповторимый артефакт настройки.
+
+    Сессии и каталог чатов восстанавливаются, а написанные руками правила по
+    папкам, лимиты и даты -- нет. Повторный init для обновления списка чатов
+    записывал шаблон поверх них без вопроса и завершался кодом 0.
+    """
+    from click.testing import CliRunner
+
+    from tg_export.auth import AccountManager
+    from tg_export.cli import main
+
+    cfg_dir = tmp_path / "config"
+    AccountManager(config_dir=cfg_dir).ensure_dirs()
+    monkeypatch.setattr("tg_export.cli.common._mgr", lambda: AccountManager(config_dir=cfg_dir))
+
+    existing = tmp_path / "generated.yaml"
+    existing.write_text("chats:\n  - id: 1\n    skip: true\n", encoding="utf-8")
+
+    result = CliRunner().invoke(
+        main, ["init", "--account", "acc", "--from", str(_catalog_file(tmp_path)), "--output", str(existing)]
+    )
+
+    assert result.exit_code == 1, result.output
+    assert existing.read_text(encoding="utf-8") == "chats:\n  - id: 1\n    skip: true\n"
+    assert "--force" in result.output
+
+
+def test_init_force_keeps_the_previous_config_next_to_the_new_one(tmp_path, monkeypatch):
+    """С --force перезапись выполняется, но прежний файл сохраняется рядом."""
+    from click.testing import CliRunner
+
+    from tg_export.auth import AccountManager
+    from tg_export.cli import main
+
+    cfg_dir = tmp_path / "config"
+    AccountManager(config_dir=cfg_dir).ensure_dirs()
+    monkeypatch.setattr("tg_export.cli.common._mgr", lambda: AccountManager(config_dir=cfg_dir))
+
+    existing = tmp_path / "generated.yaml"
+    existing.write_text("chats:\n  - id: 1\n    skip: true\n", encoding="utf-8")
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "init",
+            "--account",
+            "acc",
+            "--from",
+            str(_catalog_file(tmp_path)),
+            "--output",
+            str(existing),
+            "--force",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Team" in existing.read_text(encoding="utf-8")
+    backup = existing.with_suffix(existing.suffix + ".bak")
+    assert backup.read_text(encoding="utf-8") == "chats:\n  - id: 1\n    skip: true\n"

@@ -221,18 +221,36 @@ async def _list_chats(account, output, fmt, include_left):
     help="Build the config from this catalog file (--from is the old spelling)",
 )
 @click.option("--output", type=click.Path(path_type=Path), default=None, help="Override output config path")
-def init_config(account, from_catalog, output):
+@click.option(
+    "--force",
+    is_flag=True,
+    help="Overwrite an existing config, keeping the previous one as <name>.bak.",
+)
+def init_config(account, from_catalog, output, force):
     """Generate config template from catalog. Saves to ~/.config/tg-export/<account>.yaml."""
-    asyncio.run(_init_config(account, from_catalog, output))
+    asyncio.run(_init_config(account, from_catalog, output, force))
 
 
-async def _init_config(account, from_catalog, output):
-    """Write a config template, either from a saved catalog or from the account."""
+async def _init_config(account, from_catalog, output, force=False):
+    """Write a config template, either from a saved catalog or from the account.
+
+    An existing config is not overwritten without --force: the chat list
+    changes over time, so repeating init to refresh it is expected, and the
+    config is the one artefact of the setup that cannot be recovered -- the
+    session and the catalog can, the rules, limits and dates written by hand
+    cannot.
+    """
     from tg_export.catalog import generate_config_template
 
     mgr = common._mgr()
     account = mgr.resolve_account(account)
     config_path = output or mgr.config_path(account)
+    if config_path.exists() and not force:
+        _fail(
+            f"Config {config_path} already exists. "
+            f"Pass --force to overwrite it (the previous one is kept as {config_path.name}.bak), "
+            f"or --output to write elsewhere."
+        )
 
     if from_catalog:
         chats = _chats_from_catalog_file(from_catalog)
@@ -242,6 +260,13 @@ async def _init_config(account, from_catalog, output):
         async with common._connected_api(account) as (api, account):
             chats = await fetch_catalog(api)
 
+    if config_path.exists():
+        # Keep what is being replaced: --force is asked for to refresh the chat
+        # list, and the rules around it are what the user cannot rewrite from
+        # memory.
+        backup = config_path.with_suffix(config_path.suffix + ".bak")
+        shutil.copy2(config_path, backup)
+        common._diag(f"Previous config kept as {backup}")
     config_path.write_text(generate_config_template(chats, account=account), encoding="utf-8")
     common._diag(f"Config template saved to {config_path}")
 
