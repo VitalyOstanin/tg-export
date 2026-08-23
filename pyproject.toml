@@ -64,9 +64,15 @@ proxy = [
     # because python-socks is not installed"). PySocks is a legacy fallback
     # path in telethon and gated by the same check, so it never runs in
     # practice. The `[asyncio]` extra is required by Telethon's async client.
-    # Upper bound: python-socks 3.0.0 (2026-08-11) is a major step, and Telethon
-    # patches private internals of this library (python_socks._errors) rather
-    # than using its public API only. The combination has not been exercised.
+    # Upper bound: python-socks 3.0.0 (2026-08-11) drops the public
+    # `proxy_host` / `proxy_port` properties of `AsyncioProxy` (2.8.2 defines
+    # them in python_socks/async_/asyncio/_proxy.py; 3.0.0 defines them
+    # nowhere), while telethon 1.44 reads `proxy.proxy_host` /
+    # `proxy.proxy_port` in network/connection/connection.py. That branch only
+    # runs when `local_addr` is set, which this project never does, so the
+    # break is telethon's rather than ours -- but it is a concrete removal of
+    # something telethon relies on, and the bound stays until telethon states
+    # support for 3.x.
     "python-socks[asyncio]>=2.0,<3",
 ]
 
