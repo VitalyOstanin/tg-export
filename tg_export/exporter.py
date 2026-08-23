@@ -519,15 +519,15 @@ class StatusView:
         self.stats = stats
         self.start_time = start_time
 
-    def line1(self) -> str:
-        """Chats, messages, transferred bytes and elapsed time."""
+    def line1(self, view: ChatView) -> str:
+        """Chats, messages, transferred bytes and elapsed time.
+
+        The view is passed in rather than taken here: one frame of the display
+        is built from one snapshot of the chat, see `_build_status_table`.
+        """
         stats = self.stats
         elapsed = time.monotonic() - self.start_time
         elapsed_str = _format_elapsed(elapsed)
-        # One view for the whole line: this runs on the Live refresh thread,
-        # and reading the counters and the chat totals separately let a chat
-        # boundary fall between them.
-        view = stats.chat_view()
         # Both rates below count what this chat produced, so they are measured
         # from the start of this chat and not from the start of the run.
         chat_elapsed = view.elapsed
@@ -553,9 +553,9 @@ class StatusView:
         line += f" | elapsed: {elapsed_str}"
         return line
 
-    def line2(self) -> str:
+    def line2(self, view: ChatView) -> str:
         """Where the files of the current chat came from."""
-        stats = self.stats.per_chat
+        stats = view.counters
         parts = [f"  files: [cyan]{stats.files_downloaded}[/] downloaded"]
         if stats.files_existing:
             parts.append(f"[green]{stats.files_existing}[/] existing")
@@ -575,7 +575,8 @@ class StatusView:
         return " | ".join(parts)
 
     def lines(self) -> str:
-        return f"{self.line1()}\n{self.line2()}"
+        view = self.stats.chat_view()
+        return f"{self.line1(view)}\n{self.line2(view)}"
 
 
 class Exporter:
@@ -672,16 +673,23 @@ class Exporter:
         file_progress: Progress,
         file_tasks: dict[int, TaskID],
         stats: ExportStats,
-        line1: str,
-        line2: str,
+        status: StatusView,
     ) -> Table:
-        """Build the live status table.
+        """Build one frame of the live status table.
 
         Called from the Live refresh thread; reads ``active_downloads`` via a
         lock-protected snapshot to avoid ``RuntimeError: dictionary changed size
         during iteration`` when the event loop mutates it concurrently.
+
+        One `chat_view()` serves the whole frame. The progress bar and the two
+        status lines used to take a snapshot each, so a chat boundary falling
+        between them put the bar of the new chat next to the counters of the
+        previous one -- the inconsistency ChatStart exists to prevent, moved
+        one level up.
         """
         view = stats.chat_view()
+        line1 = status.line1(view)
+        line2 = status.line2(view)
         if view.messages_total > 0:
             progress.update(main_task, completed=view.messages_done, total=view.messages_total)
         else:
@@ -923,8 +931,7 @@ class Exporter:
                 file_progress=file_progress,
                 file_tasks=file_tasks,
                 stats=stats,
-                line1=status.line1(),
-                line2=status.line2(),
+                status=status,
             )
 
         live_cm = self._live_display(_build_status_table_local)

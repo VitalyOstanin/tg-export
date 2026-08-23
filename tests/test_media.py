@@ -389,3 +389,40 @@ def test_a_sibling_database_is_opened_once_for_the_whole_export(tmp_path):
         readers.close()
 
     assert len(opened) == 1, f"на соседнюю базу должно открываться одно соединение, открыто: {opened}"
+
+
+@pytest.mark.asyncio
+async def test_a_snapshot_of_active_downloads_keeps_the_values_it_was_taken_at(tmp_path):
+    """Снимок обещал согласованную копию, а копировал ссылки на живые записи.
+
+    Поток отрисовки Live читает `filename`, `received` и `total` уже вне замка,
+    тогда как колбэк прогресса правил поля той же записи из цикла событий: в
+    один кадр попадали `received` от нового вызова и `total`, ещё равный нулю,
+    -- rich получал `completed` без `total` и перерисовывал полосу назад.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    chat_dir = tmp_path / "chat"
+    seen = []
+
+    async def download_media(tl_message, target_dir, progress_cb):
+        progress_cb(10, 100)
+        seen.append(dl.snapshot_active_downloads()[10])
+        progress_cb(50, 100)
+        seen.append(dl.snapshot_active_downloads()[10])
+        path = Path(target_dir) / "photo.jpg"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"data")
+        return str(path)
+
+    api = MagicMock()
+    api.download_media = AsyncMock(side_effect=download_media)
+    dl = _downloader(api, tmp_path)
+
+    msg = MagicMock()
+    msg.id = 10
+    msg.file = None
+
+    await dl.download(msg, _photo(), chat_dir, chat_id=1)
+
+    assert [(p.received, p.total) for p in seen] == [(10, 100), (50, 100)]

@@ -296,12 +296,21 @@ async def _shielded(coro):
     drops the connection and the operation dies with `ValueError: Connection
     closed` inside a task nobody awaits. Awaiting the inner task again before
     re-raising keeps the caller in place until the write is really done.
+
+    The second wait is repeated until the task is done, and every cancellation
+    that lands in it is swallowed: a forced shutdown cancels the main task on
+    every signal, so a second Ctrl+C arriving during that wait would otherwise
+    break it and reproduce the very situation this helper exists to prevent.
+    The cancellation is not lost -- it is re-raised below, once the write is
+    complete.
     """
     task = asyncio.ensure_future(coro)
     try:
         return await asyncio.shield(task)
     except asyncio.CancelledError:
-        await task
+        while not task.done():
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.shield(task)
         raise
 
 

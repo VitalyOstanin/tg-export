@@ -332,9 +332,16 @@ class _FileTooLargeError(TgExportError):
         super().__init__(f"File too large: {size} bytes")
 
 
-@dataclass
+@dataclass(frozen=True)
 class DownloadProgress:
-    """Tracks progress of a single file download."""
+    """What one file download has transferred so far.
+
+    Immutable, and republished as a whole on every update: the Live thread
+    reads the fields of a snapshot outside the lock, so a record edited in
+    place could be read half-updated -- `received` from the latest callback
+    next to a `total` still holding its initial zero, which reaches rich as
+    `completed` without a `total`.
+    """
 
     filename: str
     received: int = 0
@@ -388,10 +395,17 @@ class MediaDownloader:
         """Return a consistent copy of active_downloads (thread-safe).
 
         Called from the Rich Live refresh thread; copying under the lock
-        prevents a race with the event loop mutating the dict.
+        prevents a race with the event loop mutating the dict, and the records
+        themselves are immutable, so what the caller reads afterwards is what
+        was published at the moment of the snapshot.
         """
         with self._active_lock:
             return dict(self.active_downloads)
+
+    def _publish_progress(self, msg_id: int, progress: DownloadProgress) -> None:
+        """Make the state of one download visible to the Live thread."""
+        with self._active_lock:
+            self.active_downloads[msg_id] = progress
 
     @contextlib.asynccontextmanager
     async def _file_lock(self, file_id: int):
@@ -732,13 +746,10 @@ class MediaDownloader:
             filename = f"{type_str}_{msg_id}{ext}"
         filename = _progress_name(filename)
 
-        dl_progress = DownloadProgress(filename=filename)
-        with self._active_lock:
-            self.active_downloads[msg_id] = dl_progress
+        self._publish_progress(msg_id, DownloadProgress(filename=filename))
 
         def _progress_cb(received: int, total: int):
-            dl_progress.received = received
-            dl_progress.total = total
+            self._publish_progress(msg_id, DownloadProgress(filename, received, total))
             # Cancel download if real size exceeds limit (file.size was 0)
             if total > max_size:
                 raise _FileTooLargeError(total)

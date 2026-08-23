@@ -106,7 +106,7 @@ async def test_build_status_table_handles_concurrent_active_downloads_mutation()
 
     from rich.progress import Progress
 
-    from tg_export.exporter import Exporter, ExportStats
+    from tg_export.exporter import Exporter, ExportStats, StatusView
     from tg_export.media import DownloadProgress
 
     api = AsyncMock()
@@ -160,8 +160,7 @@ async def test_build_status_table_handles_concurrent_active_downloads_mutation()
                     file_progress=file_progress,
                     file_tasks=file_tasks,
                     stats=stats,
-                    line1="line1",
-                    line2="line2",
+                    status=StatusView(stats, start_time=time.monotonic()),
                 )
             except RuntimeError as e:
                 errors.append(e)
@@ -254,7 +253,7 @@ def test_main_progress_never_mixes_a_new_chat_with_the_previous_snapshot():
 
     from rich.progress import Progress, TaskID
 
-    from tg_export.exporter import Exporter, ExportStats
+    from tg_export.exporter import Exporter, ExportStats, StatusView
 
     exporter = Exporter(
         api=AsyncMock(),
@@ -296,8 +295,7 @@ def test_main_progress_never_mixes_a_new_chat_with_the_previous_snapshot():
                 file_progress=file_progress,
                 file_tasks=file_tasks,
                 stats=stats,
-                line1="line1",
-                line2="line2",
+                status=StatusView(stats, start_time=time.monotonic()),
             )
             task = progress.tasks[0]
             if task.total is not None and task.completed > task.total:
@@ -307,3 +305,55 @@ def test_main_progress_never_mixes_a_new_chat_with_the_previous_snapshot():
         worker.join(timeout=1)
 
     assert not overshoot, f"completed больше total: {overshoot[:3]}"
+
+
+def test_one_frame_of_the_live_display_reads_one_snapshot_of_the_chat():
+    """Кадр собирался тремя независимыми снимками -- по одному на часть.
+
+    Снимок `ChatStart` заведён ради того, чтобы читатель из потока Live не
+    увидел счётчики нового чата рядом со счётчиками предыдущего. Внутри одного
+    `chat_view()` это выполнялось, но кадр складывался из трёх вызовов: полоса
+    прогресса, первая строка состояния и вторая. Между ними `begin_chat`
+    публиковал новый чат, и в одном кадре оказывались полоса нового чата и
+    счётчики старого -- та же рассогласованность уровнем выше.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    from rich.progress import Progress, TaskID
+
+    from tg_export.exporter import Exporter, ExportStats, StatusView
+
+    downloader = MagicMock()
+    downloader.snapshot_active_downloads = MagicMock(return_value={})
+    exporter = Exporter(
+        api=AsyncMock(),
+        state=AsyncMock(),
+        config=MagicMock(),
+        renderer=MagicMock(),
+        downloader=downloader,
+        account="test",
+    )
+
+    stats = ExportStats()
+    stats.begin_chat(messages_in_db=0, messages_total=10)
+    views = []
+    original = stats.chat_view
+
+    def counted():
+        view = original()
+        views.append(view)
+        return view
+
+    stats.chat_view = counted
+
+    progress = Progress()
+    exporter._build_status_table(
+        progress=progress,
+        main_task=progress.add_task("test", total=10),
+        file_progress=Progress(),
+        file_tasks=dict[int, TaskID](),
+        stats=stats,
+        status=StatusView(stats, start_time=time.monotonic()),
+    )
+
+    assert len(views) == 1, f"кадр собран из {len(views)} снимков чата"

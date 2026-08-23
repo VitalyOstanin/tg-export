@@ -107,7 +107,7 @@ def test_speed_is_measured_over_the_current_chat_not_the_whole_run():
     stats.data_size = 50 * 1024 * 1024
     stats.messages_exported = 100
 
-    line = StatusView(stats, start_time=time.monotonic() - 10_000).line1()
+    line = StatusView(stats, start_time=time.monotonic() - 10_000).line1(stats.chat_view())
 
     # 50 МБ за 10 секунд -- около 5 МБ/с, а не 5 КБ/с от общего времени прогона.
     assert "5.0 MB/s" in line, line

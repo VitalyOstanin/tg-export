@@ -175,3 +175,40 @@ def test_a_second_ctrl_c_forces_the_exit_only_inside_the_window():
         now[0] += FORCE_SHUTDOWN_WINDOW_SECONDS - 1
         Exporter._handle_shutdown(exporter, 2)
         assert exporter._force_shutdown, "второй сигнал внутри окна не прервал экспорт"
+
+
+@pytest.mark.asyncio
+async def test_commit_completes_even_when_the_caller_is_cancelled_twice(tmp_path, monkeypatch):
+    """Повторная отмена срывала само ожидание и снова оставляла commit без ожидающего.
+
+    Удержание вызывающего сделано через `await task` в обработчике отмены, а
+    само это ожидание ничем не защищено: вторая отмена поднимает
+    `CancelledError` прямо в нём, вызывающий уходит в свой `finally` и
+    закрывает соединение, по которому commit ещё идёт. Путь достижим: каждое
+    принудительное завершение снимает основную задачу, а второе нажатие Ctrl+C
+    приходит как раз в это ожидание.
+    """
+    state = ExportState(tmp_path / "state.db")
+    await state.open()
+    try:
+        finished = []
+
+        async def slow_commit():
+            await asyncio.sleep(0.05)
+            finished.append(True)
+
+        monkeypatch.setattr(state._db, "commit", slow_commit)
+
+        task = asyncio.create_task(state.commit())
+        await asyncio.sleep(0)
+        task.cancel()
+        # Вторая отмена приходит, когда первая уже дошла до ожидания commit.
+        await asyncio.sleep(0)
+        task.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert finished == [True], "вызывающий ушёл раньше, чем завершился commit"
+    finally:
+        await state.close()
