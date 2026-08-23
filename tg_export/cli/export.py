@@ -62,22 +62,9 @@ def show_config(verbose):
         else:
             click.echo("  proxy: none")
 
-        from tg_export.auth import DEFAULT_MIN_FREE_SPACE
-
-        mfs = data.get("min_free_space", DEFAULT_MIN_FREE_SPACE)
+        mfs = _min_free_space_caption(mgr, data)
         # Check free space on the output partition, not cwd
-        disk_check_path = Path.cwd()
-        default_name = mgr.get_default_account()
-        if default_name:
-            try:
-                cfg_path = mgr.config_path(default_name)
-                if cfg_path.exists():
-                    acc_cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
-                    output_path = Path(acc_cfg.get("output", {}).get("path", "."))
-                    if output_path.exists():
-                        disk_check_path = output_path
-            except (OSError, yaml.YAMLError) as e:
-                logger.debug("show config: cannot read account config %s: %s", default_name, e)
+        disk_check_path = _free_space_check_path(mgr)
         usage = shutil.disk_usage(disk_check_path)
         free_gb = usage.free / 1024**3
         click.echo(f"  min_free_space: {mfs}  # available: {free_gb:.1f} GB (on {disk_check_path})")
@@ -118,6 +105,48 @@ def show_config(verbose):
             _show_account_config(config_path)
 
 
+def _min_free_space_caption(mgr, data: dict) -> str:
+    """The reserve as the export reads it, not as it is written in the file.
+
+    A record `parse_size` rejects used to be shown as the setting in force,
+    while `run` refused with a ConfigError on the very same file.
+    """
+    from tg_export.config import ConfigError
+    from tg_export.format import format_size
+
+    try:
+        return format_size(mgr.load_min_free_space())
+    except ConfigError as e:
+        return f"{data.get('min_free_space')!r} (invalid: {e})"
+
+
+def _free_space_check_path(mgr) -> Path:
+    """Directory whose free space this line is about: the one the export writes to.
+
+    The path is read the way the export reads it -- `load_config` expands `~`
+    and `_account_output_dir` appends the alias. Parsing the YAML here directly
+    did neither, so `~/exports` looked like a missing directory and the line
+    reported the current working directory instead. Before the first run the
+    export directory does not exist yet: its nearest existing parent stands for
+    the same partition.
+    """
+    from tg_export.config import ConfigError, load_config
+
+    default_name = mgr.get_default_account()
+    if not default_name:
+        return Path.cwd()
+    cfg_path = mgr.config_path(default_name)
+    if not cfg_path.exists():
+        return Path.cwd()
+    try:
+        base = load_config(cfg_path).output.path
+    except (OSError, ConfigError) as e:
+        logger.debug("show config: cannot read account config %s: %s", default_name, e)
+        return Path.cwd()
+    output_base = common._account_output_dir(Path(base), default_name)
+    return next((p for p in (output_base, *output_base.parents) if p.exists()), Path.cwd())
+
+
 def _date_range(date_from, date_to) -> str:
     """A date range caption: one shape for defaults and for rules alike."""
     return f"{date_from or '...'} — {date_to or '...'}"
@@ -139,9 +168,29 @@ def _rule_summary(rule) -> str:
     return ", ".join(parts) or "defaults"
 
 
+# Global data the account carries besides the chats. Every flag is named in the
+# output even when it is on: a section missing from `config -v` cannot be told
+# apart from one the loader does not know.
+_GLOBAL_DATA_FLAGS = (
+    "personal_info",
+    "contacts",
+    "sessions",
+    "userpics",
+    "stories",
+    "profile_music",
+    "other_data",
+)
+
+
+def _global_data_summary(cfg) -> str:
+    """One line naming every global-data flag together with its value."""
+    return ", ".join(f"{name}={'on' if getattr(cfg, name) else 'off'}" for name in _GLOBAL_DATA_FLAGS)
+
+
 def _show_account_config(config_path):
     """Show per-account config details (verbose mode)."""
     from tg_export.config import load_config
+    from tg_export.format import format_size
 
     cfg = load_config(config_path)
 
@@ -150,9 +199,13 @@ def _show_account_config(config_path):
 
     defaults = cfg.defaults
     click.echo(f"    defaults.media.types: {defaults.media.types}")
-    click.echo(f"    defaults.media.max_file_size: {defaults.media.max_file_size_bytes // 1024**2}MB")
+    click.echo(f"    defaults.media.max_file_size: {format_size(defaults.media.max_file_size_bytes)}")
+    click.echo(f"    defaults.media.concurrent_downloads: {defaults.media.concurrent_downloads}")
+    click.echo(f"    defaults.export_service_messages: {defaults.export_service_messages}")
     if defaults.date_from or defaults.date_to:
         click.echo(f"    defaults.date_range: {_date_range(defaults.date_from, defaults.date_to)}")
+
+    click.echo(f"    global data: {_global_data_summary(cfg)}")
 
     if cfg.type_rules:
         click.echo("    type_rules:")
@@ -177,6 +230,10 @@ def _show_account_config(config_path):
 
     click.echo(f"    unmatched: {cfg.unmatched_action}")
     click.echo(f"    left_channels: {cfg.left_channels_action}")
+    click.echo(f"    archived: {cfg.archived_action}")
+    click.echo(f"    import_existing: {len(cfg.import_existing)} sources")
+    for entry in cfg.import_existing:
+        click.echo(f"      {entry.type}: {entry.path}")
 
 
 @click.command("list")
