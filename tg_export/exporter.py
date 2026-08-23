@@ -149,10 +149,9 @@ class ChatCounters:
     """Counters accumulated since the current chat started.
 
     Every field here names a counter of :class:`ExportStats`; the difference is
-    computed from a snapshot taken by ``begin_chat``. Declaring them once in a
-    dataclass replaces nine near-identical properties whose counter names were
-    repeated a third time as string keys of a snapshot dict -- a typo in one of
-    those keys used to yield a silent zero.
+    computed from a snapshot taken by ``begin_chat``. The names live in one
+    place: spelling a counter as a string key of a snapshot dict would turn a
+    typo into a silent zero instead of an error.
     """
 
     messages_exported: int = 0
@@ -502,9 +501,8 @@ def phase_two_kwargs(iter_kwargs: dict[str, Any], *, oldest_msg_id: int, last_ms
 class StatusView:
     """Two status lines of the live display, formatted from ExportStats.
 
-    Was three closures inside ``Exporter.run`` capturing ``stats``,
-    ``start_time`` and the progress widgets, which made them unreadable and
-    untestable apart from a 259-line body.
+    The formatting is kept out of ``Exporter.run``: an object taking the stats
+    and the start time can be rendered and checked without running an export.
     """
 
     def __init__(self, stats: ExportStats, start_time: float):
@@ -526,7 +524,6 @@ class StatusView:
         chat_data = view.counters.data_size
         speed_str = format_speed(chat_data, chat_elapsed) if chat_data > 0 else ""
 
-        # Per-chat message counts
         chat_msgs = view.counters.messages_exported
         msgs_done = view.messages_done
         msgs_str = f"[cyan]{msgs_done}"
@@ -762,7 +759,6 @@ class Exporter:
         )
         main_task = progress.add_task("", total=None)
 
-        # Separate progress for file downloads
         file_progress = Progress(
             TextColumn("    [dim]{task.description}[/]"),
             BarColumn(bar_width=20),
@@ -770,7 +766,6 @@ class Exporter:
             TransferSpeedColumn(),
             console=console,
         )
-        # Track which msg_ids have progress tasks
         file_tasks: dict[int, TaskID] = {}  # msg_id -> task_id
         return progress, main_task, file_progress, file_tasks
 
@@ -797,7 +792,6 @@ class Exporter:
             is_archived=chat.is_archived,
         )
 
-        # Save chat metadata to DB for future renderers
         await self.state.cache_catalog(
             chat_id=chat.id,
             name=chat.name,
@@ -822,7 +816,6 @@ class Exporter:
                 chat.messages_count or 0,
             )
 
-            # Remove orphaned files (on disk but not in DB)
             await self._cleanup_orphaned_files(chat.id, chat_dir)
 
             # Load tdesktop index for this chat (off the loop -- regex/HTML parsing).
@@ -836,7 +829,6 @@ class Exporter:
             logger.debug("done chat %s in %.1fs: %d msgs", chat.name, time.monotonic() - chat_t0, chat_msgs)
             stats.chats_exported += 1
 
-            # Unload tdesktop index to free memory
             for idx in self.downloader.tdesktop_indexes:
                 idx.unload_chat_index()
 
@@ -990,7 +982,6 @@ class Exporter:
         oldest_msg_id = chat_state["oldest_msg_id"] if chat_state else 0
         full_history = bool(chat_state["full_history"]) if chat_state else False
 
-        # Count messages already in DB and init per-chat snapshot
         messages_in_db = await self.state.count_messages(chat.id)
         stats.begin_chat(
             messages_in_db=messages_in_db,
@@ -1006,7 +997,6 @@ class Exporter:
                 return False
             return msg_date.date() < date_from
 
-        # Build iter_messages kwargs for date filtering
         iter_kwargs: dict = {}
         if date_to:
             # Start from messages at date_to end-of-day
@@ -1595,7 +1585,6 @@ class Exporter:
             await asyncio.to_thread(self.renderer.render_stories, [])
             return
 
-        # Combine pinned + archived, deduplicate by id
         all_stories = {}
         for story_item in getattr(pinned, "stories", []):
             all_stories[story_item.id] = story_item

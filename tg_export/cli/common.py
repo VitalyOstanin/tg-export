@@ -56,10 +56,10 @@ def _diag(message: str, *, essential: bool = False, **kwargs) -> None:
 def _error(message: str, **kwargs) -> None:
     """Print a message the user must see even under --quiet.
 
-    Every reason a command refuses to do its job goes through here. Marking
-    such messages one by one on _diag proved unreliable: of 94 call sites only
-    20 carried the flag and 17 of those were summary lines, so `--quiet` turned
-    a refusal into an empty output with a non-zero exit code.
+    Every reason a command refuses to do its job goes through here, so that a
+    non-zero exit code is never the only thing the user gets. Marking such
+    messages one by one on ``_diag`` is not enough: the flag is easy to forget
+    exactly where the refusal happens.
     """
     _diag(message, essential=True, **kwargs)
 

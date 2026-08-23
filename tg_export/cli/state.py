@@ -38,7 +38,7 @@ def state_show(account, config, output, as_json, chat_id):
 
 
 async def _state_show(account, config_override, output_override, chat_id, as_json=False):
-
+    """Show the export state: one chat when it is named, the whole account otherwise."""
     async with common._opened_state(account, config_override, output_override) as (st, _, account):
         if chat_id:
             chat_state = await st.get_chat_state(chat_id)

@@ -4,10 +4,9 @@ Progress, status tables, per-chat lines and diagnostics go to stderr so that
 stdout stays reserved for the machine-readable output of the query commands
 (list / state show / tg info / tg messages).
 
-Why a module of its own: the declaration used to live in ``exporter``, and
-every command that prints a progress bar -- ``tg send`` among them, which has
-nothing to do with exporting -- pulled in the exporter with all its imports to
-reach it. Here the dependency is one small module and rich.
+Why a module of its own: a command that prints a progress bar -- ``tg send``
+among them, which has nothing to do with exporting -- depends on this module
+and rich, not on the exporter with all its imports.
 """
 
 from __future__ import annotations

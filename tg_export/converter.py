@@ -179,7 +179,6 @@ def _photo_media(tl_media: Any) -> Media | None:
     largest = sizes[-1] if sizes else None
     w = getattr(largest, "w", 0) if largest else 0
     h = getattr(largest, "h", 0) if largest else 0
-    # Extract file size from PhotoSize variant
     file_size = 0
     if largest is not None:
         ls_cls = largest.__class__.__name__

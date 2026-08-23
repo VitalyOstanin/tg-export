@@ -43,7 +43,6 @@ def show_config(verbose):
     """Show current configuration (global + per-account)."""
     mgr = common._mgr()
 
-    # Global config
     global_path = mgr.config_dir / "config.yaml"
     cred_path = mgr.config_dir / "api_credentials.yaml"
 
@@ -79,11 +78,9 @@ def show_config(verbose):
     else:
         click.echo("  (not found)")
 
-    # Default account
     default = mgr.get_default_account()
     click.echo(f"\n# Default account: {default or '(not set)'}")
 
-    # Per-account configs
     accounts = mgr.list_accounts()
     if not accounts:
         click.echo("\n# No accounts configured.")
@@ -632,7 +629,6 @@ async def _run_export(
             api, cfg, require_takeout=require_takeout, no_takeout=no_takeout
         )
 
-        # Setup renderer
         renderer = HtmlRenderer(output_dir=output_base, config=cfg.output)
         renderer.setup()
 
@@ -641,10 +637,8 @@ async def _run_export(
         # the whole export; the stack closes them together with the rest.
         resources.callback(downloader.close)
 
-        # Fetch chat list
         chats = await fetch_catalog(api, include_left=(cfg.left_channels_action != "skip"))
 
-        # Create exporter and run
         exporter = Exporter(
             api=api,
             state=state,
@@ -810,7 +804,6 @@ async def _render_index(renderer, chats, cfg, state, should_stop=None):
 
     sections = _index_sections(cfg)
 
-    # Build folders_list with hrefs for folder index pages
     folders_list = []
     for folder_name, folder_chats in folders.items():
         folder_dir_name = sanitize_name(folder_name)
@@ -830,7 +823,6 @@ async def _render_index(renderer, chats, cfg, state, should_stop=None):
         renderer.render_index, folders_list=folders_list, unfiled=unfiled, sections=sections
     )
 
-    # Render per-folder index pages
     for folder_info in folders_list:
         if should_stop and should_stop():
             return
@@ -865,7 +857,11 @@ def purge_chat(chat, account, config, output, yes):
 
 
 async def _purge_chat(chat_arg, account, config_override, output_override, skip_confirm):
+    """Delete one chat from the state database and from disk.
 
+    The chat is named either by id or by name, the rows and the directories
+    are counted before the question, and both are removed only after it.
+    """
     async with common._opened_state(account, config_override, output_override) as (
         state,
         output_base,
@@ -892,7 +888,6 @@ async def _purge_chat(chat_arg, account, config_override, output_override, skip_
             entry = await state.get_catalog_entry(chat_id)
             chat_name = entry["name"] if entry else f"id={chat_id}"
 
-        # Show what will be deleted
         counts = await state.count_chat_rows(chat_id)
 
         # Find chat directory on disk: scan known prefixes only, never rglob
@@ -902,7 +897,6 @@ async def _purge_chat(chat_arg, account, config_override, output_override, skip_
         dir_suffix = f"{sanitize_name(chat_name)}_{chat_id}"
         output_resolved = output_base.resolve()
         candidate_dirs: list[Path] = []
-        # Direct prefixes: unfiled/, left/, archived/
         for prefix in ("unfiled", "left", "archived"):
             p = output_base / prefix / dir_suffix
             if p.exists():
@@ -953,11 +947,9 @@ async def _purge_chat(chat_arg, account, config_override, output_override, skip_
             common._diag("Cancelled.", essential=True)
             return
 
-        # Purge from DB
         deleted = await state.purge_chat(chat_id)
         common._diag(f"  Deleted from DB: {deleted}")
 
-        # Remove directory
         for d in chat_dirs:
             shutil.rmtree(d)
             common._diag(f"  Removed: {d}")
@@ -1027,8 +1019,3 @@ async def _verify_files(account, config_override, output_override):
             if redownloaded < len(broken):
                 return EXIT_FAILURE
             return EXIT_OK
-
-
-# ---------------------------------------------------------------------------
-# tg send / tg download — additional direct Telegram API commands
-# ---------------------------------------------------------------------------

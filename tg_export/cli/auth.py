@@ -63,7 +63,7 @@ def auth_check(name, as_json):
 
 
 async def _auth_check(name, as_json=False):
-
+    """Connect as each account in turn and report whether it is usable."""
     from tg_export.api import TgApi
 
     mgr = common._mgr()

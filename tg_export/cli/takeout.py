@@ -12,11 +12,6 @@ from tg_export.cli import common
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Takeout management
-# ---------------------------------------------------------------------------
-
-
 @click.group()
 def takeout():
     """Manage Telegram Takeout sessions."""

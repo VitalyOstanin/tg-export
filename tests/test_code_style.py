@@ -754,3 +754,36 @@ def test_every_command_named_in_the_code_exists():
                 if named not in valid:
                     offenders.append(f"{path.relative_to(PROJECT)}:{node.lineno} {named!r}")
     assert not offenders, f"названы несуществующие команды: {offenders}"
+
+
+def test_no_function_body_starts_with_a_blank_line():
+    """Разрыв сразу после сигнатуры читается как след удалённого docstring.
+
+    Функции пакета начинаются с docstring, а `ruff format` пустую строку в
+    начале блока сохраняет, поэтому расхождение остаётся незамеченным.
+    """
+    offenders = []
+    for path in sorted(PROJECT.glob("**/*.py")):
+        lines = path.read_text(encoding="utf-8").splitlines()
+        for node in ast.walk(ast.parse("\n".join(lines))):
+            if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+                continue
+            first = node.body[0].lineno
+            if first - 2 >= 0 and not lines[first - 2].strip():
+                offenders.append(f"{path.relative_to(PROJECT)}:{node.lineno} {node.name}")
+    assert not offenders, f"пустая строка вместо docstring: {offenders}"
+
+
+def test_no_module_ends_with_a_divider_banner():
+    """Баннер в конце файла описывает код, которого в этом файле нет.
+
+    `export.py` заканчивался разделителем `tg send / tg download`, хотя обе
+    команды переехали в `tg.py` при разбиении `cli.py` на пакет: поиск по
+    репозиторию приводил читателя не в тот модуль.
+    """
+    offenders = []
+    for path in sorted(PROJECT.glob("**/*.py")):
+        tail = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        if tail and tail[-1].lstrip().startswith("#"):
+            offenders.append(str(path.relative_to(PROJECT)))
+    assert not offenders, f"файл заканчивается комментарием, а не кодом: {offenders}"

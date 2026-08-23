@@ -30,11 +30,6 @@ from tg_export.format import format_moment
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# tg: direct Telegram API commands
-# ---------------------------------------------------------------------------
-
-
 @click.group()
 def tg():
     """Direct Telegram API commands."""
@@ -89,7 +84,7 @@ def _message_preview(msg, *, truncate: int = DEFAULT_MESSAGE_TEXT_LENGTH) -> tup
 
 
 async def _tg_messages(chat_id, account, limit, truncate=DEFAULT_MESSAGE_TEXT_LENGTH):
-
+    """Print the last messages of a chat: date, sender and the cut text."""
     async with common._connected_api(account) as (api, account):
         entity = await api.client.get_entity(chat_id)
         title = getattr(entity, "title", None) or _entity_name(entity)
@@ -253,7 +248,11 @@ def _report_info_lines(results: list[dict], *, output_file, as_json: bool) -> No
 
 
 async def _tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_file, as_json=False):
-    # Collect IDs
+    """Report the last activity of each chat named directly or taken from a catalog.
+
+    The identifiers are resolved in one request and the histories are read with
+    bounded parallelism; the order of the output is the order of the input.
+    """
     ids = list(chat_ids)
     if catalog_file:
         with open(catalog_file, encoding="utf-8") as f:
@@ -517,12 +516,11 @@ def _file_head_sha256(path: Path, n_bytes: int = 64 * 1024) -> str:
 
 
 async def _download_if_new(client, msg, out: Path, downloaded: set[Path]) -> str | None:
-    """Download media, skip only if EXACTLY the same content was already saved.
+    """Download media, skip only if exactly the same content was already saved.
 
-    Why: previous version compared just file size, which would silently delete
-    legitimately distinct files of the same size (two photos in an album, two
-    PDFs of the same length). Now we compare both size and a head-SHA256
-    fingerprint.
+    Sameness is decided by size together with a head-SHA256 fingerprint: size
+    alone marks legitimately distinct files as duplicates -- two photos of an
+    album or two PDFs of the same length -- and the newcomer is deleted.
     """
     path = await client.download_media(msg, file=str(out))
     if not path:
@@ -562,21 +560,18 @@ async def _tg_download(account_name: str | None, chat_id: int, msg_id: int, out:
             common._diag(f"Message {msg_id} not found in chat {chat_id}", essential=True)
             return EXIT_FAILURE
 
-        # Save text
         msg_text = getattr(tl_msg, "text", None)
         if msg_text:
             text_file = out / f"{msg_id}.txt"
             text_file.write_text(msg_text, encoding="utf-8")
             common._diag(f"  text: {text_file}")
 
-        # Download media (skip if file already exists)
         downloaded = {f for f in out.iterdir() if f.is_file()}
         if tl_msg.media:
             path = await _download_if_new(api.client, tl_msg, out, downloaded)
             if path:
                 common._diag(f"  media: {path}")
 
-        # Check for grouped_id (album) — download all parts
         if tl_msg.grouped_id:
             count = 0
             async for grouped_msg in api.client.iter_messages(
