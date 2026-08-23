@@ -300,3 +300,22 @@ def test_the_full_config_example_is_the_example_file_itself():
 
     example = (ROOT / "config.example.yaml").read_text(encoding="utf-8")
     assert block.group(1) == example, "блок в документации разошёлся с config.example.yaml"
+
+
+def test_every_style_rule_is_named_in_contributing():
+    """Правило, известное только по красной проверке, узнают после написания кода.
+
+    Обоснования остаются в docstring тестов; в CONTRIBUTING нужен перечень --
+    предел длины функции или запрет своего SQL в командах влияют на то, как код
+    проектируется, а не на то, как он дочищается.
+    """
+    import ast
+
+    tree = ast.parse((ROOT / "tests" / "test_code_style.py").read_text(encoding="utf-8"))
+    rules = [
+        node.name for node in tree.body if isinstance(node, ast.FunctionDef) and node.name.startswith("test_")
+    ]
+    guide = (ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
+
+    missing = [name for name in rules if f"`{name}`" not in guide]
+    assert not missing, f"правила не названы в CONTRIBUTING: {missing}"

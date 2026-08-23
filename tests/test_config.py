@@ -499,3 +499,40 @@ def test_a_section_written_as_a_scalar_names_the_section(tmp_path):
         with pytest.raises(ConfigError) as excinfo:
             load_config(_write(tmp_path, text))
         assert section in str(excinfo.value), f"сообщение не называет {section}: {excinfo.value}"
+
+
+def test_the_template_and_the_example_carry_the_defaults_of_the_loader(tmp_path):
+    """Стартовый конфиг существует в двух видах, а умолчание -- одно.
+
+    Значения вроде `concurrent_downloads: 3` были выписаны литералами в шаблоне
+    `init`, в `config.example.yaml` и в разборе конфигурации: смена умолчания в
+    коде оставляла оба артефакта тихо утверждающими прежнее значение.
+    """
+    from tg_export.catalog import generate_config_template
+    from tg_export.config import Config, load_config
+
+    defaults = Config()
+    template = tmp_path / "template.yaml"
+    template.write_text(generate_config_template([], account="acc"), encoding="utf-8")
+    example = Path(__file__).resolve().parent.parent / "config.example.yaml"
+
+    for path in (template, example):
+        cfg = load_config(path)
+        assert cfg.output.path.endswith("export_output"), path
+        assert cfg.output.format == defaults.output.format, path
+        assert cfg.defaults.media.max_file_size_bytes == defaults.defaults.media.max_file_size_bytes, path
+        assert cfg.defaults.media.concurrent_downloads == defaults.defaults.media.concurrent_downloads, path
+        assert cfg.defaults.export_service_messages == defaults.defaults.export_service_messages, path
+        assert cfg.left_channels_action == defaults.left_channels_action, path
+        assert cfg.archived_action == defaults.archived_action, path
+        assert cfg.unmatched_action == defaults.unmatched_action, path
+        for flag in (
+            "personal_info",
+            "contacts",
+            "sessions",
+            "userpics",
+            "stories",
+            "profile_music",
+            "other_data",
+        ):
+            assert getattr(cfg, flag) == getattr(defaults, flag), (path, flag)

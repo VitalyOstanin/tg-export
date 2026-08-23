@@ -8,6 +8,7 @@
 - [Окружение](#окружение)
 - [Запуск тестов](#запуск-тестов)
 - [Проверки перед PR](#проверки-перед-pr)
+- [Конвенции, которые удерживают тесты](#конвенции-которые-удерживают-тесты)
 - [Схема базы состояния](#схема-базы-состояния)
 - [Язык артефактов](#язык-артефактов)
 - [Формат коммитов](#формат-коммитов)
@@ -152,6 +153,50 @@ uv run ruff check .
 uv run ruff format --check .
 uv run pyright
 ```
+
+## Конвенции, которые удерживают тесты
+
+Часть правил проекта проверяется автоматически: нарушение видно как красный тест, а не как
+замечание при чтении. Обоснование каждого правила -- в docstring соответствующего теста
+(`tests/test_code_style.py`); таблица нужна, чтобы правило было известно до того, как код
+написан. Полнота таблицы проверяется тестом `test_every_style_rule_is_named_in_contributing`.
+
+| №  | Правило                                                                 | Тест                                                             |
+|----|-------------------------------------------------------------------------|------------------------------------------------------------------|
+| 1  | вывод команд идёт через `click.echo`, а не `print`                      | `test_auth_uses_click_echo_not_bare_print`                       |
+| 2  | `exporter._log` печатает через `console`, иначе вывод ломает Live       | `test_log_function_uses_rich_console_not_bare_print`             |
+| 3  | из двух способов печати остаётся `console.print`                        | `test_no_console_log_calls_in_exporter`                          |
+| 4  | `Live` ведётся `with`-блоком, а не ручными `__enter__`/`__exit__`       | `test_no_manual_live_enter_exit_in_exporter`                     |
+| 5  | клиент Telegram создаётся только поверх `FixedSQLiteSession`            | `test_every_telegram_client_is_built_on_the_fixed_session`       |
+| 6  | сообщение, за которым команда отказывает, переживает `--quiet`          | `test_messages_before_a_failure_exit_survive_quiet`              |
+| 7  | Takeout-контекст ведётся `AsyncExitStack`, а не ручными вызовами        | `test_no_manual_async_context_calls_in_api`                      |
+| 8  | разметка снимается средствами rich, без своего помощника                | `test_strip_markup_function_removed`                             |
+| 9  | `logger` объявляется после блока импортов                               | `test_logger_declared_after_all_module_imports`                  |
+| 10 | `timedelta` импортируется на уровне модуля                              | `test_timedelta_imported_at_module_level_in_exporter`            |
+| 11 | в теле функции откладываются только тяжёлые зависимости                 | `test_standard_library_is_imported_at_module_level`              |
+| 12 | пользовательский текст экранируется `rich.markup.escape`                | `test_exporter_imports_rich_escape`                              |
+| 13 | инструменты разработки объявлены группой, а не extra                    | `test_development_tools_are_declared_as_a_group_not_as_an_extra` |
+| 14 | каждый не-`.py` файл пакета попадает в дистрибутив                      | `test_every_package_data_file_is_declared_for_packaging`         |
+| 15 | соединение и база состояния открываются только `async with`             | `test_cli_never_manages_connection_lifetime_by_hand`             |
+| 16 | помощники подключения не отдают ресурс наружу                           | `test_cli_helpers_are_context_managers`                          |
+| 17 | функция пакета не длиннее ста строк                                     | `test_no_function_is_longer_than_a_screenful`                    |
+| 18 | SQL знает только слой состояния                                         | `test_cli_does_not_run_sql_of_its_own`                           |
+| 19 | у каждого модуля `cli` есть строка назначения                           | `test_cli_has_a_module_docstring`                                |
+| 20 | форматирование берётся из `format.py`, без псевдонимов                  | `test_cli_takes_formatting_helpers_from_their_own_module`        |
+| 21 | текст читается в UTF-8, а не в кодировке локали                         | `test_every_text_file_is_read_as_utf8`                           |
+| 22 | новая команда описана в `docs/cli.md`                                   | `test_every_command_is_described_in_the_cli_reference`           |
+| 23 | `scripts/check.sh` покрывает все проверки CI                            | `test_one_command_runs_everything_ci_runs`                       |
+| 24 | команда завершается через `ctx.exit()`, не через внутренний класс click | `test_cli_does_not_use_click_private_exit_exception`             |
+| 25 | имя класса не дублируется строковым литералом рядом с ним               | `test_no_action_repeats_its_class_name_as_a_string`              |
+| 26 | в `models.py` не остаётся типов, которых никто не строит                | `test_models_do_not_keep_types_nobody_builds`                    |
+| 27 | имя не импортируется дважды -- в шапке и в теле функции                 | `test_no_module_imports_the_same_name_twice`                     |
+| 28 | код пакета и файлы сборки написаны по-английски                         | `test_the_package_and_its_build_files_speak_english`             |
+| 29 | команда, названная в строках кода, существует в интерфейсе              | `test_every_command_named_in_the_code_exists`                    |
+| 30 | тело функции не начинается пустой строкой вместо docstring              | `test_no_function_body_starts_with_a_blank_line`                 |
+| 31 | файл не заканчивается баннером-разделителем                             | `test_no_module_ends_with_a_divider_banner`                      |
+| 32 | статус файла записывается членом `FileStatus`, не строкой               | `test_file_statuses_are_spelled_by_the_enum_not_as_free_strings` |
+| 33 | `FileStatus` и `DownloadStatus` совпадают там, где пересекаются         | `test_the_two_status_vocabularies_agree_where_they_overlap`      |
+| 34 | константа объявлена выше функции, которая её читает                     | `test_no_module_constant_is_read_above_its_declaration`          |
 
 ## Схема базы состояния
 

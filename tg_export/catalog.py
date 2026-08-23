@@ -198,41 +198,53 @@ def format_catalog_json(chats: list[Chat]) -> str:
 
 
 def generate_config_template(chats: list[Chat], account: str | None = None) -> str:
-    """Generate config YAML template from catalog."""
+    """Build the starting config of one account, with its chats listed as comments.
+
+    This is what `tg-export init` writes. It differs from `config.example.yaml`
+    in the root of the repository by exactly that: the example is a static
+    starting point, the template is generated for the chat list of a particular
+    account. The values that are also defaults of the loader are taken from
+    `Config()` rather than written here again -- otherwise a changed default
+    would leave the template quietly claiming the old one.
+    """
+    from tg_export.config import Config
+
+    defaults = Config()
+    media = defaults.defaults.media
     # The alias is appended by the exporter, so the template names the base
     # directory only -- writing it here as well gave ``export_output/acc/acc``.
-    output_path = "./export_output"
+    output_path = defaults.output.path
     lines = [
         "# tg-export config template",
         "# Uncomment and customize sections as needed",
         "",
         "output:",
         f"  path: {output_path}",
-        "  format: html",
+        f"  format: {defaults.output.format}",
         "",
         "defaults:",
         "  media:",
         "    types: [photo, video, voice, video_note, sticker, gif, document]",
-        "    max_file_size: 100MB",
-        "    concurrent_downloads: 3",
-        "  export_service_messages: true",
+        f"    max_file_size: {media.max_file_size_bytes // 1024**2}MB",
+        f"    concurrent_downloads: {media.concurrent_downloads}",
+        f"  export_service_messages: {str(defaults.defaults.export_service_messages).lower()}",
         "",
-        "personal_info: true",
-        "contacts: true",
-        "sessions: true",
-        "userpics: true",
-        "stories: true",
-        "profile_music: true",
-        "other_data: true",
+        f"personal_info: {str(defaults.personal_info).lower()}",
+        f"contacts: {str(defaults.contacts).lower()}",
+        f"sessions: {str(defaults.sessions).lower()}",
+        f"userpics: {str(defaults.userpics).lower()}",
+        f"stories: {str(defaults.stories).lower()}",
+        f"profile_music: {str(defaults.profile_music).lower()}",
+        f"other_data: {str(defaults.other_data).lower()}",
         "",
         "left_channels:",
-        "  action: skip  # skip | export_with_defaults",
+        f"  action: {defaults.left_channels_action}  # skip | export_with_defaults",
         "",
         "archived:",
-        "  action: skip  # skip | export_with_defaults",
+        f"  action: {defaults.archived_action}  # skip | export_with_defaults",
         "",
         "unmatched:",
-        "  action: skip  # skip | export_with_defaults",
+        f"  action: {defaults.unmatched_action}  # skip | export_with_defaults",
         "",
         "# Reuse files already downloaded by Telegram Desktop instead of",
         "# fetching them again. Exports made by tg-export itself are found",
