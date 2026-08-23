@@ -5,14 +5,18 @@ on:
     tags:
       - "v*"
 
+# Права распределены по задачам, а не выданы всему конвейеру: GitHub кладёт
+# ACTIONS_ID_TOKEN_REQUEST_URL и ACTIONS_ID_TOKEN_REQUEST_TOKEN в окружение
+# КАЖДОГО шага job'а, объявившего id-token, поэтому обменять их на upload-token
+# PyPI может любой шаг -- в том числе `uv sync`, исполняющий build-backend'ы
+# зависимостей, и прогон тестов. Публикация в PyPI необратима, поэтому job с
+# id-token не содержит ничего, кроме скачивания артефакта и загрузки.
 jobs:
-  publish:
+  build:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      # contents: write нужен для gh release create
-      contents: write
-      id-token: write
+      contents: read
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -65,6 +69,36 @@ jobs:
           cd "$(mktemp -d)"
           uv run --no-project --with "$WHEEL" python "$SCRIPT"
 
+      - name: Upload distributions
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+      - name: Upload release notes
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: release-notes
+          path: release_notes.md
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      # Единственное право этого job'а: обменять OIDC-токен на upload-token
+      # PyPI. Стороннего кода здесь не выполняется.
+      id-token: write
+
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: dist
+          path: dist/
+
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33  # v1.14.2
         with:
@@ -74,11 +108,26 @@ jobs:
           # публикация необратима, и потерю аттестаций заметили бы не сразу.
           attestations: true
 
+  github-release:
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      # contents: write нужен для gh release create; id-token здесь не нужен.
+      contents: write
+
+    steps:
+      - name: Download release notes
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: release-notes
+
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
             --title "$GITHUB_REF_NAME" \
             --notes-file release_notes.md \
             --latest

@@ -11,6 +11,7 @@
 - [0004 — Проверки до необратимой публикации](0004-release-gate-before-publishing.md)
 - [0005 — Каталог выгрузки на аккаунт](0005-per-account-output-directory.md)
 - [0006 — Снимок начала чата вместо блокировки при чтении счётчиков](0006-publish-chat-snapshot-instead-of-locking.md)
+- [0007 — Разделение прав релизного конвейера по job'ам](0007-split-publishing-permissions.md)
 - [Конвенции](#конвенции)
 
 ## Конвенции

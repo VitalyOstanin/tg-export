@@ -120,3 +120,37 @@ def test_declared_python_versions_match_the_ci_matrix():
     tested = set(re.findall(r'"([^"]+)"', match.group(1)))
 
     assert declared == tested, f"классификаторы обещают {sorted(declared)}, а CI проверяет {sorted(tested)}"
+
+
+def test_the_publishing_job_runs_no_project_code():
+    """Право обменять OIDC-токен есть у каждого шага job'а, а не только у публикующего.
+
+    GitHub кладёт ACTIONS_ID_TOKEN_REQUEST_URL и ACTIONS_ID_TOKEN_REQUEST_TOKEN
+    в окружение всех шагов job'а с `id-token: write`, поэтому получить
+    upload-token PyPI может любой из них. Пока установка зависимостей, тесты и
+    сборка шли в том же job'е, компрометация зависимости из uv.lock или правка
+    тестов, попавшая в тег, давали не сломанный релиз, а выпуск произвольного
+    пакета от имени проекта -- необратимый, отката у PyPI нет.
+    """
+    import yaml
+
+    root = Path(__file__).resolve().parent.parent
+    workflow = yaml.safe_load((root / ".github" / "workflows" / "publish.yml").read_text(encoding="utf-8"))
+
+    publishing = [
+        (name, job)
+        for name, job in workflow["jobs"].items()
+        if any("gh-action-pypi-publish" in (step.get("uses") or "") for step in job["steps"])
+    ]
+    assert len(publishing) == 1, f"публикующих job'ов должно быть ровно один: {[n for n, _ in publishing]}"
+
+    name, job = publishing[0]
+    runs = [(step.get("run") or "").strip() for step in job["steps"]]
+    assert not [r for r in runs if r], f"в job '{name}' выполняется код проекта: {runs}"
+
+    for other, other_job in workflow["jobs"].items():
+        if other == name:
+            continue
+        assert "id-token" not in (other_job.get("permissions") or {}), (
+            f"job '{other}' выполняет код проекта и при этом может получить токен публикации"
+        )
