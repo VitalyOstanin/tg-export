@@ -10,7 +10,7 @@ from collections.abc import Callable
 from datetime import datetime
 from html import escape
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, Self
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from markupsafe import Markup
@@ -555,7 +555,7 @@ class _PathAnchors(NamedTuple):
     chat_root: Path
 
     @classmethod
-    def for_chat(cls, chat_dir: Path) -> _PathAnchors:
+    def for_chat(cls, chat_dir: Path) -> Self:
         return cls(Path.cwd(), chat_dir.resolve())
 
 

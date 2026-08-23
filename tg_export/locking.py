@@ -53,7 +53,9 @@ class ProcessLock:
         fd = os.open(str(self._path), os.O_CREAT | os.O_RDWR, 0o600)
         try:
             _fcntl.flock(fd, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
-        except (BlockingIOError, OSError) as e:
+        # BlockingIOError -- what flock answers with under LOCK_NB when another
+        # process holds the lock -- is an OSError, and both mean the same here.
+        except OSError as e:
             os.close(fd)
             raise ProcessLockError(self._busy_message) from e
         os.ftruncate(fd, 0)

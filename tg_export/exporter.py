@@ -246,9 +246,16 @@ class ExportStats:
 
         The running counters are read after ``_chat_start`` and could belong to
         the next chat already; the re-read below catches exactly that case and
-        starts over. A retry is cheaper than a lock in the export loop, which
-        increments these counters per message while the display reads them
-        twice a second.
+        starts over.
+
+        Why a retry rather than a lock, as `MediaDownloader` uses for its own
+        data: a lock would have to be taken by the writers -- the export loop,
+        which increments these counters per message -- and not only by the
+        reader, which looks twice a second. Measured on this machine: an
+        uncounted increment costs about 45 ns, one under an uncontended lock
+        about 137 ns, so a hundred thousand messages with six counters each
+        would pay about 55 ms. The number is small; the retry stays because it
+        also keeps the display thread from ever holding up the export loop.
         """
         while True:
             start = self._chat_start

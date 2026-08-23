@@ -77,10 +77,9 @@ async def redownload_broken_file(
     local_path = Path(entry["local_path"])
 
     if tl_msg is None:
-        tl_messages = await api.client.get_messages(chat_id, ids=msg_id)
-        tl_msg = (
-            tl_messages if not isinstance(tl_messages, list) else (tl_messages[0] if tl_messages else None)
-        )
+        from tg_export.api import one_message
+
+        tl_msg = one_message(await api.client.get_messages(chat_id, ids=msg_id))
     if tl_msg is None or tl_msg.media is None:
         return RedownloadResult.no_media, None
 
@@ -93,7 +92,7 @@ async def redownload_broken_file(
         if not downloaded:
             return RedownloadResult.nothing_downloaded, None
 
-        downloaded = Path(str(downloaded))
+        downloaded = Path(downloaded)
         final_path = target_dir / downloaded.name
         os.replace(downloaded, final_path)
 

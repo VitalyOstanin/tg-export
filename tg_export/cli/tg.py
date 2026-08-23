@@ -553,9 +553,9 @@ async def _download_if_new(client, msg, out: Path, downloaded: set[Path]) -> str
 async def _tg_download(account_name: str | None, chat_id: int, msg_id: int, out: Path) -> int:
     out.mkdir(parents=True, exist_ok=True)
     async with common._connected_api(account_name) as (api, _):
-        tl_msg = await api.client.get_messages(chat_id, ids=msg_id)
-        if isinstance(tl_msg, list):
-            tl_msg = tl_msg[0] if tl_msg else None
+        from tg_export.api import one_message
+
+        tl_msg = one_message(await api.client.get_messages(chat_id, ids=msg_id))
         if tl_msg is None:
             common._diag(f"Message {msg_id} not found in chat {chat_id}", essential=True)
             return EXIT_FAILURE

@@ -36,6 +36,18 @@ _MAX_LEFT_CHANNEL_PAGES = 100
 _DEFAULT_PAGE_LIMIT = 100
 
 
+def one_message(result):
+    """The single message `get_messages(..., ids=<one id>)` returned, or None.
+
+    Telethon answers with the message itself for a single id and with a list
+    for several, and the callers asking for one id normalised that twice, in
+    two different shapes.
+    """
+    if isinstance(result, list):
+        return result[0] if result else None
+    return result
+
+
 class TgApi:
     def __init__(self, session_path: str | Path, api_id: int, api_hash: str, proxy: ProxyTuple | None = None):
         kwargs = {}
