@@ -579,6 +579,18 @@ class StatusView:
         return f"{self.line1(view)}\n{self.line2(view)}"
 
 
+def _status_text(markup: str) -> Text:
+    """One status line of the live display: never wrapped, cut with an ellipsis.
+
+    A status line that wraps changes the height of the frame, and rich redraws
+    the whole display when it does.
+    """
+    text = Text.from_markup(markup)
+    text.no_wrap = True
+    text.overflow = "ellipsis"
+    return text
+
+
 class Exporter:
     """One export from start to finish, over the chats a config selects.
 
@@ -717,14 +729,8 @@ class Exporter:
 
         table = Table.grid()
         table.add_row(progress)
-        t1 = Text.from_markup(line1)
-        t1.no_wrap = True
-        t1.overflow = "ellipsis"
-        table.add_row(t1)
-        t2 = Text.from_markup(line2)
-        t2.no_wrap = True
-        t2.overflow = "ellipsis"
-        table.add_row(t2)
+        table.add_row(_status_text(line1))
+        table.add_row(_status_text(line2))
         table.add_row(file_progress)
         return table
 
@@ -778,9 +784,9 @@ class Exporter:
             f"{stats.chats_skipped} skipped (total {stats.chats_total})"
         )
         if self.config.defaults.date_from or self.config.defaults.date_to:
-            df = self.config.defaults.date_from or "..."
-            dt = self.config.defaults.date_to or "..."
-            self._status_print(f"[dim]date range: {df} — {dt}[/]")
+            date_from = self.config.defaults.date_from or "..."
+            date_to = self.config.defaults.date_to or "..."
+            self._status_print(f"[dim]date range: {date_from} — {date_to}[/]")
         self._status_print(f"[dim]started at {datetime.now().strftime('%H:%M:%S')}[/]\n")
 
     def _make_progress_widgets(self):

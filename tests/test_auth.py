@@ -371,3 +371,21 @@ async def test_login_refuses_to_replace_a_session_another_process_is_using(tmp_p
         held.release()
 
     assert target.read_bytes() == b"working session"
+
+
+def test_a_leftover_staging_session_is_not_listed_as_an_account(tmp_path):
+    """Промежуточный файл входа выглядел настоящим аккаунтом.
+
+    `add_account` логинится в `.<alias>.session.new.session` и подменяет рабочий
+    файл только после успеха, а перечисление отбирало по суффиксу `.session` --
+    после аварийного завершения процесса (SIGKILL) в `account list` появлялся
+    «аккаунт» `.<alias>.session.new`, и `auth check` пытался его открыть.
+    """
+    from tg_export.auth import AccountManager
+
+    mgr = AccountManager(config_dir=tmp_path / "tg-export")
+    mgr.sessions_dir.mkdir(parents=True)
+    (mgr.sessions_dir / "work.session").write_bytes(b"")
+    (mgr.sessions_dir / ".work.session.new.session").write_bytes(b"")
+
+    assert mgr.list_accounts() == ["work"]

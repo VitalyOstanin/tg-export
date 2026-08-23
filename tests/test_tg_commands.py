@@ -738,3 +738,36 @@ def test_tg_info_still_reports_the_chat_that_failed_alone():
     assert '"id": 123' in result.output and '"error"' in result.output, result.output
     assert calls[0] == [123, 456], calls
     assert calls[1:] == [123, 456], f"после отказа пакета нужен поштучный проход: {calls}"
+
+
+@pytest.mark.asyncio
+async def test_download_compares_only_with_what_this_call_downloaded(monkeypatch, tmp_path):
+    """Набор «уже скачанного» собирался из всего содержимого каталога.
+
+    По умолчанию `--output .`, то есть текущий каталог, и в набор попадали
+    посторонние файлы вместе с только что записанным `<msg_id>.txt`. Совпадение
+    размера и первых 64 КБ приводило к тихому удалению скачанного медиа: вывод
+    не содержал о нём ни строки.
+    """
+    import contextlib
+
+    from tg_export.cli import common as cli_common
+    from tg_export.cli import tg as cli_tg
+
+    content = b"A" * 100
+    (tmp_path / "unrelated.bin").write_bytes(content)
+
+    api = MagicMock()
+    api.client = _make_client(tmp_path, "media.bin", content)
+    api.client.get_messages = AsyncMock(return_value=MagicMock(text=None, grouped_id=None))
+
+    @contextlib.asynccontextmanager
+    async def fake(_account_name):
+        yield api, "me"
+
+    monkeypatch.setattr(cli_common, "_connected_api", fake)
+
+    code = await cli_tg._tg_download("acc", 1, 2, tmp_path)
+
+    assert code == 0
+    assert (tmp_path / "media.bin").exists(), "скачанный файл удалён из-за постороннего файла каталога"

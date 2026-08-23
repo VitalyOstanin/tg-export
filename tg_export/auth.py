@@ -123,9 +123,21 @@ class AccountManager:
         return config_override or self.config_path(account)
 
     def list_accounts(self) -> list[str]:
+        """Accounts that have a session file, by alias.
+
+        Names starting with a dot are left out: the login writes to a staging
+        file `.<alias>.session.new.session` and moves it into place only on
+        success, and that name ends in `.session` too -- a process killed
+        mid-login used to leave behind something the listing showed as an
+        account and `auth check` tried to open.
+        """
         if not self.sessions_dir.exists():
             return []
-        return sorted(p.stem for p in self.sessions_dir.iterdir() if p.suffix == ".session")
+        return sorted(
+            path.stem
+            for path in self.sessions_dir.iterdir()
+            if path.suffix == ".session" and not path.name.startswith(".")
+        )
 
     def remove_account(self, name: str):
         path = self.session_path(name)

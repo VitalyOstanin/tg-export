@@ -566,7 +566,12 @@ async def _tg_download(account_name: str | None, chat_id: int, msg_id: int, out:
             text_file.write_text(msg_text, encoding="utf-8")
             common._diag(f"  text: {text_file}")
 
-        downloaded = {f for f in out.iterdir() if f.is_file()}
+        # Only what this call downloaded: the set decides whether a new file is a
+        # duplicate to be deleted, and the output directory defaults to the current
+        # one -- an unrelated file of the same size and head bytes made the media
+        # disappear without a line about it, and so did the message text written
+        # a few lines above.
+        downloaded: set[Path] = set()
         if tl_msg.media:
             path = await _download_if_new(api.client, tl_msg, out, downloaded)
             if path:
