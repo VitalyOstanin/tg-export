@@ -31,7 +31,7 @@ from tg_export.errors import (
     EXIT_OK,
     TakeoutUnavailableError,
 )
-from tg_export.privacy import ensure_private_dir
+from tg_export.privacy import ensure_private_dir, write_private_text
 from tg_export.verify import RedownloadResult, clean_staging, redownload_broken_file
 
 logger = logging.getLogger(__name__)
@@ -272,7 +272,10 @@ async def _init_config(account, from_catalog, output, force=False):
         backup = config_path.with_suffix(config_path.suffix + ".bak")
         shutil.copy2(config_path, backup)
         common._diag(f"Previous config kept as {backup}")
-    config_path.write_text(generate_config_template(chats, account=account), encoding="utf-8")
+    # The template carries a line per chat of the account -- ids, names and
+    # message counts -- so it is written private from the start, like the
+    # credentials file and the state database.
+    write_private_text(config_path, generate_config_template(chats, account=account))
     common._diag(f"Config template saved to {config_path}")
 
 

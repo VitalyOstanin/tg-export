@@ -1,1 +1,5 @@
 blank_issues_enabled: true
+contact_links:
+  - name: Сообщить об уязвимости
+    url: https://github.com/VitalyOstanin/tg-export/security/advisories/new
+    about: Приватный канал. Публичный issue раскрывает проблему до выпуска исправления.

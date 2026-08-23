@@ -12,6 +12,7 @@ import yaml
 
 from tg_export.errors import TgExportError
 from tg_export.models import ChatType, MediaType
+from tg_export.privacy import tighten_if_loose
 
 
 class ConfigError(TgExportError):
@@ -508,7 +509,13 @@ def _parse_action_section(raw: dict[str, Any], section: str, allowed: set[str]) 
 
 
 def load_config(path: Path) -> Config:
-    """Load and validate YAML config file."""
+    """Load and validate YAML config file.
+
+    The file lists every chat of the account, so it gets the same treatment as
+    config.yaml with the proxy password: a mode readable beyond its owner is
+    tightened here, and the change is said once in the log.
+    """
+    tighten_if_loose(path)
     try:
         raw = yaml.safe_load(path.read_text(encoding="utf-8"))
     except yaml.YAMLError as e:

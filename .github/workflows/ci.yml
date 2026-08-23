@@ -31,6 +31,8 @@ jobs:
 
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d  # v10.0.1
         with:
+          # Deliberately floating: CI is where an incompatibility with a new uv
+          # should show up. The publishing workflow pins its version instead.
           version: "latest"
           enable-cache: true
           cache-dependency-glob: "uv.lock"

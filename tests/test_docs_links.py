@@ -108,3 +108,23 @@ def test_every_adr_declares_its_status_and_sections():
         if "- Статус:" not in source or any(section not in source for section in required):
             incomplete.append(path.name)
     assert not incomplete, f"ADR без статуса или обязательного раздела: {incomplete}"
+
+
+def test_a_vulnerability_has_a_private_route() -> None:
+    """Публичный issue -- раскрытие до выпуска исправления.
+
+    Инструмент хранит ключ авторизации от аккаунта Telegram и публикуется в
+    PyPI, поэтому у нашедшего проблему должен быть непубличный маршрут:
+    SECURITY.md с порядком сообщения и ссылка на него из формы заведения
+    issue, где выбирают, куда писать.
+    """
+    import yaml
+
+    policy = ROOT / "SECURITY.md"
+    assert policy.exists(), "нет SECURITY.md с порядком приватного сообщения об уязвимости"
+
+    config = yaml.safe_load((ROOT / ".github" / "ISSUE_TEMPLATE" / "config.yml").read_text(encoding="utf-8"))
+    links = config.get("contact_links") or []
+    urls = " ".join(str(link.get("url", "")) for link in links)
+
+    assert "security" in urls.lower(), f"форма заведения issue не предлагает канал для уязвимостей: {links}"

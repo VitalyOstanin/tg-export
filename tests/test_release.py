@@ -220,3 +220,56 @@ def test_the_publishing_job_runs_no_project_code():
         assert "id-token" not in (other_job.get("permissions") or {}), (
             f"job '{other}' выполняет код проекта и при этом может получить токен публикации"
         )
+
+
+def test_the_build_backend_floor_excludes_versions_with_advisories():
+    """`[build-system].requires` определяет, чем соберётся пакет без сети и с закреплённым индексом.
+
+    У setuptools ниже 83.0.0 три записи в OSV, из них две HIGH (command
+    injection через URL пакета, path traversal в `PackageIndex.download`), а
+    третья касается ровно сборки sdist: нормализация Unicode обходит
+    исключения `MANIFEST.in`, а сборка идёт из рабочего дерева, где рядом
+    лежат выгрузка и файлы покрытия. Границы jinja2 и click подняты по тому же
+    поводу, а этой такого обращения не досталось.
+    """
+    import re
+    import tomllib
+
+    root = Path(__file__).resolve().parent.parent
+    manifest = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    requires = manifest["build-system"]["requires"]
+
+    floors = {}
+    for spec in requires:
+        match = re.fullmatch(r"([A-Za-z0-9_.-]+)>=([0-9.]+)", spec)
+        assert match, f"граница {spec!r} записана не как <пакет>>=<версия>"
+        floors[match.group(1)] = tuple(int(p) for p in match.group(2).split("."))
+
+    assert floors.get("setuptools", (0,)) >= (83, 0, 0), f"нижняя граница setuptools: {floors}"
+
+
+def test_the_publishing_workflow_pins_the_version_of_uv():
+    """SHA-пин закрепляет загрузчик, но не сам uv.
+
+    В job'е публикации uv собирает колесо рядом с правом выпуска в PyPI, то
+    есть на необратимом пути: `version: "latest"` оставляет самую
+    привилегированную часть цепочки незакреплённой. В ci.yml `latest` -- это
+    решение (ранняя ловля несовместимостей), и оно записано комментарием.
+    """
+    import re
+
+    import yaml
+
+    root = Path(__file__).resolve().parent.parent
+    workflow = yaml.safe_load((root / ".github" / "workflows" / "publish.yml").read_text(encoding="utf-8"))
+
+    versions = [
+        step.get("with", {}).get("version")
+        for job in workflow["jobs"].values()
+        for step in job.get("steps", [])
+        if "astral-sh/setup-uv@" in str(step.get("uses", ""))
+    ]
+
+    assert versions, "в publish.yml не найден шаг setup-uv"
+    for value in versions:
+        assert value and re.fullmatch(r"\d+\.\d+\.\d+", value), f"версия uv не закреплена: {value!r}"

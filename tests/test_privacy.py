@@ -193,3 +193,47 @@ def test_a_refused_chmod_is_reported(tmp_path, caplog):
         restrict_file(target)
 
     assert any("read-only filesystem" in r.getMessage() for r in caplog.records), caplog.text
+
+
+def test_the_account_config_is_created_private(tmp_path, relaxed_umask):
+    """`init` пишет в конфиг по строке на каждый чат аккаунта.
+
+    Это идентификаторы, имена и число сообщений всех контактов, групп и
+    каналов -- те же данные, ради которых закрыты база состояния и выгрузка.
+    """
+    import yaml
+    from click.testing import CliRunner
+
+    from tg_export.cli import main
+
+    catalog = tmp_path / "catalog.yaml"
+    catalog.write_text(
+        yaml.dump({"unfiled": [{"id": 20, "name": "Notes", "type": "self", "messages": 1}]}),
+        encoding="utf-8",
+    )
+    out = tmp_path / "acc.yaml"
+
+    result = CliRunner().invoke(
+        main, ["init", "--account", "acc", "--from-catalog", str(catalog), "--output", str(out)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert _mode(out) == 0o600
+
+
+def test_a_loose_account_config_is_tightened_when_it_is_read(tmp_path, relaxed_umask, caplog):
+    """Конфиг, написанный руками или доставшийся от прежней версии, ужимается при чтении.
+
+    Глобальный `config.yaml` уже получает такое обращение; конфиг аккаунта
+    несёт список всех чатов и до сих пор оставался с правами по umask.
+    """
+    from tg_export.config import load_config
+
+    path = tmp_path / "acc.yaml"
+    path.write_text("output:\n  path: ./out\n", encoding="utf-8")
+    os.chmod(path, 0o644)
+
+    with caplog.at_level("WARNING"):
+        load_config(path)
+
+    assert _mode(path) == 0o600
