@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -277,3 +278,60 @@ async def test_reuse_replaces_a_truncated_leftover_instead_of_returning_it(tmp_p
 
     assert result == dst
     assert dst.read_bytes() == b"full"
+
+
+@pytest.mark.asyncio
+async def test_two_files_with_the_same_name_do_not_land_on_one_path(tmp_path, monkeypatch):
+    """Замок берётся по file_id, а борьба идёт за имя в каталоге назначения.
+
+    Два разных файла, у которых совпадает имя исходника, проходят проверку
+    «место свободно» одновременно и оба пишут по одному пути: первый делает
+    ссылку, второй копирует поверх неё. На диске остаётся одно содержимое, а в
+    состоянии — две записи, ссылающиеся на него.
+    """
+    import threading
+    from unittest.mock import AsyncMock, MagicMock
+
+    import tg_export.media as media_module
+
+    sources = {}
+    for file_id, payload in ((1, b"first"), (2, b"second file")):
+        src = tmp_path / f"other_{file_id}" / "photos" / "photo.jpg"
+        src.parent.mkdir(parents=True)
+        src.write_bytes(payload)
+        sources[file_id] = src
+
+    chat_dir = tmp_path / "chat"
+    dl = _downloader(MagicMock(), tmp_path)
+
+    async def get_file_any_chat(file_id):
+        return {"chat_id": 2, "local_path": str(sources[file_id])}
+
+    dl.state.get_file_any_chat = AsyncMock(side_effect=get_file_any_chat)
+
+    # Барьер держит обе корутины после проверки «путь свободен» и до записи:
+    # без него исход зависит от планировщика потоков.
+    barrier = threading.Barrier(2, timeout=5)
+    original = media_module._link_or_copy
+
+    def link_or_copy(src, dst):
+        barrier.wait()
+        return original(src, dst)
+
+    monkeypatch.setattr(media_module, "_link_or_copy", link_or_copy)
+
+    def _media(file_id, size):
+        m = _photo(file_id=file_id)
+        m.file.size = size
+        return m
+
+    msg1, msg2 = MagicMock(id=11), MagicMock(id=12)
+    results = await asyncio.gather(
+        dl.download(msg1, _media(1, len(b"first")), chat_dir, 1),
+        dl.download(msg2, _media(2, len(b"second file")), chat_dir, 1),
+    )
+
+    paths = [p for p, _status in results]
+    assert paths[0] != paths[1], "оба файла записаны по одному пути"
+    assert paths[0].read_bytes() == b"first"
+    assert paths[1].read_bytes() == b"second file"

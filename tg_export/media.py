@@ -126,24 +126,80 @@ def _link_or_copy(src: Path, dst: Path) -> bool:
             return False
 
 
-def _reusable_target(dst: Path, expected_size: int) -> Path | None:
-    """Return ``dst`` when it already holds the expected bytes, else None.
-
-    A name match alone is no proof of content: an interrupted run leaves a
-    truncated file under the same name, and reusing it registers a partial
-    download as complete. A leftover of the wrong size is dropped so the
-    caller can link or copy the file again.
-    """
+def _size_or_none(path: Path) -> int | None:
+    """Size of `path`, or None when it does not exist or cannot be read."""
     try:
-        actual_size = dst.stat().st_size
+        return path.stat().st_size
     except OSError:
         return None
-    if expected_size and actual_size != expected_size:
-        logger.debug("stale target %s: %d bytes, expected %d -- replacing", dst, actual_size, expected_size)
-        with contextlib.suppress(OSError):
-            dst.unlink()
-        return None
-    return dst
+
+
+class _TargetRegistry:
+    """Hands out destination paths so that no two writers get the same one.
+
+    The resource two downloads compete for is the name in the target
+    directory, not the file_id they are locked by: Telegram hands out
+    `photo.jpg` and `document.pdf` en masse, and the per-file_id lock lets two
+    different files with the same source name reach the same `dst`. Both would
+    then see it free, both would write, and the run would end with one file on
+    disk and two rows in the database pointing at it.
+
+    A claim is held for the duration of one write and dropped afterwards: by
+    then the file is in place, so the next claimant sees its size and either
+    reuses it or moves on to the next free name. Claims live in this process
+    only -- a second tg-export over the same output directory is kept away by
+    the lock on the state database.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._claimed: set[Path] = set()
+
+    @contextlib.contextmanager
+    def claim(self, target_dir: Path, name: str, expected_size: int, *, reuse: bool):
+        """Yield `(path, reused)` -- a path only this claimant may write to.
+
+        `reused` is True when the file is already there with the expected size
+        and nothing needs to be written. With `reuse=False` an occupied name is
+        never taken over: the next free one is picked instead, which is what a
+        finished download needs.
+        """
+        path, reused = self._take(target_dir, name, expected_size, reuse=reuse)
+        try:
+            yield path, reused
+        finally:
+            with self._lock:
+                self._claimed.discard(path)
+
+    def _take(self, target_dir: Path, name: str, expected_size: int, *, reuse: bool) -> tuple[Path, bool]:
+        base = target_dir / name
+        stem, suffix = base.stem, base.suffix
+        with self._lock:
+            counter = 0
+            while True:
+                candidate = base if counter == 0 else target_dir / f"{stem} ({counter}){suffix}"
+                counter += 1
+                if candidate in self._claimed:
+                    continue
+                size = _size_or_none(candidate)
+                if size is None:
+                    self._claimed.add(candidate)
+                    return candidate, False
+                if not reuse:
+                    continue
+                if not expected_size or size == expected_size:
+                    self._claimed.add(candidate)
+                    return candidate, True
+                # A name match alone is no proof of content: an interrupted run
+                # leaves a truncated file behind. Nobody in this run holds the
+                # name, so the leftover is that -- drop it and write again.
+                logger.debug(
+                    "stale target %s: %d bytes, expected %d -- replacing", candidate, size, expected_size
+                )
+                with contextlib.suppress(OSError):
+                    candidate.unlink()
+                self._claimed.add(candidate)
+                return candidate, False
 
 
 def _lookup_file_in_db(db_path: Path, file_id: int) -> str | None:
@@ -239,6 +295,8 @@ class MediaDownloader:
         self._staging_cleaned: set[Path] = set()
         # Monotonic deadline until which free space is taken on trust.
         self._space_ok_until: float = 0.0
+        # Destination names handed out to the downloads currently in flight.
+        self._targets = _TargetRegistry()
 
     def snapshot_active_downloads(self) -> dict[int, DownloadProgress]:
         """Return a consistent copy of active_downloads (thread-safe).
@@ -380,24 +438,19 @@ class MediaDownloader:
                 shutil.rmtree(entry, ignore_errors=True)
                 logger.debug("removed stale staging dir: %s", entry)
 
-    @staticmethod
-    def _move_into_place(downloaded: Path, target_dir: Path) -> Path:
+    def _move_into_place(self, downloaded: Path, target_dir: Path) -> Path:
         """Move a finished download out of its staging directory.
 
         Picks a free name the way Telethon does when it writes straight into
         the target directory: downloading into an empty staging directory means
         Telethon always chooses the base name, so a same-named neighbour would
-        be overwritten without this.
+        be overwritten without this. The name is taken from the registry rather
+        than probed here, so a file another coroutine is about to link into the
+        same directory is not overwritten either.
         """
-        final_path = target_dir / downloaded.name
-        if final_path.exists():
-            stem, suffix = final_path.stem, final_path.suffix
-            counter = 1
-            while final_path.exists():
-                final_path = target_dir / f"{stem} ({counter}){suffix}"
-                counter += 1
-        os.replace(downloaded, final_path)
-        return final_path
+        with self._targets.claim(target_dir, downloaded.name, 0, reuse=False) as (final_path, _reused):
+            os.replace(downloaded, final_path)
+            return final_path
 
     async def _register_skip(self, tl_message, media: Media, chat_id: int, status: str):
         """Record a skipped file in DB (no actual file on disk)."""
@@ -444,19 +497,15 @@ class MediaDownloader:
         subdir = media_subdir(media.type)
         target_dir = chat_dir / subdir
         target_dir.mkdir(parents=True, exist_ok=True)
-        dst = target_dir / src.name
-
-        if dst.exists():
-            reused = _reusable_target(dst, media.file.size or 0)
-            if reused is not None:
-                return reused
-
-        # to_thread: os.link is a syscall and the copy fallback reads and writes
-        # the whole file. Both stall every other download and the Telegram
-        # connection while they run in the loop thread.
-        if await asyncio.to_thread(_link_or_copy, src, dst):
-            logger.debug("linked intra-account: file_id=%d %s -> %s", media.file.id, src, dst)
-            return dst
+        with self._targets.claim(target_dir, src.name, media.file.size or 0, reuse=True) as (dst, reused):
+            if reused:
+                return dst
+            # to_thread: os.link is a syscall and the copy fallback reads and
+            # writes the whole file. Both stall every other download and the
+            # Telegram connection while they run in the loop thread.
+            if await asyncio.to_thread(_link_or_copy, src, dst):
+                logger.debug("linked intra-account: file_id=%d %s -> %s", media.file.id, src, dst)
+                return dst
         return None
 
     async def _try_link_sibling(self, media: Media, chat_dir: Path) -> Path | None:
@@ -524,16 +573,12 @@ class MediaDownloader:
             subdir = media_subdir(media.type)
             target_dir = chat_dir / subdir
             target_dir.mkdir(parents=True, exist_ok=True)
-            dst = target_dir / src.name
-
-            if dst.exists():
-                reused = _reusable_target(dst, expected_size)
-                if reused is not None:
-                    return reused
-
-            if _link_or_copy(src, dst):
-                logger.debug("linked from sibling: file_id=%d %s -> %s", file_id, src, dst)
-                return dst
+            with self._targets.claim(target_dir, src.name, expected_size, reuse=True) as (dst, reused):
+                if reused:
+                    return dst
+                if _link_or_copy(src, dst):
+                    logger.debug("linked from sibling: file_id=%d %s -> %s", file_id, src, dst)
+                    return dst
             continue
 
         return None
@@ -560,21 +605,18 @@ class MediaDownloader:
             subdir = media_subdir(media.type)
             target_dir = chat_dir / subdir
             target_dir.mkdir(parents=True, exist_ok=True)
-            dst = target_dir / src.name
-            # Reuse an existing file only when its size matches; a leftover of
-            # the wrong size is replaced by the copy below.
-            if dst.exists():
-                reused = _reusable_target(dst, media.file.size if media.file else 0)
-                if reused is not None:
-                    return reused
-            try:
-                shutil.copy2(src, dst)
-            except OSError as e:
-                logger.debug("tdesktop copy failed: %s -> %s (%s) -- skipping", src, dst, e)
-                continue
+            expected_size = media.file.size if media.file else 0
+            with self._targets.claim(target_dir, src.name, expected_size, reuse=True) as (dst, reused):
+                if reused:
+                    return dst
+                try:
+                    shutil.copy2(src, dst)
+                except OSError as e:
+                    logger.debug("tdesktop copy failed: %s -> %s (%s) -- skipping", src, dst, e)
+                    continue
 
-            logger.debug("imported from tdesktop: msg %d -> %s", msg_id, dst)
-            return dst
+                logger.debug("imported from tdesktop: msg %d -> %s", msg_id, dst)
+                return dst
 
         return None
 
