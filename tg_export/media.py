@@ -182,7 +182,7 @@ def _size_or_none(path: Path) -> int | None:
         return None
 
 
-class _TargetRegistry:
+class TargetRegistry:
     """Hands out destination paths so that no two writers get the same one.
 
     The resource two downloads compete for is the name in the target
@@ -204,22 +204,31 @@ class _TargetRegistry:
         self._claimed: set[Path] = set()
 
     @contextlib.contextmanager
-    def claim(self, target_dir: Path, name: str, expected_size: int, *, reuse: bool):
+    def claim(
+        self, target_dir: Path, name: str, expected_size: int, *, reuse: bool, replacing: Path | None = None
+    ):
         """Yield `(path, reused)` -- a path only this claimant may write to.
 
         `reused` is True when the file is already there with the expected size
         and nothing needs to be written. With `reuse=False` an occupied name is
         never taken over: the next free one is picked instead, which is what a
         finished download needs.
+
+        `replacing` names a file this claimant already owns -- the broken file
+        a re-download replaces. Without it a re-download would step over its
+        own file, see the name occupied and move to the next one, renaming the
+        file on every pass.
         """
-        path, reused = self._take(target_dir, name, expected_size, reuse=reuse)
+        path, reused = self._take(target_dir, name, expected_size, reuse=reuse, replacing=replacing)
         try:
             yield path, reused
         finally:
             with self._lock:
                 self._claimed.discard(path)
 
-    def _take(self, target_dir: Path, name: str, expected_size: int, *, reuse: bool) -> tuple[Path, bool]:
+    def _take(
+        self, target_dir: Path, name: str, expected_size: int, *, reuse: bool, replacing: Path | None = None
+    ) -> tuple[Path, bool]:
         base = target_dir / name
         stem, suffix = base.stem, base.suffix
         with self._lock:
@@ -229,6 +238,9 @@ class _TargetRegistry:
                 counter += 1
                 if candidate in self._claimed:
                     continue
+                if candidate == replacing:
+                    self._claimed.add(candidate)
+                    return candidate, False
                 size = _size_or_none(candidate)
                 if size is None:
                     self._claimed.add(candidate)
@@ -248,6 +260,19 @@ class _TargetRegistry:
                     candidate.unlink()
                 self._claimed.add(candidate)
                 return candidate, False
+
+    def drop_unclaimed(self, path: Path) -> None:
+        """Delete `path`, unless another writer is holding that name.
+
+        A re-download whose replacement landed under a different name has to
+        remove the file it replaced. Checking the claims first is what keeps it
+        from deleting a file another coroutine has just moved into place.
+        """
+        with self._lock:
+            if path in self._claimed:
+                return
+            with contextlib.suppress(OSError):
+                path.unlink()
 
 
 class _SiblingReaders:
@@ -394,7 +419,7 @@ class MediaDownloader:
         # Monotonic deadline until which free space is taken on trust.
         self._space_ok_until: float = 0.0
         # Destination names handed out to the downloads currently in flight.
-        self._targets = _TargetRegistry()
+        self._targets = TargetRegistry()
 
     def snapshot_active_downloads(self) -> dict[int, DownloadProgress]:
         """Return a consistent copy of active_downloads (thread-safe).

@@ -371,6 +371,12 @@ SCHEMA_SQL = """
             CREATE INDEX IF NOT EXISTS idx_messages_from ON messages(chat_id, from_id);
             CREATE INDEX IF NOT EXISTS idx_messages_media ON messages(chat_id, media_type);
 
+            -- One row, one file on disk: two rows sharing a local_path mean one
+            -- download overwrote another. There is no UNIQUE (chat_id, local_path)
+            -- to say so, because the column also carries markers like
+            -- `<skipped_by_size>` and legitimately repeats when a file is reused
+            -- from a sibling export. The invariant is upheld where the names are
+            -- handed out instead -- media.TargetRegistry.
             CREATE TABLE IF NOT EXISTS files (
                 file_id        INTEGER NOT NULL,
                 chat_id        INTEGER NOT NULL,

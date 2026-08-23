@@ -21,6 +21,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from tg_export.media import TargetRegistry
 from tg_export.models import FileStatus
 
 logger = logging.getLogger(__name__)
@@ -56,7 +57,7 @@ def clean_staging(root: Path) -> None:
 
 
 async def redownload_broken_file(
-    api, state, entry: dict[str, Any], *, tl_msg: Any | None = None
+    api, state, entry: dict[str, Any], *, tl_msg: Any | None = None, targets: TargetRegistry | None = None
 ) -> tuple[RedownloadResult, Path | None]:
     """Re-download one broken file, replacing it only after the download succeeded.
 
@@ -71,6 +72,12 @@ async def redownload_broken_file(
     The old file stays untouched until the new one is fully on disk: deleting
     first meant that an interruption -- a dropped connection, Ctrl+C -- left
     nothing behind while the database still pointed at the vanished path.
+
+    ``targets`` is the registry the destination name is taken from, shared by
+    everything writing into the same output tree. Downloading into an empty
+    staging directory means Telethon always answers with the base name, so two
+    files the export had told apart as `photo.jpg` and `photo (1).jpg` would
+    otherwise both be moved onto `photo.jpg`.
     """
     chat_id = entry["chat_id"]
     msg_id = entry["msg_id"]
@@ -83,6 +90,8 @@ async def redownload_broken_file(
     if tl_msg is None or tl_msg.media is None:
         return RedownloadResult.no_media, None
 
+    if targets is None:
+        targets = TargetRegistry()
     target_dir = local_path.parent
     target_dir.mkdir(parents=True, exist_ok=True)
     # dir=target_dir keeps the staging area on the same filesystem, so the final
@@ -93,13 +102,17 @@ async def redownload_broken_file(
             return RedownloadResult.nothing_downloaded, None
 
         downloaded = Path(downloaded)
-        final_path = target_dir / downloaded.name
-        os.replace(downloaded, final_path)
+        with targets.claim(target_dir, downloaded.name, 0, reuse=False, replacing=local_path) as (
+            final_path,
+            _,
+        ):
+            os.replace(downloaded, final_path)
 
-    # Telethon may pick a different name than the one recorded earlier; drop the
-    # stale file only now, once its replacement is in place.
-    if local_path != final_path and local_path.exists():
-        local_path.unlink()
+            # Telethon may pick a different name than the one recorded earlier;
+            # drop the stale file only now, once its replacement is in place,
+            # and only while nobody else holds that name.
+            if local_path != final_path:
+                targets.drop_unclaimed(local_path)
 
     await state.register_file(
         file_id=entry["file_id"],
@@ -172,6 +185,9 @@ async def redownload_broken_files(
     """
     messages = await fetch_broken_messages(api, entries, should_stop=should_stop)
     semaphore = asyncio.Semaphore(max(1, concurrency))
+    # One registry for the whole pass: the names the parallel downloads compete
+    # for are in the same directories.
+    targets = TargetRegistry()
 
     async def one(entry) -> RedownloadOutcome:
         if should_stop and should_stop():
@@ -179,7 +195,11 @@ async def redownload_broken_files(
         async with semaphore:
             try:
                 result, final_path = await redownload_broken_file(
-                    api, state, entry, tl_msg=messages.get((entry["chat_id"], entry["msg_id"]))
+                    api,
+                    state,
+                    entry,
+                    tl_msg=messages.get((entry["chat_id"], entry["msg_id"])),
+                    targets=targets,
                 )
             except Exception as e:  # noqa: BLE001 - reported per file by the caller
                 return RedownloadOutcome(entry, error=e)

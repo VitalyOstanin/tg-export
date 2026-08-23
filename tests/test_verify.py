@@ -230,3 +230,98 @@ async def test_broken_files_are_downloaded_with_the_configured_parallelism(tmp_p
     await redownload_broken_files(api, AsyncMock(), entries, concurrency=3)
 
     assert peak == 3, f"одновременных загрузок: {peak}"
+
+
+@pytest.mark.asyncio
+async def test_parallel_redownload_does_not_put_two_files_on_one_path(tmp_path):
+    """Две битые записи с разными именами не должны схлопнуться в один файл.
+
+    Экспорт развёл одноимённые файлы как `photo.jpg` и `photo (1).jpg`. При
+    перекачивании каждый скачивается в пустой временный каталог, и Telethon в
+    обоих случаях выбирает базовое имя, поэтому имя в целевом каталоге надо
+    выбирать так же, как это делает выгрузка, — через общий реестр.
+    """
+    import asyncio
+
+    from tg_export.verify import redownload_broken_files
+
+    first = tmp_path / "photo.jpg"
+    second = tmp_path / "photo (1).jpg"
+    first.write_bytes(b"partial-1")
+    second.write_bytes(b"partial-2")
+
+    payloads = {200: b"content-of-200", 201: b"content-of-201"}
+
+    async def fake_download(tl_msg, target_dir, *args, **kwargs):
+        out = Path(target_dir) / "photo.jpg"
+        # Уступить управление, чтобы обе корутины оказались между скачиванием
+        # и переносом одновременно.
+        await asyncio.sleep(0)
+        out.write_bytes(payloads[tl_msg.id])
+        return str(out)
+
+    messages = [MagicMock(media=object(), id=msg_id) for msg_id in (200, 201)]
+    api = MagicMock()
+    api.client.get_messages = AsyncMock(return_value=messages)
+    api.download_media = AsyncMock(side_effect=fake_download)
+    state = AsyncMock()
+
+    entries = [
+        {**_entry(first), "file_id": 1, "msg_id": 200},
+        {**_entry(second), "file_id": 2, "msg_id": 201},
+    ]
+    await redownload_broken_files(api, state, entries, concurrency=2)
+
+    registered = {call.kwargs["local_path"] for call in state.register_file.await_args_list}
+    assert len(registered) == 2, f"обе записи указывают на один путь: {registered}"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["photo (1).jpg", "photo.jpg"]
+    assert {first.read_bytes(), second.read_bytes()} == set(payloads.values())
+
+
+@pytest.mark.asyncio
+async def test_replacement_under_a_new_name_removes_the_old_file(tmp_path):
+    """Если Telethon дал файлу другое имя, прежний файл удаляется после замены."""
+    from tg_export.verify import RedownloadResult, redownload_broken_file
+
+    existing = tmp_path / "photo.jpg"
+    existing.write_bytes(b"partial")
+
+    async def fake_download(tl_msg, target_dir, *args, **kwargs):
+        out = Path(target_dir) / "video.mp4"
+        out.write_bytes(b"complete")
+        return str(out)
+
+    api = MagicMock()
+    api.client.get_messages = AsyncMock(return_value=MagicMock(media=object()))
+    api.download_media = AsyncMock(side_effect=fake_download)
+    state = AsyncMock()
+
+    result, final_path = await redownload_broken_file(api, state, _entry(existing))
+
+    assert result is RedownloadResult.replaced
+    assert final_path == tmp_path / "video.mp4"
+    assert not existing.exists()
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["video.mp4"]
+
+
+@pytest.mark.asyncio
+async def test_a_stopped_pass_downloads_nothing(tmp_path):
+    """При запросе остановки проход не качает ни одного файла и не трогает диск."""
+    from tg_export.verify import redownload_broken_files
+
+    existing = tmp_path / "photo.jpg"
+    existing.write_bytes(b"partial")
+
+    api = MagicMock()
+    api.client.get_messages = AsyncMock(return_value=[MagicMock(media=object(), id=200)])
+    api.download_media = AsyncMock()
+    state = AsyncMock()
+
+    outcomes = await redownload_broken_files(
+        api, state, [_entry(existing)], concurrency=2, should_stop=lambda: True
+    )
+
+    assert [outcome.result for outcome in outcomes] == [None]
+    api.client.get_messages.assert_not_called()
+    api.download_media.assert_not_called()
+    assert existing.read_bytes() == b"partial"
