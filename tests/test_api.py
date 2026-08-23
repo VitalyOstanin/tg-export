@@ -14,21 +14,21 @@ from tg_export.session import FixedSQLiteSession
 
 
 def _make_session_v8(path, takeout_id=None, tmp_auth_value=None, *, with_version=True, swapped=False):
-    """Create a v8-shaped sessions table and fill it the way Telethon does.
+    """Создать таблицу sessions версии 8 и заполнить её так, как это делает Telethon.
 
-    Telethon's `_update_session_table` writes the row positionally --
-    `insert or replace into sessions values (?,?,?,?,?,?)` -- with the tuple
-    `(dc_id, server_address, port, auth_key, takeout_id, tmp_auth_key)`. The
-    physical column order therefore decides which column each value lands in,
-    and that order differs between session files in the wild:
+    `_update_session_table` в Telethon пишет строку позиционно --
+    `insert or replace into sessions values (?,?,?,?,?,?)` -- кортежем
+    `(dc_id, server_address, port, auth_key, takeout_id, tmp_auth_key)`. Значит,
+    в какую колонку попадёт значение, решает физический порядок колонок, а он у
+    реальных файлов сессий разный:
 
-    * canonical (`swapped=False`) -- `..., auth_key, takeout_id, tmp_auth_key`,
-      what `_create_table` produces on a freshly created file;
-    * swapped (`swapped=True`) -- `..., auth_key, tmp_auth_key, takeout_id`,
-      found on files whose schema grew through a different upgrade path.
+    * канонический (`swapped=False`) -- `..., auth_key, takeout_id, tmp_auth_key`,
+      то, что даёт `_create_table` на свежесозданном файле;
+    * переставленный (`swapped=True`) -- `..., auth_key, tmp_auth_key, takeout_id`,
+      встречается у файлов, схема которых выросла другим путём обновления.
 
-    The insert here is positional too, so the fixture reproduces exactly what
-    Telethon would leave on disk for the given physical layout.
+    Вставка здесь тоже позиционная, поэтому фикстура воспроизводит ровно то, что
+    Telethon оставил бы на диске при заданной раскладке колонок.
     """
     tail = "tmp_auth_key blob, takeout_id integer" if swapped else "takeout_id integer, tmp_auth_key blob"
     conn = sqlite3.connect(str(path))
@@ -54,11 +54,11 @@ def _make_session_v8(path, takeout_id=None, tmp_auth_value=None, *, with_version
 
 
 def _make_session_v7(path, takeout_id=None):
-    """Create a v7-shaped sessions table: takeout_id exists, tmp_auth_key does not.
+    """Создать таблицу sessions версии 7: takeout_id есть, tmp_auth_key нет.
 
-    Telethon adds tmp_auth_key only when upgrading a v7 file (`old == 7` in
-    `_upgrade_database`), so before that the table has five columns and the
-    takeout_id sits in the last one.
+    Telethon добавляет tmp_auth_key только при обновлении файла версии 7
+    (`old == 7` в `_upgrade_database`), поэтому до обновления в таблице пять
+    колонок, а takeout_id лежит в последней.
     """
     conn = sqlite3.connect(str(path))
     conn.executescript(
@@ -82,12 +82,12 @@ def _make_session_v7(path, takeout_id=None):
 
 
 def test_fixed_sqlite_session_restores_takeout_id_and_survives_open(tmp_path):
-    """The whole point of FixedSQLiteSession.
+    """Ради этого и существует FixedSQLiteSession.
 
-    Without the workaround, Telethon's __init__ unpacks the takeout_id (int)
-    into `tmp_key` and crashes via `AuthKey(data=int)` -> `sha1(int)`. We
-    must (a) not crash, (b) end up with `session.takeout_id == 12345`, and
-    (c) leave `auth_key` intact (no re-login required).
+    Без обхода дефекта `__init__` Telethon распаковывает takeout_id (число) в
+    `tmp_key` и падает на `AuthKey(data=int)` -> `sha1(int)`. Требуется:
+    (а) не падать, (б) получить `session.takeout_id == 12345`, (в) сохранить
+    `auth_key` нетронутым, чтобы не понадобился повторный вход.
     """
     sp = tmp_path / "acc.session"
     _make_session_v8(sp, takeout_id=12345, tmp_auth_value=None)
@@ -121,7 +121,7 @@ def test_fixed_sqlite_session_noop_on_clean_v8(tmp_path):
 
 
 def test_fixed_sqlite_session_handles_missing_file(tmp_path):
-    """Fresh session, file does not exist yet -- super().__init__ creates it."""
+    """Новая сессия: файла ещё нет, его создаёт `super().__init__`."""
     sp = tmp_path / "fresh.session"
     sess = FixedSQLiteSession(str(sp))
     try:
@@ -285,7 +285,7 @@ def test_fixed_sqlite_session_recovers_after_crash_between_clear_and_restore(tmp
 
 
 def _open_session_capturing_logs(path, caplog, level=logging.INFO):
-    """Open the session and return the log records it emitted at `level`+."""
+    """Открыть сессию и вернуть записи журнала уровня `level` и выше."""
     caplog.clear()
     with caplog.at_level(level, logger="tg_export.session"):
         sess = FixedSQLiteSession(str(path))
@@ -357,18 +357,18 @@ def test_unusable_takeout_id_names_the_place_it_came_from(tmp_path, caplog):
 
 
 def _close_session(api: TgApi) -> None:
-    """Close the session file opened by the constructor; the attribute is optional."""
+    """Закрыть файл сессии, открытый конструктором; атрибут не обязателен."""
     session = api.client.session
     if session is not None:
         session.close()
 
 
 def _make_takeout_api(*, takeout_id=None) -> tuple[TgApi, Any]:
-    """Build a TgApi whose client is a mock, shaped the way start_takeout reads it.
+    """Собрать TgApi с клиентом-заглушкой в том виде, в каком его читает start_takeout.
 
-    The mock is returned separately and typed as Any: the tests reach for
-    attributes a real TelegramClient does not have (return_value, side_effect,
-    assert_awaited_once_with).
+    Заглушка возвращается отдельно и типизирована как Any: тесты обращаются к
+    атрибутам, которых у настоящего TelegramClient нет (return_value,
+    side_effect, assert_awaited_once_with).
     """
     api = TgApi.__new__(TgApi)
     client: Any = MagicMock()
@@ -383,7 +383,7 @@ def _make_takeout_api(*, takeout_id=None) -> tuple[TgApi, Any]:
 
 
 def _make_takeout_ctx():
-    """Return (context manager, proxy client) mimicking client.takeout()."""
+    """Вернуть пару (контекстменеджер, клиент-посредник), подражающую client.takeout()."""
     ctx = MagicMock()
     takeout_client = AsyncMock()
     ctx.__aenter__ = AsyncMock(return_value=takeout_client)
@@ -393,7 +393,7 @@ def _make_takeout_ctx():
 
 @pytest.mark.asyncio
 async def test_start_takeout_creates_session():
-    """A first run initialises the takeout with the requested export parameters."""
+    """Первый прогон инициализирует takeout запрошенными параметрами выгрузки."""
     api, client = _make_takeout_api()
     ctx, takeout_client = _make_takeout_ctx()
     client.takeout.return_value = ctx
@@ -406,13 +406,13 @@ async def test_start_takeout_creates_session():
 
 @pytest.mark.asyncio
 async def test_start_takeout_reuses_the_id_left_by_a_previous_run():
-    """A stored takeout_id must be picked up, not thrown away.
+    """Сохранённый takeout_id нужно подхватывать, а не выбрасывать.
 
-    Telegram answers InitTakeoutSessionRequest with a cooldown of up to 24h,
-    so every discarded id costs a day of waiting. Reuse requires calling
-    takeout() without any argument: Telethon builds the init request when the
-    id is empty *or* any argument is set, and refuses to send it over a live
-    id.
+    На InitTakeoutSessionRequest Telegram отвечает задержкой до суток, поэтому
+    каждый выброшенный идентификатор стоит дня ожидания. Для переиспользования
+    takeout() вызывается без аргументов: Telethon собирает init-запрос, если
+    идентификатор пуст *или* задан хоть один аргумент, и отказывается слать его
+    поверх живого идентификатора.
     """
     api, client = _make_takeout_api(takeout_id=12345)
     ctx, takeout_client = _make_takeout_ctx()
@@ -427,9 +427,9 @@ async def test_start_takeout_reuses_the_id_left_by_a_previous_run():
 
 @pytest.mark.asyncio
 async def test_start_takeout_starts_a_new_session_when_the_stored_id_is_dead():
-    """Reuse is verified by a probe request: entering the context never
-    contacts the server when the id is set, so a takeout the server has
-    already forgotten would only surface on the first export request."""
+    """Пригодность переиспользования проверяется пробным запросом: вход в контекст
+    при заданном идентификаторе к серверу не обращается, поэтому забытый
+    сервером takeout обнаружился бы только на первом запросе выгрузки."""
     api, client = _make_takeout_api(takeout_id=999)
     dead_ctx, dead_client = _make_takeout_ctx()
     dead_client.side_effect = TakeoutInvalidError(request=None)
@@ -448,8 +448,8 @@ async def test_start_takeout_starts_a_new_session_when_the_stored_id_is_dead():
 
 @pytest.mark.asyncio
 async def test_start_takeout_clears_a_dead_id_locally_when_end_takeout_fails():
-    """If the server refuses to finish the forgotten takeout, drop the id
-    locally so the fresh init request is not rejected by Telethon."""
+    """Если сервер отказывается завершить забытый takeout, идентификатор стирается
+    локально, иначе Telethon отвергнет новый init-запрос."""
     api, client = _make_takeout_api(takeout_id=999)
     dead_ctx, dead_client = _make_takeout_ctx()
     dead_client.side_effect = TakeoutInvalidError(request=None)
@@ -465,8 +465,8 @@ async def test_start_takeout_clears_a_dead_id_locally_when_end_takeout_fails():
 
 @pytest.mark.asyncio
 async def test_stop_takeout_keeps_the_session_for_the_next_run():
-    """Releasing the context must not finish the takeout: the id is the whole
-    point of keeping it."""
+    """Выход из контекста не должен завершать takeout: сохранённый идентификатор --
+    это и есть смысл его удержания."""
     api, client = _make_takeout_api()
     ctx, _ = _make_takeout_ctx()
     client.takeout.return_value = ctx
@@ -509,7 +509,7 @@ async def test_disconnect_releases_takeout_without_finishing_it():
 
 @pytest.mark.asyncio
 async def test_start_takeout_handles_delay():
-    """On TAKEOUT_INIT_DELAY should raise with wait time."""
+    """На TAKEOUT_INIT_DELAY выбрасывается ошибка с временем ожидания."""
     api, client = _make_takeout_api()
     err = TakeoutInitDelayError(request=None, capture=0)
     err.seconds = 3600
@@ -521,7 +521,7 @@ async def test_start_takeout_handles_delay():
 
 @pytest.mark.asyncio
 async def test_iter_messages_passes_min_id():
-    """iter_messages should pass min_id to Telethon."""
+    """iter_messages передаёт min_id в Telethon."""
     api = TgApi.__new__(TgApi)
     api.takeout = AsyncMock()
     api.takeout.iter_messages = MagicMock(
@@ -539,7 +539,7 @@ async def test_iter_messages_passes_min_id():
 
 @pytest.mark.asyncio
 async def test_fallback_to_client_when_no_takeout():
-    """Without Takeout should use client directly."""
+    """Без Takeout запрос идёт напрямую через клиент."""
     api = TgApi.__new__(TgApi)
     api.takeout = None
     api.client = AsyncMock()
@@ -558,7 +558,7 @@ async def test_fallback_to_client_when_no_takeout():
 
 @pytest.mark.asyncio
 async def test_get_folders_with_dialog_filters_object():
-    """get_folders should handle DialogFilters object with .filters attribute."""
+    """get_folders понимает объект DialogFilters с атрибутом .filters."""
     api = TgApi.__new__(TgApi)
     api.client = AsyncMock()
 
@@ -586,7 +586,7 @@ async def test_get_folders_with_dialog_filters_object():
 
 @pytest.mark.asyncio
 async def test_get_folders_with_text_with_entities_title():
-    """get_folders should extract .text from TextWithEntities title."""
+    """get_folders берёт .text из заголовка TextWithEntities."""
     api = TgApi.__new__(TgApi)
     api.client = AsyncMock()
 
@@ -608,7 +608,7 @@ async def test_get_folders_with_text_with_entities_title():
 
 @pytest.mark.asyncio
 async def test_get_folders_with_plain_string_title():
-    """get_folders should handle plain string title (older Telethon)."""
+    """get_folders понимает заголовок обычной строкой (старые версии Telethon)."""
     api = TgApi.__new__(TgApi)
     api.client = AsyncMock()
 

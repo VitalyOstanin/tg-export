@@ -65,11 +65,12 @@ def _chat(chat_id: int) -> Chat:
 
 
 def _exporter(state, ids_newest_first, *, stop_after=None, monkeypatch=None, date_of=None):
-    """Exporter over a fake chat whose passes yield the given ids.
+    """Экспортёр поверх поддельного чата, проходы которого отдают заданные идентификаторы.
 
-    stop_after: raise the shutdown flag once that many messages have been
-    handed out, imitating Ctrl+C in the middle of phase 1.
-    date_of: the date of a message by its id, for a run bounded by date_from.
+    stop_after: поднять признак остановки после выдачи такого числа сообщений,
+    изображая Ctrl+C посреди фазы 1.
+    date_of: дата сообщения по его идентификатору -- для прогона, ограниченного
+    значением date_from.
     """
     exporter_holder = {}
 

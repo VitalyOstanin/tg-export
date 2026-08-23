@@ -457,3 +457,105 @@ def test_picking_a_free_name_does_not_rescan_the_names_already_given_out(tmp_pat
             path.write_bytes(b"x")
 
     assert len(calls) <= 2 * files, f"опросов файловой системы {len(calls)} на {files} файлов"
+
+
+def _sibling_export(tmp_path, *, local_path, file_id=1):
+    """Соседняя выгрузка: база `state.db` рядом с медиа и одна запись `done` в ней."""
+    import sqlite3
+
+    root = tmp_path / "sibling"
+    root.mkdir(exist_ok=True)
+    db_path = root / "state.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("CREATE TABLE files (file_id integer, local_path text, status text)")
+    conn.execute("INSERT INTO files VALUES (?, ?, 'done')", (file_id, str(local_path)))
+    conn.commit()
+    conn.close()
+    return db_path
+
+
+def test_a_path_inside_the_sibling_tree_is_accepted(tmp_path):
+    """Соседняя база -- внешний ввод: путь принимается только внутри её дерева."""
+    from tg_export.media import _is_sibling_path_safe
+
+    db_path = tmp_path / "sibling" / "state.db"
+    db_path.parent.mkdir()
+    inside = db_path.parent / "chat" / "photos" / "photo.jpg"
+    inside.parent.mkdir(parents=True)
+    inside.write_bytes(b"data")
+
+    assert _is_sibling_path_safe(inside, db_path)
+
+
+def test_a_path_outside_the_sibling_tree_is_rejected(tmp_path):
+    """Подделанная база может указать на /etc/passwd или на ссылку наружу.
+
+    Проверка объявлена защитой от внешнего ввода, но до этих проверок её не
+    исполнял ни один тест: единственный тест, доходивший до слоя связывания,
+    подменял поиск заглушкой, возвращающей None.
+    """
+    from tg_export.media import _is_sibling_path_safe
+
+    db_path = tmp_path / "sibling" / "state.db"
+    db_path.parent.mkdir()
+    outside = tmp_path / "outside.jpg"
+    outside.write_bytes(b"data")
+    link = db_path.parent / "link.jpg"
+    link.symlink_to(outside)
+
+    assert not _is_sibling_path_safe(outside, db_path)
+    assert not _is_sibling_path_safe(Path("/etc/passwd"), db_path)
+    assert not _is_sibling_path_safe(link, db_path), "ссылка наружу ведёт наружу"
+
+
+def test_a_file_of_the_right_size_is_taken_from_the_sibling_export(tmp_path):
+    """Файл соседней выгрузки того же размера переиспользуется, а не качается заново."""
+    from unittest.mock import MagicMock
+
+    source = tmp_path / "sibling" / "chat" / "photos" / "photo.jpg"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"data")
+    db_path = _sibling_export(tmp_path, local_path=source)
+
+    dl = _downloader(MagicMock(), tmp_path)
+    dl.sibling_db_paths = [db_path]
+    chat_dir = tmp_path / "chat"
+
+    linked = dl._link_sibling_blocking(_photo(), chat_dir)
+
+    assert linked is not None
+    assert linked.read_bytes() == b"data"
+    assert linked.parent == chat_dir / "photos"
+    dl._siblings.close()
+
+
+def test_a_sibling_file_of_another_size_is_not_taken(tmp_path):
+    """Совпадение идентификатора без совпадения размера -- не тот файл."""
+    from unittest.mock import MagicMock
+
+    source = tmp_path / "sibling" / "chat" / "photos" / "photo.jpg"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"much longer than four bytes")
+    db_path = _sibling_export(tmp_path, local_path=source)
+
+    dl = _downloader(MagicMock(), tmp_path)
+    dl.sibling_db_paths = [db_path]
+
+    assert dl._link_sibling_blocking(_photo(), tmp_path / "chat") is None
+    dl._siblings.close()
+
+
+def test_a_sibling_pointing_outside_its_tree_gives_nothing(tmp_path):
+    """Запись, уводящая за пределы соседней выгрузки, не даёт файла в экспорт."""
+    from unittest.mock import MagicMock
+
+    outside = tmp_path / "outside.jpg"
+    outside.write_bytes(b"data")
+    db_path = _sibling_export(tmp_path, local_path=outside)
+
+    dl = _downloader(MagicMock(), tmp_path)
+    dl.sibling_db_paths = [db_path]
+    chat_dir = tmp_path / "chat"
+
+    assert dl._link_sibling_blocking(_photo(), chat_dir) is None
+    dl._siblings.close()

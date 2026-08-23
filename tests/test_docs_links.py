@@ -207,7 +207,7 @@ def test_contributing_tells_how_to_run_a_single_test_file() -> None:
 
 
 def _deprecated_option_spellings():
-    """Old spellings kept for compatibility, by command: `list` -> {--output}."""
+    """Прежние написания, оставленные ради совместимости, по командам: `list` -> {--output}."""
     import click
 
     from tg_export.cli import main

@@ -1,4 +1,4 @@
-"""Tests for tg subcommands: messages (msg_id display) and download (dedup)."""
+"""Проверки подкоманд tg: messages (показ msg_id) и download (защита от дублей)."""
 
 import asyncio
 import contextlib
@@ -22,7 +22,7 @@ def out_dir(tmp_path):
 
 
 def _make_client(out_dir: Path, filename: str, content: bytes) -> AsyncMock:
-    """Mock client whose download_media writes a file and returns its path."""
+    """Клиент-заглушка, у которого download_media пишет файл и возвращает его путь."""
     client = AsyncMock()
 
     async def _download(msg, *, file):
@@ -53,7 +53,7 @@ class TestDownloadIfNew:
         assert len(downloaded) == 1
 
     def test_duplicate_same_size_removed(self, out_dir):
-        """Second download of same-size file is detected and removed."""
+        """Повторная загрузка файла того же размера распознаётся и удаляется."""
         content = b"A" * 100
         # Pre-existing file
         existing = out_dir / "doc.pdf"
@@ -72,7 +72,7 @@ class TestDownloadIfNew:
         assert files[0].name == "doc.pdf"
 
     def test_different_size_kept(self, out_dir):
-        """File with different size is NOT considered a duplicate."""
+        """Файл другого размера дублем НЕ считается."""
         existing = out_dir / "doc.pdf"
         existing.write_bytes(b"A" * 100)
         downloaded = {existing}
@@ -88,7 +88,7 @@ class TestDownloadIfNew:
         assert len(files) == 2
 
     def test_download_returns_none(self, out_dir):
-        """If client.download_media returns None, _download_if_new returns None."""
+        """Если client.download_media вернул None, _download_if_new тоже возвращает None."""
         client = AsyncMock()
         client.download_media.return_value = None
         downloaded = set()
@@ -100,7 +100,7 @@ class TestDownloadIfNew:
         assert len(downloaded) == 0
 
     def test_preexisting_files_prevent_duplicates(self, out_dir):
-        """downloaded set initialized from existing dir files blocks dupes."""
+        """Набор скачанного, собранный по уже лежащим в каталоге файлам, отсекает дубли."""
         content = b"X" * 50
         (out_dir / "a.docx").write_bytes(content)
         (out_dir / "b.docx").write_bytes(content)
@@ -121,7 +121,7 @@ class TestDownloadIfNew:
 
 
 def _invoke_tg_messages(args: list[str], text: str = "hello", media: str | None = None):
-    """Run `tg messages` against a mocked API returning a single message."""
+    """Выполнить `tg messages` поверх заглушки API, отдающей одно сообщение."""
     from click.testing import CliRunner
 
     from tg_export.cli import main
@@ -166,7 +166,7 @@ def _invoke_tg_messages(args: list[str], text: str = "hello", media: str | None 
 
 class TestTgMessagesOutput:
     def test_msg_id_in_output(self):
-        """tg messages output includes [msg_id] for each message."""
+        """В выводе `tg messages` у каждого сообщения есть [msg_id]."""
         result = _invoke_tg_messages(["-n", "1"])
 
         assert "[42]" in result.output
@@ -174,7 +174,7 @@ class TestTgMessagesOutput:
         assert "hello" in result.output
 
     def test_text_truncated_to_200_chars_by_default(self):
-        """Without options the text is cut to 200 characters."""
+        """Без опций текст обрезается до 200 знаков."""
         text = "x" * 250
 
         result = _invoke_tg_messages(["-n", "1"], text=text)
@@ -183,7 +183,7 @@ class TestTgMessagesOutput:
         assert "x" * 201 not in result.output
 
     def test_no_truncate_prints_full_text(self):
-        """--no-truncate prints the message text in full."""
+        """--no-truncate печатает текст сообщения целиком."""
         text = "y" * 5000
 
         result = _invoke_tg_messages(["-n", "1", "--no-truncate"], text=text)
@@ -191,7 +191,7 @@ class TestTgMessagesOutput:
         assert text in result.output
 
     def test_truncate_sets_custom_length(self):
-        """--truncate N cuts the text to N characters."""
+        """--truncate N обрезает текст до N знаков."""
         text = "z" * 100
 
         result = _invoke_tg_messages(["-n", "1", "--truncate", "10"], text=text)
@@ -200,7 +200,7 @@ class TestTgMessagesOutput:
         assert "z" * 11 not in result.output
 
     def test_truncate_zero_prints_full_text(self):
-        """--truncate 0 disables truncation."""
+        """--truncate 0 отключает обрезку."""
         text = "w" * 3000
 
         result = _invoke_tg_messages(["-n", "1", "--truncate", "0"], text=text)
@@ -208,14 +208,14 @@ class TestTgMessagesOutput:
         assert text in result.output
 
     def test_no_truncate_conflicts_with_truncate(self):
-        """--no-truncate together with an explicit --truncate is a usage error."""
+        """--no-truncate вместе с явным --truncate -- ошибка формы вызова."""
         result = _invoke_tg_messages(["-n", "1", "--no-truncate", "--truncate", "10"])
 
         assert result.exit_code == 2
         assert "--no-truncate" in result.output
 
     def test_negative_truncate_rejected(self):
-        """Negative --truncate is a usage error."""
+        """Отрицательный --truncate -- ошибка формы вызова."""
         result = _invoke_tg_messages(["-n", "1", "--truncate", "-5"])
 
         assert result.exit_code == 2

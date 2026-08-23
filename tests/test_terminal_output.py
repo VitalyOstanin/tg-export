@@ -169,7 +169,7 @@ async def test_build_status_table_handles_concurrent_active_downloads_mutation()
         stop.set()
         t.join(timeout=1)
 
-    assert not errors, f"Concurrent mutation broke _build_status_table: {errors!r}"
+    assert not errors, f"Одновременное изменение сломало _build_status_table: {errors!r}"
 
 
 # ----- Behavioural smoke: exporter still works end-to-end with escape -----

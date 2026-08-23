@@ -67,7 +67,7 @@ def test_convert_outgoing_message():
 
 
 def test_convert_chat_migrated_to_extracts_channel_id():
-    """migrated_to is an InputChannel object, we need just the int channel_id."""
+    """migrated_to -- объект InputChannel, а нужен только числовой channel_id."""
     dialog = MagicMock()
     entity = MagicMock()
     entity.__class__.__name__ = "Chat"
@@ -113,7 +113,7 @@ def test_convert_chat_no_migration():
 
 
 def _make_dialog(entity) -> MagicMock:
-    """Wrap a real Telethon entity into a minimal Dialog-like mock."""
+    """Обернуть настоящую сущность Telethon в минимальную заглушку, похожую на Dialog."""
     dialog = MagicMock()
     dialog.entity = entity
     dialog.date = datetime(2024, 1, 1)
@@ -123,7 +123,7 @@ def _make_dialog(entity) -> MagicMock:
 
 
 def test_convert_chat_forbidden_is_private_group_and_left(caplog):
-    """ChatForbidden is a basic group we were kicked from: no access to history."""
+    """ChatForbidden -- обычная группа, из которой нас исключили: доступа к истории нет."""
     entity = ChatForbidden(id=100, title="Kicked Group")
     with caplog.at_level(logging.WARNING, logger="tg_export.converter"):
         chat = convert_chat(_make_dialog(entity))
@@ -150,7 +150,7 @@ def test_convert_channel_forbidden_megagroup_is_private_supergroup():
 
 
 def test_convert_chat_unknown_entity_class_still_warns(caplog):
-    """The fallback branch must keep reporting genuinely unknown entity classes."""
+    """Запасная ветка обязана и дальше сообщать о действительно неизвестных классах сущностей."""
     entity = MagicMock()
     entity.__class__.__name__ = "ChatEmpty"
     entity.id = 400

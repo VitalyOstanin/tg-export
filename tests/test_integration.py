@@ -9,7 +9,7 @@ from tg_export.html.renderer import HtmlRenderer
 
 @pytest.mark.asyncio
 async def test_full_export_cycle(tmp_path, state):
-    """Full cycle: config -> export -> HTML -> check output exists."""
+    """Полный цикл: конфиг -> экспорт -> HTML -> проверка, что результат на месте."""
     output = tmp_path / "output" / "test_account"
 
     config = Config(

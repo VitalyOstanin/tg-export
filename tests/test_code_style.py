@@ -188,7 +188,7 @@ def _exit_is_a_failure(node) -> bool:
 
 
 def _is_suppressible_diag(node) -> bool:
-    """True for a `_diag(...)` call that --quiet would swallow."""
+    """Истина для вызова `_diag(...)`, который проглотит `--quiet`."""
     import ast
 
     if not isinstance(node, ast.Expr) or not isinstance(node.value, ast.Call):
@@ -722,7 +722,7 @@ def test_the_package_and_its_build_files_speak_english():
 
 
 def _command_paths():
-    """Every command of the tree as the user types it: `run`, `tg info`, ..."""
+    """Каждая команда дерева в том виде, в каком её набирает пользователь: `run`, `tg info`, ..."""
     import click
 
     from tg_export.cli import main
@@ -888,3 +888,34 @@ def test_the_message_walk_is_written_once():
         if isinstance(node, ast.AsyncFor) and _called_name(node.iter) == "iter_messages"
     ]
     assert len(walks) == 1, f"обход сообщений объявлен несколько раз, строки: {walks}"
+
+
+def test_the_tests_speak_russian():
+    """Таблица «Язык артефактов» в CONTRIBUTING требует русский в docstring тестов.
+
+    Строки таблицы про код пакета закреплены проверкой, а строка про тесты --
+    нет, и разошлась с кодом именно она: пятьдесят один docstring без единой
+    кириллической буквы, причём языки смешаны внутри одного файла.
+    """
+    tests_dir = Path(__file__).resolve().parent
+    cyrillic = re.compile("[а-яА-ЯёЁ]")
+    offenders = []
+    for path in sorted(tests_dir.glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        module_doc = ast.get_docstring(tree)
+        if module_doc and not cyrillic.search(module_doc):
+            offenders.append(f"{path.name}:1 docstring модуля")
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+                doc = ast.get_docstring(node)
+                if doc and not cyrillic.search(doc):
+                    offenders.append(f"{path.name}:{node.lineno} {node.name}")
+            if isinstance(node, ast.Assert) and node.msg is not None:
+                text = " ".join(
+                    inner.value
+                    for inner in ast.walk(node.msg)
+                    if isinstance(inner, ast.Constant) and isinstance(inner.value, str)
+                )
+                if text.strip() and not cyrillic.search(text):
+                    offenders.append(f"{path.name}:{node.lineno} сообщение assert")
+    assert not offenders, f"по-английски написаны: {offenders}"

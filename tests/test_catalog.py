@@ -123,7 +123,7 @@ def test_format_catalog_includes_left():
 
 
 def _chat(**over) -> Chat:
-    """Build a Chat with the boring fields already filled in."""
+    """Собрать Chat с уже заполненными несущественными для проверки полями."""
     fields = {
         "id": 1,
         "name": "Chat",
@@ -145,7 +145,7 @@ def _chat(**over) -> Chat:
 
 
 def test_catalog_survives_a_round_trip_through_yaml():
-    """`init --from` reads back what `tg chats` wrote, flags and folders included."""
+    """`init --from` читает написанное `tg chats` обратно -- вместе с признаками и папками."""
     import yaml
 
     from tg_export.catalog import chats_from_catalog
@@ -176,7 +176,7 @@ def test_catalog_survives_a_round_trip_through_yaml():
 
 
 def test_a_damaged_catalog_is_reported_instead_of_crashing():
-    """Every malformed shape must come out as ConfigError, not TypeError/KeyError."""
+    """Любая испорченная форма должна выходить как ConfigError, а не TypeError/KeyError."""
     from tg_export.catalog import chats_from_catalog
     from tg_export.config import ConfigError
 
@@ -195,7 +195,7 @@ def test_a_damaged_catalog_is_reported_instead_of_crashing():
 
 
 def test_the_json_catalog_is_read_as_a_flat_list():
-    """`list --format json` writes a list, not sections -- `init --from` takes it too."""
+    """`list --format json` пишет список, а не разделы, и `init --from` принимает его тоже."""
     import json
 
     from tg_export.catalog import chats_from_catalog, format_catalog_json
