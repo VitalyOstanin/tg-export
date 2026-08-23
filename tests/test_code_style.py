@@ -647,3 +647,31 @@ def test_models_do_not_keep_types_nobody_builds():
         f"типы удалены как неиспользуемые: {sorted(declared)} -- если выгрузка контактов и сессий "
         "переводится на типы, вернуть их вместе с потребителем в exporter.py"
     )
+
+
+def test_no_module_imports_the_same_name_twice():
+    """`import yaml` внутри функции поверх модульного импорта ничего не откладывает.
+
+    Модуль уже загружен, а соседние отложенные `from tg_export...` создают
+    впечатление, что зависимость уводится в тело по той же причине, что и они.
+    """
+    offenders = []
+    for path in sorted(PROJECT.glob("**/*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        top = {
+            alias.asname or alias.name.split(".")[0]
+            for node in tree.body
+            if isinstance(node, ast.Import | ast.ImportFrom)
+            for alias in node.names
+        }
+        for function in ast.walk(tree):
+            if not isinstance(function, ast.FunctionDef | ast.AsyncFunctionDef):
+                continue
+            for node in ast.walk(function):
+                if not isinstance(node, ast.Import | ast.ImportFrom):
+                    continue
+                repeated = {a.asname or a.name.split(".")[0] for a in node.names} & top
+                if repeated:
+                    offenders.append(f"{path.relative_to(PROJECT)}:{node.lineno} {sorted(repeated)}")
+
+    assert not offenders, f"имя импортировано и в шапке, и внутри функции: {offenders}"

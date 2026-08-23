@@ -633,3 +633,50 @@ def test_month_reader_serves_the_whole_chat_from_one_connection(tmp_path):
     assert [m.id for m in january] == [1]
     assert [m.id for m in february] == [2]
     assert len(opened) == 1, f"на чат должно открываться одно соединение, открыто: {opened}"
+
+
+@pytest.mark.asyncio
+async def test_caching_the_same_chat_twice_refreshes_every_column(tmp_path):
+    """Значения UPSERT передавались двумя одинаковыми наборами по одиннадцать штук.
+
+    Добавление колонки требовало четырёх согласованных правок запроса, а
+    рассинхронизация давала либо отказ по числу параметров, либо тихую запись
+    не в ту колонку. Обновление идёт через `excluded`, набор значений один.
+    """
+    from tg_export.state import ExportState
+
+    async with ExportState(tmp_path / "state.db") as state:
+        await state.cache_catalog(
+            chat_id=7,
+            name="Before",
+            chat_type="personal",
+            folder=None,
+            members_count=None,
+            messages_count=1,
+            last_message_date=None,
+            is_left=False,
+            is_archived=False,
+            is_forum=False,
+            is_monoforum=False,
+        )
+        await state.cache_catalog(
+            chat_id=7,
+            name="After",
+            chat_type="group",
+            folder="Work",
+            members_count=42,
+            messages_count=9,
+            last_message_date=datetime(2024, 3, 1, 12, 0),
+            is_left=True,
+            is_archived=True,
+            is_forum=True,
+            is_monoforum=True,
+        )
+        async with state.db.execute(
+            "SELECT name, type, folder, members_count, messages_count, is_left, "
+            "is_archived, is_forum, is_monoforum FROM catalog_cache WHERE chat_id=7"
+        ) as cur:
+            row = await cur.fetchone()
+
+    assert row is not None
+    assert tuple(row) == ("After", "group", "Work", 42, 9, 1, 1, 1, 1)

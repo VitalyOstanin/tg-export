@@ -118,6 +118,27 @@ def show_config(verbose):
             _show_account_config(config_path)
 
 
+def _date_range(date_from, date_to) -> str:
+    """Подпись диапазона дат: одна форма для defaults и для правил."""
+    return f"{date_from or '...'} — {date_to or '...'}"
+
+
+def _rule_summary(rule) -> str:
+    """Подпись правила: чем оно отличается от defaults.
+
+    Блок был скопирован для `type_rules` и для `chats`, и копии успели
+    разойтись оформлением диапазона дат.
+    """
+    if rule.skip:
+        return "skip"
+    parts = []
+    if rule.media:
+        parts.append(f"media={rule.media.types}")
+    if rule.date_from or rule.date_to:
+        parts.append(f"dates={_date_range(rule.date_from, rule.date_to)}")
+    return ", ".join(parts) or "defaults"
+
+
 def _show_account_config(config_path):
     """Show per-account config details (verbose mode)."""
     from tg_export.config import load_config
@@ -127,24 +148,16 @@ def _show_account_config(config_path):
     click.echo(f"    output.path: {cfg.output.path}")
     click.echo(f"    output.format: {cfg.output.format}")
 
-    d = cfg.defaults
-    click.echo(f"    defaults.media.types: {d.media.types}")
-    click.echo(f"    defaults.media.max_file_size: {d.media.max_file_size_bytes // 1024**2}MB")
-    if d.date_from or d.date_to:
-        click.echo(f"    defaults.date_range: {d.date_from or '...'} — {d.date_to or '...'}")
+    defaults = cfg.defaults
+    click.echo(f"    defaults.media.types: {defaults.media.types}")
+    click.echo(f"    defaults.media.max_file_size: {defaults.media.max_file_size_bytes // 1024**2}MB")
+    if defaults.date_from or defaults.date_to:
+        click.echo(f"    defaults.date_range: {_date_range(defaults.date_from, defaults.date_to)}")
 
     if cfg.type_rules:
         click.echo("    type_rules:")
         for key, rule in cfg.type_rules.items():
-            if rule.skip:
-                click.echo(f"      {key}: skip")
-            else:
-                parts = []
-                if rule.media:
-                    parts.append(f"media={rule.media.types}")
-                if rule.date_from or rule.date_to:
-                    parts.append(f"dates={rule.date_from or '...'}—{rule.date_to or '...'}")
-                click.echo(f"      {key}: {', '.join(parts) or 'defaults'}")
+            click.echo(f"      {key}: {_rule_summary(rule)}")
 
     if cfg.folders:
         click.echo("    folders:")
@@ -160,15 +173,7 @@ def _show_account_config(config_path):
         click.echo(f"    chats: {len(cfg.chats)} rules")
         for rule in cfg.chats:
             ident = f"id={rule.id}" if rule.id else f"name={rule.name}"
-            if rule.skip:
-                click.echo(f"      {ident}: skip")
-            else:
-                parts = []
-                if rule.media:
-                    parts.append(f"media={rule.media.types}")
-                if rule.date_from or rule.date_to:
-                    parts.append(f"dates={rule.date_from or '...'}—{rule.date_to or '...'}")
-                click.echo(f"      {ident}: {', '.join(parts) or 'defaults'}")
+            click.echo(f"      {ident}: {_rule_summary(rule)}")
 
     click.echo(f"    unmatched: {cfg.unmatched_action}")
     click.echo(f"    left_channels: {cfg.left_channels_action}")
@@ -273,8 +278,6 @@ async def _init_config(account, from_catalog, output, force=False):
 
 def _chats_from_catalog_file(path: Path):
     """Read the chat list out of a catalog written by ``tg chats --format yaml``."""
-    import yaml
-
     from tg_export.catalog import chats_from_catalog
     from tg_export.config import ConfigError
 

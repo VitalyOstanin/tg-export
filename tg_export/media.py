@@ -33,6 +33,12 @@ logger = logging.getLogger(__name__)
 _MAX_DOWNLOAD_ATTEMPTS = 3
 _RETRY_JITTER_SECONDS = 1.0
 
+# Width of the file name in the progress table. The tail is replaced by an
+# ellipsis, so the cut is computed from the width instead of being a second
+# number to keep in step with it.
+_PROGRESS_NAME_WIDTH = 40
+_PROGRESS_NAME_ELLIPSIS = "..."
+
 # Telegram answers a transient server-side failure with an RPC error, not with
 # a socket error: ServerError and TimedOutError derive from RPCError, so the
 # network-only tuple below never covered them and a single one of them lost the
@@ -124,6 +130,14 @@ def _link_or_copy(src: Path, dst: Path) -> bool:
             return True
         except OSError:
             return False
+
+
+def _progress_name(filename: str) -> str:
+    """Fit a file name into the width of the progress table."""
+    if len(filename) <= _PROGRESS_NAME_WIDTH:
+        return filename
+    keep = _PROGRESS_NAME_WIDTH - len(_PROGRESS_NAME_ELLIPSIS)
+    return filename[:keep] + _PROGRESS_NAME_ELLIPSIS
 
 
 def _size_or_none(path: Path) -> int | None:
@@ -640,9 +654,7 @@ class MediaDownloader:
                 ext = getattr(tl_message.file, "ext", "") or ""
             type_str = media.type.value if media else "file"
             filename = f"{type_str}_{msg_id}{ext}"
-        # Truncate long filenames for progress display
-        if len(filename) > 40:
-            filename = filename[:37] + "..."
+        filename = _progress_name(filename)
 
         dl_progress = DownloadProgress(filename=filename)
         with self._active_lock:

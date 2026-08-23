@@ -52,6 +52,12 @@ DEFAULT_MIN_FREE_SPACE = "20GB"
 # How many times the two-factor password is asked before the login is given up.
 _PASSWORD_ATTEMPTS = 3
 
+# Proxy defaults, matching what docs/configuration.md and config.example.yaml
+# describe: a SOCKS5 client on the loopback interface.
+_DEFAULT_PROXY_TYPE = "socks5"
+_DEFAULT_PROXY_HOST = "127.0.0.1"
+_DEFAULT_PROXY_PORT = 1080
+
 
 def _notify(message: str) -> None:
     """Print a login status line to stderr.
@@ -225,14 +231,14 @@ class AccountManager:
             )
         if not proxy_raw:
             return None
-        proxy_type = proxy_raw.get("type", "socks5")
+        proxy_type = proxy_raw.get("type", _DEFAULT_PROXY_TYPE)
         valid_types = ("socks5", "socks4", "http")
         if proxy_type not in valid_types:
             raise ConfigError(f"Unknown proxy type: {proxy_type!r}, expected one of {valid_types}")
-        port = proxy_raw.get("port", 1080)
+        port = proxy_raw.get("port", _DEFAULT_PROXY_PORT)
         if isinstance(port, bool) or not isinstance(port, int):
             raise ConfigError(f"proxy.port must be an integer, got {port!r}")
-        host = proxy_raw.get("host", "127.0.0.1")
+        host = proxy_raw.get("host", _DEFAULT_PROXY_HOST)
         if not isinstance(host, str) or not host:
             raise ConfigError(f"proxy.host must be a non-empty string, got {host!r}")
         return (

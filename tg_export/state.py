@@ -1024,21 +1024,13 @@ class ExportState:
                 last_message_date, is_left, is_archived, is_forum, is_monoforum, updated_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(chat_id) DO UPDATE SET
-                   name=?, type=?, folder=?, members_count=?, messages_count=?,
-                   last_message_date=?, is_left=?, is_archived=?, is_forum=?, is_monoforum=?, updated_at=?""",
+                   name=excluded.name, type=excluded.type, folder=excluded.folder,
+                   members_count=excluded.members_count, messages_count=excluded.messages_count,
+                   last_message_date=excluded.last_message_date, is_left=excluded.is_left,
+                   is_archived=excluded.is_archived, is_forum=excluded.is_forum,
+                   is_monoforum=excluded.is_monoforum, updated_at=excluded.updated_at""",
             (
                 chat_id,
-                name,
-                chat_type,
-                folder,
-                members_count,
-                messages_count,
-                last_message_date,
-                int(is_left),
-                int(is_archived),
-                int(is_forum),
-                int(is_monoforum),
-                now,
                 name,
                 chat_type,
                 folder,

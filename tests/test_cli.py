@@ -584,3 +584,23 @@ def test_help_never_names_a_command_that_does_not_exist():
                     offenders.append(f"{' '.join(path) or 'tg-export'}: {quote!r}")
 
     assert not offenders, f"справка называет несуществующие команды: {offenders}"
+
+
+def test_a_date_range_reads_the_same_in_defaults_and_in_a_rule():
+    """Блок описания правила был скопирован, и копии разошлись оформлением.
+
+    `defaults.date_range` печатался с пробелами вокруг тире, правила чатов и
+    типов -- без них, хотя показывают одно и то же.
+    """
+    from types import SimpleNamespace
+
+    from tg_export.cli.export import _date_range, _rule_summary
+
+    rule = SimpleNamespace(skip=False, media=None, date_from="2024-01-01", date_to="2024-02-01")
+
+    assert _rule_summary(rule) == f"dates={_date_range('2024-01-01', '2024-02-01')}"
+    assert _date_range("2024-01-01", None) == "2024-01-01 — ..."
+    assert _rule_summary(SimpleNamespace(skip=True)) == "skip"
+    assert _rule_summary(SimpleNamespace(skip=False, media=None, date_from=None, date_to=None)) == (
+        "defaults"
+    )

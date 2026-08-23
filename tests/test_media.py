@@ -335,3 +335,19 @@ async def test_two_files_with_the_same_name_do_not_land_on_one_path(tmp_path, mo
     assert paths[0] != paths[1], "оба файла записаны по одному пути"
     assert paths[0].read_bytes() == b"first"
     assert paths[1].read_bytes() == b"second file"
+
+
+def test_a_long_name_fits_the_progress_column():
+    """Ширина и срез были двумя несвязанными числами: 40 и 37.
+
+    Правка одного из них делала строку длиннее колонки. Срез вычисляется из
+    ширины, а тест сверяется с константой, а не с литералом.
+    """
+    from tg_export.media import _PROGRESS_NAME_WIDTH, _progress_name
+
+    short = "photo_1.jpg"
+    assert _progress_name(short) == short
+
+    fitted = _progress_name("x" * 100)
+    assert len(fitted) == _PROGRESS_NAME_WIDTH
+    assert fitted.endswith("...")

@@ -22,10 +22,13 @@ CONTRIBUTING.md for what each module owns.
 Imports of project modules are deliberately made inside the command bodies
 rather than at module level: the entry point is a console script, and
 importing telethon, jinja2 and the exporter on every ``--help`` costs about a
-second of startup. Keep them where they are unless the module is needed by
-the group definitions themselves. The standard library is the other way round
--- it is already loaded by the interpreter, so it belongs in the header of the
-module; a test enforces that boundary.
+second of startup. Those three are what the rule is about; click, yaml and
+aiosqlite are imported in module headers and therefore load with the package
+regardless. Keep the deferred ones where they are unless the module is needed
+by the group definitions themselves. The standard library is the other way
+round -- it is already loaded by the interpreter, so it belongs in the header
+of the module; a test enforces that boundary, and another one refuses a name
+imported both in the header and inside a function.
 
 The names re-exported below are what the rest of the project and the tests
 address as ``tg_export.cli.<name>``; each one is owned by the module it comes
