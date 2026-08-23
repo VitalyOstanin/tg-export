@@ -68,11 +68,17 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
-# Python 3.12+ removed default datetime adapters from sqlite3.
-# Why module-level: register_* are global to the process; once loaded, all
-# sqlite3 connections in tg-export get correct datetime handling.
+# Python 3.12+ removed the default datetime adapter from sqlite3, so writing a
+# datetime without this line stores a repr and fails on read.
+# Why module-level: register_adapter is global to the process; once this module
+# is loaded, every sqlite3 connection of tg-export writes timestamps the same.
+#
+# No register_converter counterpart: a converter only runs on a connection
+# opened with detect_types=PARSE_DECLTYPES, and none of the connections here
+# does that. Registering one anyway suggested that TIMESTAMP columns come back
+# as datetime, while they are read as text and parsed explicitly where needed
+# (see _row_to_message).
 sqlite3.register_adapter(datetime, lambda dt: dt.isoformat())
-sqlite3.register_converter("timestamp", lambda b: datetime.fromisoformat(b.decode()))
 
 
 def _plain_text(text_parts: list[TextPart]) -> str:

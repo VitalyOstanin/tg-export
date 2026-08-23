@@ -14,7 +14,7 @@ from collections import deque
 from dataclasses import dataclass, field, fields
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, ClassVar, cast
 
 from rich.live import Live
 from rich.markup import escape
@@ -41,7 +41,7 @@ from tg_export.console import console
 from tg_export.converter import convert_message
 from tg_export.format import format_size, format_speed
 from tg_export.html.renderer import HtmlRenderer
-from tg_export.media import DiskSpaceError, DownloadProgress, MediaDownloader
+from tg_export.media import DiskSpaceError, DownloadProgress, DownloadStatus, MediaDownloader
 from tg_export.models import Chat, ForumTopic, Message
 from tg_export.state import ExportState
 
@@ -1235,34 +1235,42 @@ class Exporter:
             local_path, status = await self.downloader.download(tl_msg, msg.media, chat_dir, chat_id=chat_id)
             if local_path and msg.media.file:
                 msg.media.file.local_path = str(local_path)
-            if status == "downloaded":
-                stats.files_downloaded += 1
-                if local_path and local_path.exists():
-                    stats.data_size += local_path.stat().st_size
-            elif status == "existing":
-                stats.files_existing += 1
-            elif status == "reused_chat":
-                stats.files_reused_chat += 1
-                if local_path and local_path.exists():
-                    stats.data_size += local_path.stat().st_size
-            elif status == "reused_tdesktop":
-                stats.files_reused_tdesktop += 1
-                if local_path and local_path.exists():
-                    stats.data_size += local_path.stat().st_size
-            elif status == "reused_sibling":
-                stats.files_reused_sibling += 1
-                if local_path and local_path.exists():
-                    stats.data_size += local_path.stat().st_size
-            elif status == "skipped_by_size":
-                stats.files_skipped_by_size += 1
-            elif status == "skipped_by_type":
-                stats.files_skipped_by_type += 1
+            self._count_download(status, local_path, stats)
         except Exception as e:
             # Without this line the count in the summary was all that survived:
             # the exception never reached logging, so no log level could
             # recover what had failed and why.
             logger.warning("Media error: chat_id=%s msg_id=%s", chat_id, msg.id, exc_info=True)
             stats.errors.append(f"Media error msg {msg.id} (chat {chat_id}): {describe_error(e)}")
+
+    # Which counter each download outcome feeds, and whether the file it left
+    # on disk adds to the exported volume. A dispatch table rather than a chain
+    # of elif: an outcome added to DownloadStatus and forgotten here is
+    # reported instead of quietly making the summary disagree with the disk.
+    _DOWNLOAD_COUNTERS: ClassVar[dict[DownloadStatus, tuple[str, bool]]] = {
+        DownloadStatus.downloaded: ("files_downloaded", True),
+        DownloadStatus.existing: ("files_existing", False),
+        DownloadStatus.reused_chat: ("files_reused_chat", True),
+        DownloadStatus.reused_tdesktop: ("files_reused_tdesktop", True),
+        DownloadStatus.reused_sibling: ("files_reused_sibling", True),
+        DownloadStatus.skipped_by_size: ("files_skipped_by_size", False),
+        DownloadStatus.skipped_by_type: ("files_skipped_by_type", False),
+        # no_file means there was nothing to download -- no counter of its own.
+        DownloadStatus.no_file: ("", False),
+    }
+
+    @classmethod
+    def _count_download(cls, status: str, local_path: Path | None, stats: ExportStats) -> None:
+        """Add one finished download to the statistics of the run."""
+        entry = cls._DOWNLOAD_COUNTERS.get(DownloadStatus(status)) if status in DownloadStatus else None
+        if entry is None:
+            logger.warning("unknown download status %r: the file is not counted in the summary", status)
+            return
+        counter, counts_towards_volume = entry
+        if counter:
+            setattr(stats, counter, getattr(stats, counter) + 1)
+        if counts_towards_volume and local_path and local_path.exists():
+            stats.data_size += local_path.stat().st_size
 
     async def export_global_data(self):
         """Export personal_info, userpics, stories, contacts, sessions, etc."""

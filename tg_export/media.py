@@ -13,6 +13,7 @@ import tempfile
 import threading
 import time
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from urllib.parse import quote
 
@@ -73,18 +74,37 @@ MEDIA_SUBDIRS = {
 }
 
 
+class DownloadStatus(StrEnum):
+    """What happened to one media file.
+
+    A StrEnum rather than bare strings: the set of outcomes is what the caller
+    branches on, and until it was written down a new outcome could be added
+    here and silently ignored there. Values are unchanged, so what is stored in
+    the database and compared in tests stays the same.
+    """
+
+    downloaded = "downloaded"
+    existing = "existing"
+    reused_chat = "reused_chat"
+    reused_tdesktop = "reused_tdesktop"
+    reused_sibling = "reused_sibling"
+    skipped_by_type = "skipped_by_type"
+    skipped_by_size = "skipped_by_size"
+    no_file = "no_file"
+
+
 def media_subdir(media_type: MediaType) -> str:
     return MEDIA_SUBDIRS.get(media_type, "files")
 
 
-def check_skip_reason(media: Media, config: MediaConfig) -> str | None:
+def check_skip_reason(media: Media, config: MediaConfig) -> DownloadStatus | None:
     """Return skip reason or None if file should be downloaded."""
     if media.file is None:
-        return "no_file"
+        return DownloadStatus.no_file
     if media.type.value not in config.types and "all" not in config.types:
-        return "skipped_by_type"
+        return DownloadStatus.skipped_by_type
     if media.file.size > config.max_file_size_bytes:
-        return "skipped_by_size"
+        return DownloadStatus.skipped_by_size
     return None
 
 
@@ -248,12 +268,11 @@ class MediaDownloader:
 
     async def download(
         self, tl_message, media: Media, chat_dir: Path, chat_id: int = 0
-    ) -> tuple[Path | None, str]:
+    ) -> tuple[Path | None, DownloadStatus]:
         """Download media file if needed. Returns (local_path, status).
 
         chat_id: canonical chat ID (positive, as used in messages table).
-        status: "downloaded", "existing", "reused_chat", "reused_tdesktop",
-                "reused_sibling", "skipped_by_type", "skipped_by_size", "no_file"
+        The outcomes are the members of DownloadStatus.
         """
         skip = check_skip_reason(media, self.config)
         if skip:
@@ -276,26 +295,26 @@ class MediaDownloader:
         if media.file:
             existing = await self.state.get_file(media.file.id, chat_id)
             if existing and existing["status"] == "done":
-                return Path(existing["local_path"]), "existing"
+                return Path(existing["local_path"]), DownloadStatus.existing
 
         # Try to hardlink from another chat within this account
         if media.file:
             linked = await self._try_link_intra_account(media, chat_dir, chat_id)
             if linked:
                 await self._register(tl_message, media, linked, chat_id)
-                return linked, "reused_chat"
+                return linked, DownloadStatus.reused_chat
 
         # Try to copy from tdesktop export instead of downloading
         imported = await self._try_import_tdesktop(tl_message, media, chat_dir)
         if imported:
             await self._register(tl_message, media, imported, chat_id)
-            return imported, "reused_tdesktop"
+            return imported, DownloadStatus.reused_tdesktop
 
         # Try to hardlink from sibling account export
         linked = await self._try_link_sibling(media, chat_dir)
         if linked:
             await self._register(tl_message, media, linked, chat_id)
-            return linked, "reused_sibling"
+            return linked, DownloadStatus.reused_sibling
 
         # Disk space check
         chat_dir.mkdir(parents=True, exist_ok=True)
@@ -318,12 +337,12 @@ class MediaDownloader:
                     path = await self._download_with_retry(tl_message, Path(staging), media)
 
                 if path is None:
-                    return None, "no_file"
+                    return None, DownloadStatus.no_file
 
                 local_path = self._move_into_place(Path(path), target_dir)
 
             await self._register(tl_message, media, local_path, chat_id)
-            return local_path, "downloaded"
+            return local_path, DownloadStatus.downloaded
         except _FileTooLargeError as e:
             logger.debug(
                 "file too large (real size %d > limit %d), msg %d",
@@ -331,8 +350,8 @@ class MediaDownloader:
                 self.config.max_file_size_bytes,
                 tl_message.id,
             )
-            await self._register_skip(tl_message, media, chat_id, "skipped_by_size")
-            return None, "skipped_by_size"
+            await self._register_skip(tl_message, media, chat_id, DownloadStatus.skipped_by_size)
+            return None, DownloadStatus.skipped_by_size
 
     def _has_free_space(self, path: Path) -> bool:
         """Disk space check, asked at most once per interval.
@@ -635,7 +654,11 @@ class MediaDownloader:
                         delay,
                     )
                     await asyncio.sleep(delay)
-            return None
+            # Unreachable while the attempt limit is positive: every iteration
+            # either returns the downloaded path or raises on the last attempt.
+            # The line exists so that a limit accidentally set to zero fails
+            # loudly instead of returning "no file" for every media item.
+            raise AssertionError(f"download attempt limit is not positive: {_MAX_DOWNLOAD_ATTEMPTS}")
         finally:
             with self._active_lock:
                 self.active_downloads.pop(msg_id, None)

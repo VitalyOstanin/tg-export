@@ -189,3 +189,37 @@ async def test_message_count_is_recounted_only_when_something_was_written():
     stats.messages_exported += 3
     assert await exporter._chat_message_count(10, stats) == 999
     state.count_messages.assert_awaited_once_with(10)
+
+
+def test_an_unknown_download_status_is_reported_not_swallowed(caplog):
+    """Исход загрузки, не описанный в таблице счётчиков, обязан быть заметен.
+
+    Раньше статусы разбирались цепочкой elif без завершающей ветки: новый исход
+    в MediaDownloader.download проходил мимо статистики, и сводка молча
+    расходилась с тем, что лежит на диске.
+    """
+    import logging
+
+    from tg_export.exporter import ExportStats
+
+    stats = ExportStats()
+    with caplog.at_level(logging.WARNING):
+        Exporter._count_download("teleported", None, stats)
+
+    assert "teleported" in caplog.text
+    assert stats.files_downloaded == 0
+
+
+def test_every_download_status_has_a_place_in_the_summary():
+    """Каждый член DownloadStatus описан в таблице счётчиков экспортёра."""
+    from tg_export.media import DownloadStatus
+
+    missing = [s for s in DownloadStatus if s not in Exporter._DOWNLOAD_COUNTERS]
+    assert not missing, f"исходы загрузки без места в сводке: {missing}"
+
+    from tg_export.exporter import ExportStats
+
+    counters = {name for name, _ in Exporter._DOWNLOAD_COUNTERS.values() if name}
+    stats = ExportStats()
+    unknown = [name for name in counters if not hasattr(stats, name)]
+    assert not unknown, f"счётчиков с такими именами в ExportStats нет: {unknown}"

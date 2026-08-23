@@ -263,7 +263,19 @@ def _chats_from_catalog_file(path: Path):
 
 
 def _get_dir_size(path: Path) -> int | None:
-    """Get directory size using du -sb (Linux) or du -sk fallback (BSD/macOS)."""
+    """Get directory size using du -sb (Linux) or du -sk fallback (BSD/macOS).
+
+    Why an external command rather than walking the tree in Python: an export
+    holds hundreds of thousands of files, and os.walk with a stat() per file
+    takes tens of seconds on a cold cache, whereas du does the same traversal
+    in C. The size is one line of the summary, so it is not worth that wait --
+    and when du is missing the line is simply dropped (None), which the caller
+    handles.
+
+    Why hard links matter here: files reused from a neighbouring export are
+    linked, not copied, and du counts each inode once -- the number reported is
+    the space actually taken, not the sum of file sizes.
+    """
     # Why "--": prevents paths starting with "-" from being parsed as flags.
     # Why fallback: BSD du has no -b; -sk returns KiB.
     for cmd in (["du", "-sb", "--", str(path)], ["du", "-sk", "--", str(path)]):
