@@ -1159,9 +1159,13 @@ async def _verify_files(account, config_override, output_override):
                     common._error(f"  [skip] msg {entry['msg_id']}: not found or no media")
                 elif outcome.result is RedownloadResult.nothing_downloaded:
                     common._error(f"  [fail] {entry['local_path']}")
-                elif outcome.result is not None:
+                elif outcome.result is RedownloadResult.replaced:
                     redownloaded += 1
                     common._diag(f"  [ok] {outcome.path}")
+                else:
+                    # An outcome added to the enum and left unhandled here: the
+                    # file stays broken, so it must not pass as re-downloaded.
+                    common._error(f"  [fail] {entry['local_path']}: unhandled outcome {outcome.result!r}")
 
             common._diag(f"\nRe-downloaded: {redownloaded}/{len(broken)}", essential=True)
             if redownloaded < len(broken):

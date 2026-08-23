@@ -325,3 +325,195 @@ async def test_a_stopped_pass_downloads_nothing(tmp_path):
     api.client.get_messages.assert_not_called()
     api.download_media.assert_not_called()
     assert existing.read_bytes() == b"partial"
+
+
+@pytest.mark.asyncio
+async def test_a_transient_failure_of_a_redownload_is_retried(tmp_path, monkeypatch):
+    """Перекачивание шло мимо политики повторов и теряло файл на первом обрыве.
+
+    Экспорт различает преходящие и непреходящие отказы и повторяет первые, а
+    починка вызывала транспорт напрямую: обрыв связи или ответ сервера об
+    ожидании превращали битый файл в отказ прохода, задача которого -- этот
+    файл восстановить.
+    """
+    from tg_export.verify import RedownloadResult, redownload_broken_file
+
+    monkeypatch.setattr("tg_export.media.asyncio.sleep", AsyncMock())
+
+    existing = tmp_path / "photo.jpg"
+    existing.write_bytes(b"partial")
+
+    attempts = []
+
+    async def flaky_download(tl_msg, target_dir, *args, **kwargs):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise ConnectionError("reset by peer")
+        path = Path(target_dir) / "photo.jpg"
+        path.write_bytes(b"whole")
+        return str(path)
+
+    api = MagicMock()
+    api.client.get_messages = AsyncMock(return_value=MagicMock(media=object()))
+    api.download_media = flaky_download
+    state = AsyncMock()
+
+    result, final = await redownload_broken_file(api, state, _entry(existing))
+
+    assert result is RedownloadResult.replaced
+    assert len(attempts) == 2, "преходящий отказ не был повторён"
+    assert final is not None and final.read_bytes() == b"whole"
+
+
+@pytest.mark.asyncio
+async def test_a_permanent_failure_of_a_redownload_is_not_retried(tmp_path, monkeypatch):
+    """Нехватка места отвечает одинаково на каждой попытке.
+
+    Повтор в этом случае стоит файлу полной паузы отката и превращает
+    заполненный диск в долгий холостой проход по каталогу.
+    """
+    import errno
+
+    from tg_export.verify import redownload_broken_file
+
+    monkeypatch.setattr("tg_export.media.asyncio.sleep", AsyncMock())
+
+    existing = tmp_path / "photo.jpg"
+    existing.write_bytes(b"partial")
+
+    attempts = []
+
+    async def full_disk(tl_msg, target_dir, *args, **kwargs):
+        attempts.append(1)
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    api = MagicMock()
+    api.client.get_messages = AsyncMock(return_value=MagicMock(media=object()))
+    api.download_media = full_disk
+    state = AsyncMock()
+
+    with pytest.raises(OSError):
+        await redownload_broken_file(api, state, _entry(existing))
+
+    assert len(attempts) == 1, "непреходящий отказ был повторён"
+
+
+@pytest.mark.asyncio
+async def test_a_failure_of_the_verify_phase_leaves_the_run_with_its_summary(tmp_path):
+    """Отказ фазы проверки уносил сводку, индекс и весь список ошибок прогона.
+
+    Соседняя фаза -- выгрузка общих данных -- свой отказ записывает в
+    `stats.errors`, потому что по этому списку считается код возврата. У
+    проверки такого обработчика не было: отказ базы или сети выходил из
+    `run` целиком, и многочасовой экспорт, уже записанный на диск, выглядел
+    как полностью упавшая команда.
+    """
+    from tg_export.exporter import Exporter
+
+    api = MagicMock()
+    state = MagicMock()
+    state.get_files_to_verify = AsyncMock(side_effect=RuntimeError("database is locked"))
+
+    config = MagicMock()
+    config.output.path = str(tmp_path / "out")
+    config.defaults.media.concurrent_downloads = 2
+
+    exporter = Exporter(  # pyright: ignore[reportArgumentType]
+        api=api,
+        state=state,
+        config=config,
+        renderer=MagicMock(),
+        downloader=MagicMock(),
+        account="acc",
+        quiet=True,
+    )
+
+    stats = await exporter.run(dry_run=True, verify=True, chat_list=[])
+
+    assert any("verify" in error for error in stats.errors), (
+        f"отказ фазы проверки не попал в список ошибок прогона: {stats.errors}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_outcome_is_not_counted_as_a_re_downloaded_file(tmp_path, monkeypatch):
+    """Последняя ветка разбора исходов проверяла «не None», а не член перечисления.
+
+    Перечисление исходов заведено ровно затем, чтобы новый исход нельзя было
+    добавить в одном месте и пропустить в другом; «не None» засчитывал бы
+    четвёртый исход в перекачанные -- молча, в обоих местах разбора.
+    """
+    from tg_export import verify as verify_module
+    from tg_export.exporter import Exporter, ExportStats
+
+    broken = tmp_path / "photo.jpg"
+    broken.write_bytes(b"partial")
+
+    async def unknown_outcome(*_args, **_kwargs):
+        return [verify_module.RedownloadOutcome(_entry(broken), result="still_broken")]  # pyright: ignore[reportArgumentType]
+
+    monkeypatch.setattr("tg_export.exporter.redownload_broken_files", unknown_outcome)
+
+    state = MagicMock()
+    state.get_files_to_verify = AsyncMock(return_value=[_entry(broken)])
+
+    config = MagicMock()
+    config.defaults.media.concurrent_downloads = 2
+
+    exporter = Exporter(  # pyright: ignore[reportArgumentType]
+        api=MagicMock(),
+        state=state,
+        config=config,
+        renderer=MagicMock(),
+        downloader=MagicMock(),
+        account="acc",
+        quiet=True,
+    )
+    stats = ExportStats()
+
+    await exporter._verify_files(stats)
+
+    assert stats.errors, "неизвестный исход перекачивания прошёл как успешный"
+
+
+@pytest.mark.asyncio
+async def test_the_verify_command_fails_when_a_file_stays_broken(tmp_path, monkeypatch):
+    """Справочник обещает код 1, когда файл починить не удалось.
+
+    Обещание держалось только кодом: команда `verify` не исполнялась ни одним
+    тестом, поэтому изменение исхода прохода не отразилось бы нигде.
+    """
+    import contextlib
+
+    from tg_export.cli import common as cli_common
+    from tg_export.cli import export as cli_export
+    from tg_export.errors import EXIT_FAILURE, EXIT_OK
+    from tg_export.verify import RedownloadOutcome, RedownloadResult
+
+    broken = tmp_path / "photo.jpg"
+    broken.write_bytes(b"partial")
+
+    state = MagicMock()
+    state.get_files_to_verify = AsyncMock(return_value=[_entry(broken)])
+
+    @contextlib.asynccontextmanager
+    async def fake_state(*_a, **_k):
+        yield state, tmp_path, "acc"
+
+    @contextlib.asynccontextmanager
+    async def fake_api(*_a, **_k):
+        yield MagicMock(), "acc"
+
+    monkeypatch.setattr(cli_common, "_opened_state", fake_state)
+    monkeypatch.setattr(cli_common, "_connected_api", fake_api)
+    monkeypatch.setattr(cli_common, "_resolve_output", lambda *_a, **_k: (None, MagicMock(), tmp_path))
+
+    outcome = RedownloadOutcome(_entry(broken), result=RedownloadResult.nothing_downloaded)
+    monkeypatch.setattr("tg_export.cli.export.redownload_broken_files", AsyncMock(return_value=[outcome]))
+
+    assert await cli_export._verify_files("acc", None, None) == EXIT_FAILURE
+
+    repaired = RedownloadOutcome(_entry(broken), result=RedownloadResult.replaced, path=broken)
+    monkeypatch.setattr("tg_export.cli.export.redownload_broken_files", AsyncMock(return_value=[repaired]))
+
+    assert await cli_export._verify_files("acc", None, None) == EXIT_OK

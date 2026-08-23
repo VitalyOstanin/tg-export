@@ -21,7 +21,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from tg_export.media import TargetRegistry
+from tg_export.media import TargetRegistry, download_with_retries
 from tg_export.models import FileStatus
 
 logger = logging.getLogger(__name__)
@@ -97,7 +97,12 @@ async def redownload_broken_file(
     # dir=target_dir keeps the staging area on the same filesystem, so the final
     # move is an atomic rename rather than a copy.
     with tempfile.TemporaryDirectory(dir=target_dir, prefix=STAGING_PREFIX) as staging:
-        downloaded = await api.download_media(tl_msg, Path(staging))
+        # The same retry policy the export downloads under: a dropped
+        # connection or a flood wait must not turn a file this pass exists to
+        # restore into a failure of the pass.
+        downloaded = await download_with_retries(
+            lambda: api.download_media(tl_msg, Path(staging)), msg_id=msg_id
+        )
         if not downloaded:
             return RedownloadResult.nothing_downloaded, None
 

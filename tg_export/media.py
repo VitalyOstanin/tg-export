@@ -362,6 +362,74 @@ class _FileTooLargeError(TgExportError):
         super().__init__(f"File too large: {size} bytes")
 
 
+async def download_with_retries(attempt_download, *, msg_id: int) -> str | None:
+    """Run one download, repeating the failures a repeat can change.
+
+    Both paths that fetch media -- the export and the re-download of a broken
+    file -- go through here, so what counts as transient, which `errno` values
+    a repeat cannot change, and how long a flood wait is worth waiting are
+    described once. The re-download used to call the transport directly, and a
+    dropped connection turned a file the pass exists to restore into a failure
+    of that pass.
+
+    `attempt_download` is called anew on every attempt and must carry its own
+    arguments; the download it starts is expected to leave nothing behind when
+    it fails, which staging directories give both callers.
+    """
+    for attempt in range(_MAX_DOWNLOAD_ATTEMPTS):
+        try:
+            return await attempt_download()
+        except _FileTooLargeError:
+            raise
+        except FloodWaitError as e:
+            if e.seconds > _MAX_FLOOD_WAIT_SECONDS or attempt == _MAX_DOWNLOAD_ATTEMPTS - 1:
+                logger.warning(
+                    "msg %d: flood wait of %ds, giving up on the file",
+                    msg_id,
+                    e.seconds,
+                    exc_info=True,
+                )
+                raise
+            logger.debug("msg %d: attempt %d failed, flood wait %ds", msg_id, attempt + 1, e.seconds)
+            await asyncio.sleep(e.seconds)
+        except _TRANSIENT_DOWNLOAD_ERRORS as e:
+            if isinstance(e, OSError) and e.errno in _PERMANENT_OS_ERRORS:
+                logger.debug(
+                    "msg %d: %s is not a failure a retry can change, giving up on the file",
+                    msg_id,
+                    errno.errorcode.get(e.errno, e.errno),
+                )
+                raise
+            if attempt == _MAX_DOWNLOAD_ATTEMPTS - 1:
+                # The exception itself travels on to the caller; this line is
+                # what ties the final failure to the attempts that led to it,
+                # which were silent before.
+                logger.warning(
+                    "msg %d: download failed after %d attempts",
+                    msg_id,
+                    _MAX_DOWNLOAD_ATTEMPTS,
+                    exc_info=True,
+                )
+                raise
+            # Exponential backoff with jitter to desynchronise retries of many
+            # parallel downloads after a shared network blip.
+            delay = 2**attempt + random.uniform(0, _RETRY_JITTER_SECONDS)
+            logger.debug(
+                "msg %d: attempt %d failed (%s: %s), retrying in %.1fs",
+                msg_id,
+                attempt + 1,
+                type(e).__name__,
+                e,
+                delay,
+            )
+            await asyncio.sleep(delay)
+    # Unreachable while the attempt limit is positive: every iteration either
+    # returns the downloaded path or raises on the last attempt. The line
+    # exists so that a limit accidentally set to zero fails loudly instead of
+    # returning "no file" for every media item.
+    raise AssertionError(f"download attempt limit is not positive: {_MAX_DOWNLOAD_ATTEMPTS}")
+
+
 @dataclass(frozen=True)
 class DownloadProgress:
     """What one file download has transferred so far.
@@ -783,58 +851,10 @@ class MediaDownloader:
                 raise _FileTooLargeError(total)
 
         try:
-            for attempt in range(_MAX_DOWNLOAD_ATTEMPTS):
-                try:
-                    return await self.api.download_media(tl_message, target_dir, progress_cb=_progress_cb)
-                except _FileTooLargeError:
-                    raise
-                except FloodWaitError as e:
-                    if e.seconds > _MAX_FLOOD_WAIT_SECONDS or attempt == _MAX_DOWNLOAD_ATTEMPTS - 1:
-                        logger.warning(
-                            "msg %d: flood wait of %ds, giving up on the file",
-                            msg_id,
-                            e.seconds,
-                            exc_info=True,
-                        )
-                        raise
-                    logger.debug("msg %d: attempt %d failed, flood wait %ds", msg_id, attempt + 1, e.seconds)
-                    await asyncio.sleep(e.seconds)
-                except _TRANSIENT_DOWNLOAD_ERRORS as e:
-                    if isinstance(e, OSError) and e.errno in _PERMANENT_OS_ERRORS:
-                        logger.debug(
-                            "msg %d: %s is not a failure a retry can change, giving up on the file",
-                            msg_id,
-                            errno.errorcode.get(e.errno, e.errno),
-                        )
-                        raise
-                    if attempt == _MAX_DOWNLOAD_ATTEMPTS - 1:
-                        # The exception itself travels on to the caller; this
-                        # line is what ties the final failure to the attempts
-                        # that led to it, which were silent before.
-                        logger.warning(
-                            "msg %d: download failed after %d attempts",
-                            msg_id,
-                            _MAX_DOWNLOAD_ATTEMPTS,
-                            exc_info=True,
-                        )
-                        raise
-                    # Exponential backoff with jitter to desynchronise retries
-                    # of many parallel downloads after a shared network blip.
-                    delay = 2**attempt + random.uniform(0, _RETRY_JITTER_SECONDS)
-                    logger.debug(
-                        "msg %d: attempt %d failed (%s: %s), retrying in %.1fs",
-                        msg_id,
-                        attempt + 1,
-                        type(e).__name__,
-                        e,
-                        delay,
-                    )
-                    await asyncio.sleep(delay)
-            # Unreachable while the attempt limit is positive: every iteration
-            # either returns the downloaded path or raises on the last attempt.
-            # The line exists so that a limit accidentally set to zero fails
-            # loudly instead of returning "no file" for every media item.
-            raise AssertionError(f"download attempt limit is not positive: {_MAX_DOWNLOAD_ATTEMPTS}")
+            return await download_with_retries(
+                lambda: self.api.download_media(tl_message, target_dir, progress_cb=_progress_cb),
+                msg_id=msg_id,
+            )
         finally:
             with self._active_lock:
                 self.active_downloads.pop(msg_id, None)

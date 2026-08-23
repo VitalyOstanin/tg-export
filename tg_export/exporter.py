@@ -1006,7 +1006,7 @@ class Exporter:
             await self._run_global_data_phase(stats)
 
         if verify and not self._force_shutdown:
-            await self._verify_files(stats)
+            await self._run_verify_phase(stats)
 
         return stats
 
@@ -1432,6 +1432,22 @@ class Exporter:
             logger.warning("Failed to export global data: %s", e, exc_info=True)
             stats.errors.append(f"global data: {describe_error(e)}")
 
+    async def _run_verify_phase(self, stats: ExportStats) -> None:
+        """Run the verification phase, recording a failure of the phase itself.
+
+        Failures of single files are handled inside `_verify_files`; this catch
+        is for what happens around them -- the query for broken files, the
+        request for their messages -- and it records the failure the same way
+        the global-data phase does, because the exit code is counted from
+        stats.errors. Letting it out of `run` instead cost the caller the
+        summary, the index page and the whole error list of the run.
+        """
+        try:
+            await self._verify_files(stats)
+        except Exception as e:
+            logger.warning("Failed to verify files: %s", e, exc_info=True)
+            stats.errors.append(f"verify: {describe_error(e)}")
+
     def _global_data_sections(self) -> tuple[tuple[bool, Callable[[], Awaitable[None]], str], ...]:
         """The global-data phase: what is enabled, what exports it, how it is named.
 
@@ -1766,8 +1782,13 @@ class Exporter:
                 )
             elif outcome.result is RedownloadResult.nothing_downloaded:
                 stats.errors.append(f"Re-download failed: {local_path}")
-            elif outcome.result is not None:
+            elif outcome.result is RedownloadResult.replaced:
                 redownloaded += 1
+            else:
+                # Anything else is an outcome added to the enum and left
+                # unhandled here; counting it as re-downloaded would report a
+                # file that is still broken as repaired.
+                stats.errors.append(f"Unhandled re-download outcome {outcome.result!r}: {local_path}")
 
         if redownloaded:
             self._status_print(f"[green]Re-downloaded {redownloaded}/{len(broken)} files[/]")
