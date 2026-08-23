@@ -32,10 +32,14 @@ classifiers = [
     "Topic :: System :: Archiving :: Backup",
 ]
 dependencies = [
+    # Lower bound: 1.43.0 brought session schema v8, which FixedSQLiteSession
+    # works around, and the python-socks check the proxy extra relies on --
+    # before it a proxy without python-socks was served by PySocks instead, and
+    # the contract test of the session schema is red.
     # Upper bound: Telethon v2 rewrites the session layer, and SQLiteSession --
     # which FixedSQLiteSession subclasses to work around the column-order bug --
     # does not exist there in its current form.
-    "telethon>=1.36,<2",
+    "telethon>=1.43,<2",
     "pyyaml>=6.0",
     "aiosqlite>=0.20",
     # 3.1.6 is the first release without the five sandbox-escape and
@@ -105,39 +109,41 @@ source = ["tg_export"]
 fail_under = 50
 
 # Per-module floors: the project-wide threshold on its own hides a large file
-# falling behind, carried by well covered small ones. The values sit slightly
-# below the current numbers, to catch a regression rather than to demand
-# growth. Checked by scripts/coverage_gate.py after a run with --cov.
+# falling behind, carried by well covered small ones. Each floor sits five
+# points below the number the module actually reaches, so a regression fails
+# the run while ordinary variation between matrix entries does not, and no
+# floor is ever lowered. Revisit the table when a module gains coverage worth
+# holding on to. Checked by scripts/coverage_gate.py after a run with --cov.
 [tool.tg-export.coverage-floor]
 "tg_export/__init__.py" = 100
 "tg_export/html/__init__.py" = 100
 "tg_export/__main__.py" = 0
-"tg_export/api.py" = 50
-"tg_export/auth.py" = 50
-"tg_export/catalog.py" = 40
+"tg_export/api.py" = 68
+"tg_export/auth.py" = 85
+"tg_export/catalog.py" = 77
 "tg_export/cli/__init__.py" = 90
-"tg_export/cli/account.py" = 50
-"tg_export/cli/auth.py" = 55
+"tg_export/cli/account.py" = 55
+"tg_export/cli/auth.py" = 59
 "tg_export/cli/common.py" = 85
-"tg_export/cli/export.py" = 45
-"tg_export/cli/state.py" = 45
-"tg_export/cli/takeout.py" = 70
-"tg_export/cli/tg.py" = 60
-"tg_export/config.py" = 85
+"tg_export/cli/export.py" = 65
+"tg_export/cli/state.py" = 50
+"tg_export/cli/takeout.py" = 76
+"tg_export/cli/tg.py" = 74
+"tg_export/config.py" = 92
 "tg_export/console.py" = 100
-"tg_export/converter.py" = 30
+"tg_export/converter.py" = 43
 "tg_export/errors.py" = 100
-"tg_export/exporter.py" = 45
-"tg_export/format.py" = 50
-"tg_export/html/renderer.py" = 65
-"tg_export/importer.py" = 70
-"tg_export/locking.py" = 85
-"tg_export/privacy.py" = 85
-"tg_export/media.py" = 50
-"tg_export/models.py" = 85
-"tg_export/session.py" = 80
-"tg_export/state.py" = 65
-"tg_export/verify.py" = 90
+"tg_export/exporter.py" = 70
+"tg_export/format.py" = 90
+"tg_export/html/renderer.py" = 72
+"tg_export/importer.py" = 72
+"tg_export/locking.py" = 90
+"tg_export/privacy.py" = 87
+"tg_export/media.py" = 73
+"tg_export/models.py" = 89
+"tg_export/session.py" = 82
+"tg_export/state.py" = 84
+"tg_export/verify.py" = 91
 
 [tool.ruff]
 target-version = "py311"

@@ -549,7 +549,7 @@ requires-dist = [
     { name = "python-socks", extras = ["asyncio"], marker = "extra == 'proxy'", specifier = ">=2.0,<3" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "rich", specifier = ">=15.0" },
-    { name = "telethon", specifier = ">=1.36,<2" },
+    { name = "telethon", specifier = ">=1.43,<2" },
 ]
 provides-extras = ["proxy"]
 
