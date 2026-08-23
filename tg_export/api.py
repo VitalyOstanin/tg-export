@@ -52,10 +52,6 @@ class TgApi:
                     "`pip install 'tg-export[proxy]'` when tg-export comes from PyPI."
                 )
             kwargs["proxy"] = proxy
-        session = FixedSQLiteSession(str(session_path))
-        self.client = TelegramClient(session, api_id, api_hash, **kwargs)
-        self.takeout = None
-        self._takeout_stack: contextlib.AsyncExitStack | None = None
         # The state-database lock covers an output directory, not an account,
         # so it never stopped two processes from using one session file --
         # `tg send` next to a running export, or a second export with a
@@ -66,6 +62,22 @@ class TgApi:
             f"Telegram session {session_path} is in use by another tg-export process. "
             f"Wait for it to finish, or use a different account.",
         )
+        # Taken here rather than in connect(): building the session writes to
+        # the file three times over -- clearing takeout_id and tmp_auth_key,
+        # rewriting the whole sessions row from Telethon's in-memory copy, then
+        # dropping the backup table. Under the old order those writes happened
+        # before it turned out the file belonged to another process, which
+        # could put a stale authorisation key back on disk and take the backup
+        # table out from under a neighbour's initialisation.
+        self._session_lock.acquire()
+        try:
+            session = FixedSQLiteSession(str(session_path))
+            self.client = TelegramClient(session, api_id, api_hash, **kwargs)
+        except BaseException:
+            self._session_lock.release()
+            raise
+        self.takeout = None
+        self._takeout_stack: contextlib.AsyncExitStack | None = None
 
     async def __aenter__(self) -> TgApi:
         """Connect and hand the client over; the caller cannot forget to close it."""
@@ -76,6 +88,8 @@ class TgApi:
         await self.disconnect()
 
     async def connect(self):
+        # Already held since __init__; the call matters only for a client
+        # reconnected after disconnect(), which releases it.
         self._session_lock.acquire()
         try:
             await self.client.connect()

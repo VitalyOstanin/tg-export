@@ -223,7 +223,7 @@ class TestTgMessagesOutput:
 # ---------------------------------------------------------------------------
 
 
-def test_tgapi_raises_when_proxy_set_but_python_socks_missing():
+def test_tgapi_raises_when_proxy_set_but_python_socks_missing(tmp_path):
     from tg_export.api import TgApi
 
     proxy = ("socks5", "127.0.0.1", 1080, True, None, None)
@@ -231,10 +231,10 @@ def test_tgapi_raises_when_proxy_set_but_python_socks_missing():
         patch("tg_export.api.importlib.util.find_spec", return_value=None),
         pytest.raises(RuntimeError, match="python-socks"),
     ):
-        TgApi("/tmp/test.session", 1, "hash", proxy=proxy)
+        TgApi(str(tmp_path / "test.session"), 1, "hash", proxy=proxy)
 
 
-def test_the_missing_proxy_hint_names_an_extra_the_project_actually_declares():
+def test_the_missing_proxy_hint_names_an_extra_the_project_actually_declares(tmp_path):
     """Подсказка в ошибке должна называть extra, который есть в pyproject.
 
     Переименование или удаление extra оставляет текст ошибки прежним, и
@@ -255,14 +255,14 @@ def test_the_missing_proxy_hint_names_an_extra_the_project_actually_declares():
         patch("tg_export.api.importlib.util.find_spec", return_value=None),
         pytest.raises(RuntimeError) as excinfo,
     ):
-        TgApi("/tmp/test.session", 1, "hash", proxy=proxy)
+        TgApi(str(tmp_path / "test.session"), 1, "hash", proxy=proxy)
 
     message = str(excinfo.value)
     named = {name for name in extras if f"--extra {name}" in message and f"tg-export[{name}]" in message}
     assert named, f"подсказка не называет ни один объявленный extra {sorted(extras)}: {message}"
 
 
-def test_tgapi_passes_proxy_to_client_when_python_socks_available():
+def test_tgapi_passes_proxy_to_client_when_python_socks_available(tmp_path):
     from tg_export.api import TgApi
 
     proxy = ("socks5", "127.0.0.1", 1080, True, None, None)
@@ -271,12 +271,12 @@ def test_tgapi_passes_proxy_to_client_when_python_socks_available():
         patch("tg_export.api.FixedSQLiteSession"),
         patch("tg_export.api.TelegramClient") as mock_client,
     ):
-        TgApi("/tmp/test.session", 1, "hash", proxy=proxy)
+        TgApi(str(tmp_path / "test.session"), 1, "hash", proxy=proxy)
 
     assert mock_client.call_args.kwargs["proxy"] == proxy
 
 
-def test_tgapi_no_proxy_does_not_check_python_socks():
+def test_tgapi_no_proxy_does_not_check_python_socks(tmp_path):
     from tg_export.api import TgApi
 
     with (
@@ -284,7 +284,7 @@ def test_tgapi_no_proxy_does_not_check_python_socks():
         patch("tg_export.api.FixedSQLiteSession"),
         patch("tg_export.api.TelegramClient") as mock_client,
     ):
-        TgApi("/tmp/test.session", 1, "hash", proxy=None)
+        TgApi(str(tmp_path / "test.session"), 1, "hash", proxy=None)
 
     mock_find.assert_not_called()
     assert "proxy" not in mock_client.call_args.kwargs

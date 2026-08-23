@@ -641,12 +641,10 @@ async def test_second_process_cannot_open_the_same_session(tmp_path, monkeypatch
     first.client.disconnect = lambda: None
     await first.connect()
     try:
-        second = TgApi(str(sp), 1, "hash")
-        second.client.connect = AsyncMock()
-        second.client.disconnect = lambda: None
+        # Отказ приходит уже на построении: сессия берёт блокировку до того,
+        # как в файл пойдёт первая запись.
         with pytest.raises(ProcessLockError):
-            await second.connect()
-        _close_session(second)
+            TgApi(str(sp), 1, "hash")
     finally:
         await first.disconnect()
         _close_session(first)
@@ -712,3 +710,40 @@ async def test_left_channels_are_read_page_by_page(tmp_path):
 
     assert [ch.id for ch in channels] == [1, 2, 3]
     assert calls == [0, 2]
+
+
+def test_a_busy_session_file_is_refused_before_it_is_written_to(tmp_path):
+    """Блокировка бралась в connect(), а конструктор уже трижды писал в файл.
+
+    FixedSQLiteSession обнуляет takeout_id и tmp_auth_key, Telethon переписывает
+    строку sessions целиком (включая auth_key), затем удаляется страховочная
+    таблица -- и только после этого выяснялось, что файл занят другим процессом.
+    В этом окне запись опоздавшего процесса возвращает на диск устаревший ключ
+    авторизации, а удаление страховочной таблицы отнимает у соседа единственное
+    место, где на время его инициализации лежит takeout_id.
+    """
+    import sqlite3
+
+    from tg_export.errors import ProcessLockError
+    from tg_export.locking import ProcessLock
+    from tg_export.session import FixedSQLiteSession
+
+    sp = tmp_path / "busy.session"
+    # Готовый файл сессии: он и есть то, что не должно измениться.
+    prepared = FixedSQLiteSession(str(sp))
+    prepared.takeout_id = 4242
+    prepared.close()
+    with sqlite3.connect(sp) as conn:
+        before = conn.execute("SELECT * FROM sessions").fetchall()
+
+    held = ProcessLock(sp, "busy")
+    held.acquire()
+    try:
+        with pytest.raises(ProcessLockError):
+            TgApi(str(sp), 1, "hash")
+    finally:
+        held.release()
+
+    with sqlite3.connect(sp) as conn:
+        after = conn.execute("SELECT * FROM sessions").fetchall()
+    assert after == before, "файл сессии изменён процессом, которому она не принадлежит"
