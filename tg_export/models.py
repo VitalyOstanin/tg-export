@@ -363,9 +363,17 @@ _MEDIA_CLASSES: dict[str, type[Media]] = {
 
 @dataclass
 class ServiceAction:
-    """Base class for service actions."""
+    """Base class for service actions.
 
-    type: str
+    ``type`` defaults to the class name. Writing it out next to the class left
+    a rename silently behind, and the value travels into the state database and
+    into the templates, where it is matched as a string.
+    """
+
+    type: str = ""
+
+    def __post_init__(self) -> None:
+        self.type = self.type or type(self).__name__
 
 
 # Groups / channels

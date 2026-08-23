@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
@@ -384,83 +385,40 @@ _PLAIN_ACTIONS: dict[str, type[ServiceAction]] = {
 }
 
 
-def _detailed_action(cls_name: str, tl_action: Any) -> ServiceAction | None:
-    """Service actions that carry fields of their own."""
-    if cls_name == "MessageActionChatCreate":
-        return ActionChatCreate(type="ActionChatCreate", title=tl_action.title or "")
-    if cls_name == "MessageActionChatEditTitle":
-        return ActionChatEditTitle(type="ActionChatEditTitle", title=tl_action.title or "")
-    if cls_name == "MessageActionChannelCreate":
-        return ActionChannelCreate(type="ActionChannelCreate", title=tl_action.title or "")
-    if cls_name == "MessageActionChatMigrateTo":
-        return ActionChatMigrateTo(type="ActionChatMigrateTo", channel_id=tl_action.channel_id)
-    if cls_name == "MessageActionChannelMigrateFrom":
-        return ActionChannelMigrateFrom(
-            type="ActionChannelMigrateFrom",
-            title=tl_action.title or "",
-            chat_id=tl_action.chat_id,
-        )
-    if cls_name == "MessageActionPhoneCall":
-        return ActionPhoneCall(
-            type="ActionPhoneCall",
-            duration=getattr(tl_action, "duration", None),
-            is_video=getattr(tl_action, "video", False),
-        )
-    if cls_name == "MessageActionGroupCall":
-        return ActionGroupCall(
-            type="ActionGroupCall",
-            duration=getattr(tl_action, "duration", None),
-        )
-    if cls_name == "MessageActionGameScore":
-        return ActionGameScore(
-            type="ActionGameScore",
-            score=getattr(tl_action, "score", 0),
-        )
-    if cls_name == "MessageActionPaymentSent":
-        return ActionPaymentSent(
-            type="ActionPaymentSent",
-            currency=getattr(tl_action, "currency", ""),
-            amount=getattr(tl_action, "total_amount", 0),
-        )
-    if cls_name == "MessageActionSetChatTheme":
-        return ActionSetChatTheme(
-            type="ActionSetChatTheme",
-            theme=getattr(tl_action, "emoticon", ""),
-        )
-    if cls_name == "MessageActionSetMessagesTTL":
-        return ActionSetMessagesTTL(
-            type="ActionSetMessagesTTL",
-            period=getattr(tl_action, "period", 0),
-        )
-    if cls_name == "MessageActionTopicCreate":
-        return ActionTopicCreate(
-            type="ActionTopicCreate",
-            title=getattr(tl_action, "title", ""),
-        )
-    if cls_name == "MessageActionTopicEdit":
-        return ActionTopicEdit(
-            type="ActionTopicEdit",
-            title=getattr(tl_action, "title", None),
-        )
-    if cls_name == "MessageActionGiftPremium":
-        return ActionGiftPremium(
-            type="ActionGiftPremium",
-            months=getattr(tl_action, "months", 0),
-            currency=getattr(tl_action, "currency", ""),
-            amount=getattr(tl_action, "amount", 0),
-        )
-    if cls_name == "MessageActionBotAllowed":
-        return ActionBotAllowed(
-            type="ActionBotAllowed",
-            domain=getattr(tl_action, "domain", None),
-        )
-    if cls_name == "MessageActionCustomAction":
-        return ActionCustomAction(
-            type="ActionCustomAction",
-            message=getattr(tl_action, "message", ""),
-        )
-
-    return None
+# Actions that carry fields of their own: a factory per Telethon class name.
+# The chain of sixteen `if cls_name == ...` said the same thing at four times
+# the length, and `type=` had to be repeated in every branch.
+_DETAILED_ACTIONS: dict[str, Callable[[Any], ServiceAction]] = {
+    "MessageActionChatCreate": lambda a: ActionChatCreate(title=a.title or ""),
+    "MessageActionChatEditTitle": lambda a: ActionChatEditTitle(title=a.title or ""),
+    "MessageActionChannelCreate": lambda a: ActionChannelCreate(title=a.title or ""),
+    "MessageActionChatMigrateTo": lambda a: ActionChatMigrateTo(channel_id=a.channel_id),
+    "MessageActionChannelMigrateFrom": lambda a: ActionChannelMigrateFrom(
+        title=a.title or "",
+        chat_id=a.chat_id,
+    ),
+    "MessageActionPhoneCall": lambda a: ActionPhoneCall(
+        duration=getattr(a, "duration", None),
+        is_video=getattr(a, "video", False),
+    ),
+    "MessageActionGroupCall": lambda a: ActionGroupCall(duration=getattr(a, "duration", None)),
+    "MessageActionGameScore": lambda a: ActionGameScore(score=getattr(a, "score", 0)),
+    "MessageActionPaymentSent": lambda a: ActionPaymentSent(
+        currency=getattr(a, "currency", ""),
+        amount=getattr(a, "total_amount", 0),
+    ),
+    "MessageActionSetChatTheme": lambda a: ActionSetChatTheme(theme=getattr(a, "emoticon", "")),
+    "MessageActionSetMessagesTTL": lambda a: ActionSetMessagesTTL(period=getattr(a, "period", 0)),
+    "MessageActionTopicCreate": lambda a: ActionTopicCreate(title=getattr(a, "title", "")),
+    "MessageActionTopicEdit": lambda a: ActionTopicEdit(title=getattr(a, "title", None)),
+    "MessageActionGiftPremium": lambda a: ActionGiftPremium(
+        months=getattr(a, "months", 0),
+        currency=getattr(a, "currency", ""),
+        amount=getattr(a, "amount", 0),
+    ),
+    "MessageActionBotAllowed": lambda a: ActionBotAllowed(domain=getattr(a, "domain", None)),
+    "MessageActionCustomAction": lambda a: ActionCustomAction(message=getattr(a, "message", "")),
+}
 
 
 def convert_action(tl_action: Any) -> ServiceAction | None:
@@ -472,11 +430,11 @@ def convert_action(tl_action: Any) -> ServiceAction | None:
 
     plain = _PLAIN_ACTIONS.get(cls_name)
     if plain is not None:
-        return plain(type=plain.__name__)
+        return plain()
 
-    detailed = _detailed_action(cls_name, tl_action)
+    detailed = _DETAILED_ACTIONS.get(cls_name)
     if detailed is not None:
-        return detailed
+        return detailed(tl_action)
 
     # Normalise to "ActionXxx" so renderer's elif-chain matches consistently.
     normalised = (

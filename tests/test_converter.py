@@ -208,3 +208,34 @@ def test_text_without_entities_is_unchanged():
     parts = convert_entities("простой текст", None)
 
     assert [(p.type, p.text) for p in parts] == [(TextType.text, "простой текст")]
+
+
+class _AnyFields:
+    """Заглушка действия Telethon: любое поле есть и пустое."""
+
+    def __getattr__(self, name):
+        return None
+
+
+def test_every_action_carries_the_name_of_its_own_class():
+    """`type` уходит в базу и в шаблоны, где сверяется по строке.
+
+    Имя писалось литералом рядом с классом (`ActionChatCreate(type="ActionChatCreate")`),
+    и переименование dataclass оставило бы литерал прежним. Теперь имя берётся
+    у класса, а этот тест сверяет его с именем действия Telethon.
+    """
+    from tg_export.converter import _DETAILED_ACTIONS, _PLAIN_ACTIONS, convert_action
+
+    assert len(_DETAILED_ACTIONS) == 16, "таблица подробных действий поредела -- проверка сузилась"
+    assert _PLAIN_ACTIONS, "таблица простых действий пуста"
+
+    for tl_name, factory in _DETAILED_ACTIONS.items():
+        action = factory(_AnyFields())
+        expected = tl_name.replace("MessageAction", "Action", 1)
+        assert action.type == type(action).__name__ == expected, tl_name
+
+    for tl_name, cls in _PLAIN_ACTIONS.items():
+        assert cls().type == cls.__name__ == tl_name.replace("MessageAction", "Action", 1)
+
+    unknown = type("MessageActionSomethingNew", (), {})()
+    assert convert_action(unknown).type == "ActionSomethingNew"

@@ -607,3 +607,22 @@ def test_cli_does_not_use_click_private_exit_exception():
             if "click.exceptions." in line:
                 offenders.append((path.name, ln_no, line.strip()))
     assert not offenders, f"использован внутренний API click: {offenders!r}"
+
+
+def test_no_action_repeats_its_class_name_as_a_string():
+    """Имя класса, выписанное литералом рядом с самим классом, устаревает молча.
+
+    `_detailed_action` собирал шестнадцать действий как
+    `ActionChatCreate(type="ActionChatCreate", ...)`: переименование dataclass
+    оставило бы литерал прежним, а значение `type` уходит в базу и в шаблоны,
+    где сверяется по строке. Имя берётся у класса, а не пишется рядом.
+    """
+    offenders = [
+        (node.lineno, keyword.value.value)
+        for node in _calls(_tree("converter.py"))
+        for keyword in node.keywords
+        if keyword.arg == "type" and isinstance(keyword.value, ast.Constant)
+        if isinstance(keyword.value.value, str)
+    ]
+
+    assert not offenders, f"type= задан строковым литералом: {offenders}"
