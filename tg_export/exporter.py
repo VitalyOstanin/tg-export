@@ -53,10 +53,11 @@ from tg_export.media import (
     DiskSpaceError,
     DownloadStatus,
     MediaDownloader,
+    clean_staging,
 )
 from tg_export.models import Chat, ForumTopic, Message
 from tg_export.state import ExportState
-from tg_export.verify import RedownloadResult, clean_staging, redownload_broken_files
+from tg_export.verify import RedownloadResult, redownload_broken_files
 
 logger = logging.getLogger(__name__)
 

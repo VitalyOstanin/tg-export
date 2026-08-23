@@ -223,6 +223,8 @@ uv run pyright
 | 35 | обход сообщений чата объявлен один раз на обе фазы экспорта              | `test_the_message_walk_is_written_once`                          |
 | 36 | docstring и сообщения проверок в `tests/` написаны по-русски            | `test_the_tests_speak_russian`                                   |
 | 37 | вопросы пользователю задаются помощниками `ask`/`confirm`, не в stdout   | `test_no_question_is_asked_on_stdout`                            |
+| 38 | объявленная константа модуля где-то читается                            | `test_no_module_constant_is_declared_and_never_read`             |
+| 39 | типы, записываемые через `vars()`, не содержат полей-dataclass          | `test_types_written_with_vars_stay_flat`                         |
 
 ## Схема базы состояния
 

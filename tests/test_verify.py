@@ -107,9 +107,10 @@ async def test_missing_message_is_skipped_without_touching_the_file(tmp_path):
 
 
 def test_stale_staging_dirs_are_cleaned(tmp_path):
-    from tg_export.verify import clean_staging
+    """Каталог, оставшийся от убитого прогона, убирается перед следующим."""
+    from tg_export.media import clean_staging
 
-    stale = tmp_path / "chat" / ".tg-export-verify-abc"
+    stale = tmp_path / "chat" / ".tg-export-staging-abc"
     stale.mkdir(parents=True)
     (stale / "leftover.bin").write_bytes(b"x")
     keep = tmp_path / "chat" / "photo.jpg"

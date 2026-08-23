@@ -13,7 +13,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import shutil
 import tempfile
 from collections import defaultdict
 from dataclasses import dataclass
@@ -21,14 +20,10 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from tg_export.media import TargetRegistry, download_with_retries
+from tg_export.media import STAGING_PREFIX, TargetRegistry, download_with_retries
 from tg_export.models import FileStatus
 
 logger = logging.getLogger(__name__)
-
-# Staging directories are created next to the media they replace, so they need
-# a name no export would produce.
-STAGING_PREFIX = ".tg-export-verify-"
 
 
 class RedownloadResult(StrEnum):
@@ -42,18 +37,6 @@ class RedownloadResult(StrEnum):
     replaced = "replaced"
     no_media = "no_media"
     nothing_downloaded = "nothing_downloaded"
-
-
-def clean_staging(root: Path) -> None:
-    """Remove staging directories left behind by a killed verify run.
-
-    A SIGKILL/SIGTERM in the middle of a download skips TemporaryDirectory
-    cleanup. The leftovers are harmless but accumulate next to the media, so
-    sweep them at the start of the next run.
-    """
-    for path in root.rglob(f"{STAGING_PREFIX}*"):
-        if path.is_dir():
-            shutil.rmtree(path, ignore_errors=True)
 
 
 async def redownload_broken_file(

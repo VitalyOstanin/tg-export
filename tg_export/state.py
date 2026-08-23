@@ -102,6 +102,15 @@ def _plain_text(text_parts: list[TextPart]) -> str:
     return "".join(tp.text for tp in text_parts)
 
 
+# Written with `vars()` rather than `asdict()`: `vars()` hands over `__dict__`
+# without walking nested objects, which is what makes it faster -- and what
+# limits it. `encode_default` knows datetime, Enum and bytes and raises on
+# anything else, so a field holding a dataclass would break the write, while
+# the neighbouring columns (media, action) handle such a field through
+# `asdict()`. `test_types_written_with_vars_stay_flat` keeps these types flat.
+FLAT_JSON_TYPES = (TextPart, ForwardInfo, Reaction, InlineButton)
+
+
 def _text_parts_to_json(parts: list[TextPart]) -> str:
     return json.dumps([vars(tp) for tp in parts], default=encode_default, ensure_ascii=False)
 
@@ -329,10 +338,6 @@ CHAT_TABLES = ("messages", "files", "export_state", "catalog_cache")
 # additions are reconciled from the DDL and need no bump.
 SCHEMA_VERSION = 1
 
-# Values the `files.status` column takes; the vocabulary itself lives in
-# models.py next to the other enums, so the state layer and the download layer
-# read the same names instead of repeating them as free strings.
-FILE_STATUSES = tuple(FileStatus)
 
 SCHEMA_SQL = """
             CREATE TABLE IF NOT EXISTS export_state (

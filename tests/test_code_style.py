@@ -943,3 +943,65 @@ def test_no_question_is_asked_on_stdout():
                 if keyword.arg == "prompt" and _called_name(node) == "option":
                     offenders.append(f"{path.relative_to(PROJECT)}:{node.lineno} prompt= у опции")
     assert not offenders, f"вопрос задаётся мимо помощника: {offenders}"
+
+
+def test_no_module_constant_is_declared_and_never_read():
+    """Константа, которую никто не читает, обещает правило, которого нет.
+
+    `FILE_STATUSES` в слое состояния был объявлен с комментарием о назначении
+    и не читался ни пакетом, ни тестами, ни скриптами -- пустой обёрткой над
+    `FileStatus`, дублирующей его же смысл.
+    """
+    root = PROJECT.parent
+    sources = {
+        path: path.read_text(encoding="utf-8")
+        for group in ("tg_export/**/*.py", "tests/*.py", "scripts/*.py")
+        for path in root.glob(group)
+    }
+    offenders = []
+    for path, text in sources.items():
+        if path.parent.name != PROJECT.name and PROJECT not in path.parents:
+            continue
+        for node in ast.parse(text).body:
+            targets = node.targets if isinstance(node, ast.Assign) else []
+            if isinstance(node, ast.AnnAssign):
+                targets = [node.target]
+            for target in targets:
+                if not isinstance(target, ast.Name) or not target.id.isupper():
+                    continue
+                pattern = re.compile(rf"\b{re.escape(target.id)}\b")
+                uses = sum(
+                    len(pattern.findall(other)) - (1 if other_path == path else 0)
+                    for other_path, other in sources.items()
+                )
+                if uses == 0:
+                    offenders.append(f"{path.relative_to(root)}:{node.lineno} {target.id}")
+    assert not offenders, f"объявлено и не читается: {offenders}"
+
+
+def test_types_written_with_vars_stay_flat():
+    """`vars()` не обходит вложенные объекты, и запись сообщения падала бы на них.
+
+    Четыре колонки того же формата пишутся через `vars()` ради скорости, а
+    соседние -- через `asdict()`. Условие, при котором замена верна, нигде не
+    было записано: `encode_default` умеет только datetime, Enum и bytes,
+    поэтому поле-dataclass в одном из этих типов дало бы TypeError при записи.
+    """
+    import dataclasses
+    import typing
+
+    from tg_export.state import FLAT_JSON_TYPES
+
+    offenders = []
+    for cls in FLAT_JSON_TYPES:
+        # get_type_hints, а не field.type: при `from __future__ import
+        # annotations` аннотация остаётся строкой, и проверка типа по ней
+        # всегда истинна-ложна независимо от содержимого.
+        hints = typing.get_type_hints(cls)
+        for field in dataclasses.fields(cls):
+            annotation = hints[field.name]
+            parts = typing.get_args(annotation) or (annotation,)
+            nested = [part for part in parts if dataclasses.is_dataclass(part)]
+            if nested:
+                offenders.append(f"{cls.__name__}.{field.name}: {nested}")
+    assert not offenders, f"через vars() пишутся типы с вложенными dataclass: {offenders}"

@@ -34,8 +34,9 @@ from tg_export.errors import (
     TakeoutUnavailableError,
 )
 from tg_export.format import format_size
+from tg_export.media import clean_staging
 from tg_export.privacy import ensure_private_dir, write_private_text
-from tg_export.verify import RedownloadResult, clean_staging, redownload_broken_files
+from tg_export.verify import RedownloadResult, redownload_broken_files
 
 logger = logging.getLogger(__name__)
 

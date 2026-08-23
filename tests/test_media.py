@@ -559,3 +559,48 @@ def test_a_sibling_pointing_outside_its_tree_gives_nothing(tmp_path):
 
     assert dl._link_sibling_blocking(_photo(), chat_dir) is None
     dl._siblings.close()
+
+
+def test_a_leftover_of_either_kind_is_swept_before_a_download(tmp_path):
+    """Один приём был написан дважды: свой префикс и своя уборка у загрузки и у проверки.
+
+    Каталог, оставшийся от убитого `run --verify`, не удалял ни один обычный
+    прогон, а `verify` не убирал остатки убитой загрузки: каждый уборщик знал
+    только свой префикс.
+    """
+    from unittest.mock import MagicMock
+
+    photos = tmp_path / "chat" / "photos"
+    photos.mkdir(parents=True)
+    leftovers = [
+        photos / ".tg-export-verify-abc",
+        photos / ".tg-export-download-def",
+        photos / ".tg-export-staging-ghi",
+    ]
+    for entry in leftovers:
+        entry.mkdir()
+    kept = photos / "photo.jpg"
+    kept.write_bytes(b"data")
+
+    dl = _downloader(MagicMock(), tmp_path)
+    dl._clean_stale_staging(photos)
+
+    assert [entry for entry in leftovers if entry.exists()] == []
+    assert kept.exists()
+
+
+def test_a_leftover_of_either_kind_is_swept_from_the_whole_tree(tmp_path):
+    """Уборка по дереву экспорта знает те же префиксы, что и уборка одного каталога."""
+    from tg_export.media import clean_staging
+
+    leftovers = [
+        tmp_path / "chat" / "photos" / ".tg-export-verify-abc",
+        tmp_path / "chat" / "videos" / ".tg-export-download-def",
+        tmp_path / "chat" / "docs" / ".tg-export-staging-ghi",
+    ]
+    for entry in leftovers:
+        entry.mkdir(parents=True)
+
+    clean_staging(tmp_path)
+
+    assert [entry for entry in leftovers if entry.exists()] == []

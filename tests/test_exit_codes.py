@@ -17,6 +17,7 @@ from tg_export.cli import common as cli_common
 from tg_export.cli import main
 from tg_export.cli import state as cli_state
 from tg_export.cli import tg as cli_tg
+from tg_export.errors import EXIT_USAGE
 
 
 @pytest.fixture
@@ -171,7 +172,7 @@ def test_an_unknown_command_still_ends_with_the_usage_code(monkeypatch, capsys):
     with pytest.raises(SystemExit) as excinfo:
         cli.run_cli()
 
-    assert excinfo.value.code == 2
+    assert excinfo.value.code == EXIT_USAGE
     assert "no-such-command" in capsys.readouterr().err
 
 
@@ -254,5 +255,5 @@ def test_a_refusal_over_the_call_shape_gives_code_two_with_usage():
 
     for args in (["state", "reset"], ["tg", "send", "123"], ["tg", "info"]):
         result = CliRunner().invoke(main, args)
-        assert result.exit_code == 2, (args, result.output)
+        assert result.exit_code == EXIT_USAGE, (args, result.output)
         assert "Usage:" in result.output, (args, result.output)

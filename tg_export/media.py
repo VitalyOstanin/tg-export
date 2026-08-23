@@ -79,7 +79,37 @@ _MAX_FLOOD_WAIT_SECONDS = 300
 # partial file is whose: the previous cleanup deleted everything that appeared
 # since a snapshot taken before the download started, which with concurrent
 # downloads means deleting the files a neighbour had just finished writing.
-DOWNLOAD_STAGING_PREFIX = ".tg-export-download-"
+STAGING_PREFIX = ".tg-export-staging-"
+
+# The same trick used to be written twice, with a prefix per caller: the
+# download swept `.tg-export-download-*` in one directory, the verify pass
+# swept `.tg-export-verify-*` across the tree, and neither touched the other's
+# leftovers. One prefix now, and the old two are still swept -- they sit in the
+# media directories of exports made by earlier versions.
+_LEGACY_STAGING_PREFIXES = (".tg-export-download-", ".tg-export-verify-")
+STAGING_PREFIXES = (STAGING_PREFIX, *_LEGACY_STAGING_PREFIXES)
+
+
+def clean_staging(root: Path) -> None:
+    """Remove staging directories left behind anywhere under `root`.
+
+    A SIGKILL/SIGTERM in the middle of a download skips TemporaryDirectory
+    cleanup. The leftovers are harmless but accumulate next to the media, so
+    sweep them at the start of the next run.
+    """
+    for prefix in STAGING_PREFIXES:
+        for path in root.rglob(f"{prefix}*"):
+            if path.is_dir():
+                shutil.rmtree(path, ignore_errors=True)
+
+
+def clean_staging_in(target_dir: Path) -> None:
+    """Remove staging directories of `target_dir` itself, without descending."""
+    for entry in target_dir.iterdir():
+        if entry.is_dir() and entry.name.startswith(STAGING_PREFIXES):
+            shutil.rmtree(entry, ignore_errors=True)
+            logger.debug("removed stale staging dir: %s", entry)
+
 
 # How long a successful free-space check is trusted before asking the
 # filesystem again.
@@ -600,7 +630,7 @@ class MediaDownloader:
             # exit path, and it can only contain this download's own files.
             # dir=target_dir keeps it on the same filesystem, so the move below
             # is a rename rather than a copy.
-            with tempfile.TemporaryDirectory(dir=target_dir, prefix=DOWNLOAD_STAGING_PREFIX) as staging:
+            with tempfile.TemporaryDirectory(dir=target_dir, prefix=STAGING_PREFIX) as staging:
                 async with self.semaphore:
                     path = await self._download_with_retry(tl_message, Path(staging), media)
 
@@ -643,10 +673,7 @@ class MediaDownloader:
         if target_dir in self._staging_cleaned:
             return
         self._staging_cleaned.add(target_dir)
-        for entry in target_dir.iterdir():
-            if entry.is_dir() and entry.name.startswith(DOWNLOAD_STAGING_PREFIX):
-                shutil.rmtree(entry, ignore_errors=True)
-                logger.debug("removed stale staging dir: %s", entry)
+        clean_staging_in(target_dir)
 
     def _move_into_place(self, downloaded: Path, target_dir: Path) -> Path:
         """Move a finished download out of its staging directory.
