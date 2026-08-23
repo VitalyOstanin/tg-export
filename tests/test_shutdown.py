@@ -7,6 +7,7 @@
 """
 
 import asyncio
+import contextlib
 import signal
 import time
 from unittest.mock import MagicMock
@@ -256,3 +257,47 @@ async def test_a_registered_file_reaches_the_database_even_if_the_caller_is_canc
         assert await state.get_file(7, 1), "запись о файле не дошла до базы"
     finally:
         await state.close()
+
+
+@pytest.mark.asyncio
+async def test_downloads_in_flight_are_awaited_even_if_the_wait_is_cancelled(tmp_path):
+    """Вторая отмена срывала ожидание отменённых загрузок и закрывала базу под ними.
+
+    Отменённая загрузка может находиться внутри защищённой записи в базу.
+    Выход из конвейера ждёт такие задачи одним `gather`, и отмена, пришедшая в
+    само это ожидание, уводит управление дальше -- к закрытию соединения, по
+    которому запись ещё идёт. Это тот же дефект, ради которого написана защита
+    в `state`, только на другом пути: файл остаётся на диске без строки в базе,
+    и следующий прогон удалит его как осиротевший.
+    """
+    from tg_export.exporter import _MediaPipeline
+
+    finished = []
+
+    async def slow_download():
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            # Защищённая запись в базу доводится до конца, несмотря на отмену.
+            await asyncio.sleep(0.05)
+            finished.append(True)
+            raise
+
+    pipeline = _MediaPipeline(MagicMock(), tmp_path, MagicMock(), chat_id=1, limit=2)
+    task = asyncio.create_task(slow_download())
+    pipeline._pending.append((task, MagicMock()))
+    await asyncio.sleep(0)
+
+    async def leave() -> None:
+        await pipeline.__aexit__(None, None, None)
+
+    leaving = asyncio.create_task(leave())
+    await asyncio.sleep(0)
+    # Второй Ctrl+C приходит, когда выход уже ждёт отменённые загрузки.
+    leaving.cancel()
+
+    with contextlib.suppress(asyncio.CancelledError):
+        await leaving
+
+    assert finished == [True], "выход из конвейера ушёл раньше, чем завершились загрузки"
+    assert not pipeline._pending, "очередь загрузок осталась непустой"

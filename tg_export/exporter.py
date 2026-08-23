@@ -440,7 +440,21 @@ class _MediaPipeline:
         for task in tasks:
             task.cancel()
         if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+            # The wait itself is protected, the way the shielded writes in
+            # `state` are: a cancelled download may be inside a write to the
+            # database, and a forced shutdown cancels the main task on every
+            # signal. A second Ctrl+C landing in this wait would otherwise
+            # carry the run on to closing the connection those writes still
+            # use.
+            gathering = asyncio.ensure_future(asyncio.gather(*tasks, return_exceptions=True))
+            try:
+                await asyncio.shield(gathering)
+            except asyncio.CancelledError:
+                while not gathering.done():
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await asyncio.shield(gathering)
+                self._pending.clear()
+                raise
         self._pending.clear()
         return False
 
@@ -1761,7 +1775,11 @@ class Exporter:
         self._status_print(f"[yellow]Found {len(broken)} files to re-download[/]")
         # A run killed mid-download leaves its staging directory next to the
         # media; sweep them before adding more.
-        clean_staging(Path(self.config.output.path))
+        # In a thread: the sweep walks the whole output tree with a stat()
+        # per entry, and an export holds hundreds of thousands of files.
+        # On the loop that pause stops the connection to Telegram and the
+        # signal handler along with it.
+        await asyncio.to_thread(clean_staging, Path(self.config.output.path))
         errors_before = len(stats.errors)
         redownloaded = 0
         outcomes = await redownload_broken_files(

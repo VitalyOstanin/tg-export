@@ -8,6 +8,7 @@
 
 import shutil
 import threading
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -188,3 +189,75 @@ async def test_disk_space_is_not_checked_for_every_file(tmp_path, monkeypatch):
         assert dl._has_free_space(chat_dir) is True
 
     assert len(calls) == 1, calls
+
+
+@pytest.mark.asyncio
+async def test_staging_cleanup_leaves_the_event_loop(tmp_path, monkeypatch):
+    """Уборка staging обходит всё дерево выгрузки рекурсивно, со `stat` на запись.
+
+    Выгрузка держит сотни тысяч файлов, и такой обход занимает секунды. Он
+    идёт при живом соединении с Telegram, поэтому в потоке цикла останавливает
+    и обмен с сервером, и обработчик сигнала: Ctrl+C в это время не отвечает.
+    """
+    from tg_export.exporter import Exporter, ExportStats
+
+    seen = {}
+    real_rglob = Path.rglob
+
+    def watching_rglob(self, pattern):
+        seen["thread"] = threading.get_ident()
+        return real_rglob(self, pattern)
+
+    monkeypatch.setattr("tg_export.verify.Path.rglob", watching_rglob)
+
+    broken = {
+        "file_id": 1,
+        "chat_id": 100,
+        "msg_id": 200,
+        "expected_size": 1000,
+        "actual_size": 10,
+        "local_path": str(tmp_path / "out" / "photo.jpg"),
+        "status": "partial",
+    }
+    state = MagicMock()
+    state.get_files_to_verify = AsyncMock(return_value=[broken])
+    monkeypatch.setattr("tg_export.exporter.redownload_broken_files", AsyncMock(return_value=[]))
+
+    config = MagicMock()
+    config.output.path = str(tmp_path / "out")
+
+    exporter = Exporter(  # pyright: ignore[reportArgumentType]
+        api=MagicMock(),
+        state=state,
+        config=config,
+        renderer=MagicMock(),
+        downloader=MagicMock(),
+        account="acc",
+        quiet=True,
+    )
+
+    await exporter._verify_files(ExportStats())
+
+    assert seen["thread"] != threading.get_ident()
+
+
+@pytest.mark.asyncio
+async def test_closing_the_sibling_readers_leaves_the_event_loop(tmp_path, monkeypatch):
+    """Закрытие читателей соседних баз ждёт ту же блокировку, что держит запрос.
+
+    Запрос к соседней базе удерживает блокировку на всё своё время, а
+    соединение открыто с ожиданием занятого писателя до 30 секунд. Закрытие
+    берёт ту же блокировку, и в потоке цикла это синхронное ожидание: пока оно
+    идёт, не обслуживаются ни оставшиеся корутины, ни сигналы.
+    """
+    seen = {}
+
+    def watching_close(self):
+        seen["thread"] = threading.get_ident()
+
+    monkeypatch.setattr("tg_export.media._SiblingReaders.close", watching_close)
+
+    dl = _downloader(sibling_db_paths=[tmp_path / "sibling.db"])
+    await cli_export._close_downloader(dl)
+
+    assert seen["thread"] != threading.get_ident()

@@ -708,6 +708,18 @@ async def _print_export_summary(stats, state, output_base: Path, *, takeout_acti
 _SUMMARY_ERROR_LIMIT = 10
 
 
+async def _close_downloader(downloader) -> None:
+    """Close the sibling readers off the loop.
+
+    Closing takes the lock a lookup holds for its whole query, and a lookup
+    waits up to 30 seconds for a busy writer in the sibling export. A download
+    orphaned by a forced shutdown can still be inside such a lookup, and then
+    this wait on the loop stops the remaining coroutines and the signal
+    handling with them.
+    """
+    await asyncio.to_thread(downloader.close)
+
+
 def _print_export_errors(errors) -> None:
     """Print the failures behind the counter.
 
@@ -781,7 +793,7 @@ async def _run_export(
         downloader = _build_downloader(api, state, cfg, output_base)
         # The downloader keeps a read-only connection per sibling database for
         # the whole export; the stack closes them together with the rest.
-        resources.callback(downloader.close)
+        resources.push_async_callback(_close_downloader, downloader)
 
         chats = await fetch_catalog(api, include_left=(cfg.left_channels_action != "skip"))
 
@@ -1146,7 +1158,7 @@ async def _verify_files(account, config_override, output_override):
         _, cfg, _ = common._resolve_output(account, config_override, output_override)
 
         async with common._connected_api(account) as (api, account):
-            clean_staging(output_base)
+            await asyncio.to_thread(clean_staging, output_base)
             redownloaded = 0
             outcomes = await redownload_broken_files(
                 api, state, broken, concurrency=cfg.defaults.media.concurrent_downloads
