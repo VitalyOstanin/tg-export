@@ -12,6 +12,7 @@
 - [0005 — Каталог выгрузки на аккаунт](0005-per-account-output-directory.md)
 - [0006 — Снимок начала чата вместо блокировки при чтении счётчиков](0006-publish-chat-snapshot-instead-of-locking.md)
 - [0007 — Разделение прав релизного конвейера по job'ам](0007-split-publishing-permissions.md)
+- [0008 — Публикация привязана к окружению GitHub](0008-publishing-environment.md)
 - [Конвенции](#конвенции)
 
 ## Конвенции

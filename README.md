@@ -202,7 +202,7 @@ folders:
 chats:
   - id: 777000
     name: Telegram
-    action: skip
+    skip: true
   - id: 123456789
     name: "Important Chat"
     media:

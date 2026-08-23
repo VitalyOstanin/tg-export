@@ -129,7 +129,8 @@ jobs:
       url: https://pypi.org/p/tg-export
     permissions:
       # The only power of this job: trade the OIDC token for a PyPI upload
-      # token. No third-party code runs here.
+      # token. No code of this project runs here -- the two actions below are
+      # third-party and pinned by commit SHA, which is what limits them.
       id-token: write
 
     steps:

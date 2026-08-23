@@ -361,3 +361,43 @@ def test_the_example_config_names_every_chat_type():
 
     missing = [chat_type.value for chat_type in ChatType if chat_type.value not in header]
     assert not missing, f"типы чатов не названы в config.example.yaml: {missing}"
+
+
+def test_the_package_map_in_contributing_names_every_module():
+    """Карта пакета объявлена в самом же разделе актуальной, вместо design-документов.
+
+    Модуль, не попавший в таблицу, читателю не виден: раздел -- единственное
+    место, где назначение файлов описано словами. `verify.py` появился и в
+    таблицу не попал.
+    """
+    guide = (ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
+    package_map = guide.split("## Устройство пакета", 1)[1].split("\n## ", 1)[0]
+
+    modules = sorted(
+        path.relative_to(ROOT / "tg_export").as_posix()
+        for path in (ROOT / "tg_export").rglob("*.py")
+        if path.name not in {"__init__.py", "__main__.py"}
+    )
+
+    def named(module: str) -> bool:
+        # Подпакет описан одной строкой целиком (`cli/` -- модуль на группу
+        # команд), поэтому имя его каталога засчитывается за все его модули.
+        parent = module.rsplit("/", 1)[0] + "/" if "/" in module else ""
+        return f"`{module}`" in package_map or (bool(parent) and f"`{parent}`" in package_map)
+
+    missing = [name for name in modules if not named(name)]
+    assert not missing, f"модули не названы в карте пакета CONTRIBUTING: {missing}"
+
+
+def test_the_adr_index_lists_every_record():
+    """Запись, которой нет в индексе, читателю не видна.
+
+    Индекс -- единственная точка входа в каталог решений: файлы там названы
+    номерами, и заголовок записи виден только из индекса.
+    """
+    index = (ROOT / "docs" / "adr" / "README.md").read_text(encoding="utf-8")
+
+    records = sorted(path.name for path in (ROOT / "docs" / "adr").glob("[0-9]*.md"))
+
+    missing = [name for name in records if f"({name})" not in index]
+    assert not missing, f"записи не названы в индексе ADR: {missing}"
