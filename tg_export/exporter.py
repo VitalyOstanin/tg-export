@@ -1200,6 +1200,64 @@ class Exporter:
             parts.append(f"({chat_msgs / elapsed:.0f} msg/s)")
         return "  ".join(parts)
 
+    async def _walk_messages(
+        self,
+        chat: Chat,
+        chat_dir: Path,
+        stats: ExportStats,
+        *,
+        iter_kwargs: dict[str, Any],
+        before_date_from,
+        progress_line,
+        keep_service: bool,
+        note_message,
+        stored_line,
+    ) -> bool:
+        """Walk one phase of a chat, storing what it keeps in batches.
+
+        The two phases differ in the pointers they track and in the direction
+        they walk, not in the walk itself: the stop conditions, the filter, the
+        media pipeline, the batch threshold and the progress line were written
+        twice, and a fix reached one copy of two.
+
+        `note_message` gets every message the walk sees, before the filter --
+        a pointer advances over a skipped message as well. Returns True when
+        the iterator ended by itself, which is what "the chat holds nothing
+        older" means to phase 2.
+        """
+        batch: list[Message] = []
+        last_progress_time = time.monotonic()
+        exhausted = False
+        async with _MediaPipeline(self, chat_dir, stats, chat.id, self._download_window()) as media:
+            async for tl_msg in self.api.iter_messages(chat.id, **iter_kwargs):
+                if self._shutdown:
+                    break
+                if before_date_from(tl_msg.date):
+                    break
+                msg = convert_message(tl_msg, chat_id=chat.id)
+                note_message(msg)
+                if not self._keep_message(msg, export_service_messages=keep_service):
+                    continue
+                # A message joins the batch only once its own media is on
+                # disk, so the stored record carries the local path.
+                batch.extend(await media.submit(msg, tl_msg))
+                stats.messages_exported += 1
+                if len(batch) >= BATCH_SIZE:
+                    await self.state.store_messages_batch(batch)
+                    logger.debug("  %s: %s", chat.name, stored_line())
+                    batch.clear()
+                now = time.monotonic()
+                if not self._use_live and now - last_progress_time >= LOG_INTERVAL:
+                    _log(progress_line())
+                    last_progress_time = now
+            else:
+                # for/else: iterator exhausted naturally (no break)
+                exhausted = True
+            batch.extend(await media.drain())
+        if batch:
+            await self.state.store_messages_batch(batch)
+        return exhausted
+
     async def _fetch_new_messages(
         self,
         chat: Chat,
@@ -1214,40 +1272,28 @@ class Exporter:
     ) -> None:
         """Phase 1: everything newer than the stored pointer, newest first."""
         new_max_id = last_msg_id
-        batch: list[Message] = []
-        last_progress_time = time.monotonic()
         p1_kwargs = {"min_id": last_msg_id}
         if "offset_date" in iter_kwargs:
             p1_kwargs["offset_date"] = iter_kwargs["offset_date"]
-        async with _MediaPipeline(self, chat_dir, stats, chat.id, self._download_window()) as media:
-            async for tl_msg in self.api.iter_messages(chat.id, **p1_kwargs):
-                if self._shutdown:
-                    break
-                if before_date_from(tl_msg.date):
-                    break
-                msg = convert_message(tl_msg, chat_id=chat.id)
-                # The pointer still advances over a skipped message: it was
-                # seen, and re-fetching it on the next run would change nothing.
-                if msg.id > new_max_id:
-                    new_max_id = msg.id
-                if not self._keep_message(msg, export_service_messages=keep_service):
-                    continue
-                # A message joins the batch only once its own media is on
-                # disk, so the stored record carries the local path.
-                batch.extend(await media.submit(msg, tl_msg))
-                stats.messages_exported += 1
-                if len(batch) >= BATCH_SIZE:
-                    await self.state.store_messages_batch(batch)
-                    logger.debug("  %s: %d new msgs stored", chat.name, stats.messages_exported)
-                    batch.clear()
-                now = time.monotonic()
-                if not self._use_live and now - last_progress_time >= LOG_INTERVAL:
-                    _log(progress_line())
-                    last_progress_time = now
-            batch.extend(await media.drain())
-        if batch:
-            await self.state.store_messages_batch(batch)
-            batch.clear()
+
+        def note(msg: Message) -> None:
+            nonlocal new_max_id
+            # The pointer still advances over a skipped message: it was seen,
+            # and re-fetching it on the next run would change nothing.
+            if msg.id > new_max_id:
+                new_max_id = msg.id
+
+        await self._walk_messages(
+            chat,
+            chat_dir,
+            stats,
+            iter_kwargs=p1_kwargs,
+            before_date_from=before_date_from,
+            progress_line=progress_line,
+            keep_service=keep_service,
+            note_message=note,
+            stored_line=lambda: f"{stats.messages_exported} new msgs stored",
+        )
         # Only a phase 1 that ran to the end may move the pointer. It walks
         # from the newest message down to last_msg_id, so "everything above
         # this id is exported" holds only once the walk finished. On a
@@ -1275,51 +1321,30 @@ class Exporter:
         keep_service: bool = True,
     ) -> None:
         """Phase 2: continue downward from the oldest message fetched so far."""
-        batch: list[Message] = []
         current_oldest = oldest_msg_id
         phase2_max_id = last_msg_id
         # The date_from/date_to bounds are still enforced per-message via
         # before_date_from below.
         p2_kwargs = phase_two_kwargs(iter_kwargs, oldest_msg_id=oldest_msg_id, last_msg_id=last_msg_id)
 
-        iterator_exhausted = False
-        last_progress_time = time.monotonic()
-        async with _MediaPipeline(self, chat_dir, stats, chat.id, self._download_window()) as media:
-            async for tl_msg in self.api.iter_messages(chat.id, **p2_kwargs):
-                if self._shutdown:
-                    break
-                if before_date_from(tl_msg.date):
-                    break
-                msg = convert_message(tl_msg, chat_id=chat.id)
-                if current_oldest == 0 or msg.id < current_oldest:
-                    current_oldest = msg.id
-                if msg.id > phase2_max_id:
-                    phase2_max_id = msg.id
-                if not self._keep_message(msg, export_service_messages=keep_service):
-                    continue
-                batch.extend(await media.submit(msg, tl_msg))
-                stats.messages_exported += 1
-                if len(batch) >= BATCH_SIZE:
-                    await self.state.store_messages_batch(batch)
-                    logger.debug(
-                        "  %s: %d msgs stored (oldest=%d)",
-                        chat.name,
-                        stats.messages_exported,
-                        current_oldest,
-                    )
-                    batch.clear()
-                now = time.monotonic()
-                if not self._use_live and now - last_progress_time >= LOG_INTERVAL:
-                    _log(progress_line())
-                    last_progress_time = now
-            else:
-                # for/else: iterator exhausted naturally (no break)
-                iterator_exhausted = True
-            batch.extend(await media.drain())
+        def note(msg: Message) -> None:
+            nonlocal current_oldest, phase2_max_id
+            if current_oldest == 0 or msg.id < current_oldest:
+                current_oldest = msg.id
+            if msg.id > phase2_max_id:
+                phase2_max_id = msg.id
 
-        if batch:
-            await self.state.store_messages_batch(batch)
-            batch.clear()
+        iterator_exhausted = await self._walk_messages(
+            chat,
+            chat_dir,
+            stats,
+            iter_kwargs=p2_kwargs,
+            before_date_from=before_date_from,
+            progress_line=progress_line,
+            keep_service=keep_service,
+            note_message=note,
+            stored_line=lambda: f"{stats.messages_exported} msgs stored (oldest={current_oldest})",
+        )
 
         # Why atomic commit: phase 2 used to issue 4 separate commits
         # (last/oldest/full_history/messages_count). A network/process

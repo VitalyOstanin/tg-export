@@ -604,3 +604,66 @@ def test_a_size_written_as_a_boolean_or_a_negative_number_is_refused():
     with pytest.raises(ConfigError, match="[Ss]ize"):
         parse_size(-1)
     assert parse_size(100) == 100
+
+
+def test_a_changed_default_reaches_a_file_that_omits_the_key(tmp_path, monkeypatch):
+    """Умолчания были выписаны дважды: в поле dataclass и вторым литералом в загрузчике.
+
+    Пятнадцать пар держались на внимательности: правка поля не долетала до
+    файла, где секция есть, а нужный ключ опущен, и наоборот. Здесь умолчания
+    подменяются на уровне классов, и загрузчик обязан отдать именно их.
+    """
+    from dataclasses import dataclass, field
+
+    from tg_export import config as config_module
+    from tg_export.config import DefaultsConfig, MediaConfig, OutputConfig
+
+    @dataclass
+    class WiderDefaults(DefaultsConfig):
+        media: MediaConfig = field(
+            default_factory=lambda: MediaConfig(
+                types=["photo", "video"], max_file_size_bytes=7 * 1024**2, concurrent_downloads=2
+            )
+        )
+
+    @dataclass
+    class OtherOutput(OutputConfig):
+        path: str = "./elsewhere"
+
+    @dataclass
+    class OtherConfig(Config):
+        stories: bool = False
+        archived_action: str = "export_with_defaults"
+
+    monkeypatch.setattr(config_module, "DefaultsConfig", WiderDefaults)
+    monkeypatch.setattr(config_module, "OutputConfig", OtherOutput)
+    monkeypatch.setattr(config_module, "Config", OtherConfig)
+
+    path = tmp_path / "config.yaml"
+    path.write_text("output: {}\ndefaults:\n  media: {}\narchived: {}\n", encoding="utf-8")
+
+    cfg = load_config(path)
+
+    assert cfg.defaults.media.types == ["photo", "video"]
+    assert cfg.defaults.media.max_file_size_bytes == 7 * 1024**2
+    assert cfg.defaults.media.concurrent_downloads == 2
+    assert cfg.output.path == "elsewhere"  # Path нормализует ведущее ./
+    assert cfg.archived_action == "export_with_defaults"
+    assert cfg.stories is False
+
+
+def test_the_template_and_the_example_offer_the_same_media_types():
+    """Шаблон `init` и `config.example.yaml` предлагают список типов шире умолчания.
+
+    Умолчание загрузчика -- `[photo]`, и это записано в справочнике; шире --
+    осознанно, чтобы стартовый конфиг не скачивал одни фотографии. Списки
+    выписаны в двух файлах, и разойтись им мешает только эта проверка.
+    """
+    import yaml
+
+    from tg_export.catalog import TEMPLATE_MEDIA_TYPES
+
+    root = Path(__file__).resolve().parent.parent
+    example = yaml.safe_load((root / "config.example.yaml").read_text(encoding="utf-8"))
+
+    assert example["defaults"]["media"]["types"] == TEMPLATE_MEDIA_TYPES

@@ -220,6 +220,7 @@ uv run pyright
 | 32 | статус файла записывается членом `FileStatus`, не строкой               | `test_file_statuses_are_spelled_by_the_enum_not_as_free_strings` |
 | 33 | `FileStatus` и `DownloadStatus` совпадают там, где пересекаются         | `test_the_two_status_vocabularies_agree_where_they_overlap`      |
 | 34 | константа объявлена выше функции, которая её читает                     | `test_no_module_constant_is_read_above_its_declaration`          |
+| 35 | обход сообщений чата объявлен один раз на обе фазы экспорта              | `test_the_message_walk_is_written_once`                          |
 
 ## Схема базы состояния
 

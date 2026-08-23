@@ -354,11 +354,21 @@ def _parse_concurrent_downloads(value: Any) -> int:
 
 
 def _parse_media_config(d: dict[str, Any], section: str = "media") -> MediaConfig:
+    """Read a media section, filling what it omits from the dataclass defaults.
+
+    The defaults used to be written twice -- once as the field of the
+    dataclass, once as the second argument of `.get` here -- so a changed
+    field never reached a file that has the section but omits the key.
+    """
     _check_keys(_require_mapping(d, section), _MEDIA_KEYS, section)
+    fallback = DefaultsConfig().media
+    size = parse_size(d["max_file_size"]) if "max_file_size" in d else fallback.max_file_size_bytes
     return MediaConfig(
-        types=_parse_media_types(d.get("types", ["photo"])),
-        max_file_size_bytes=parse_size(d.get("max_file_size", "100MB")),
-        concurrent_downloads=_parse_concurrent_downloads(d.get("concurrent_downloads", 3)),
+        types=_parse_media_types(d.get("types", fallback.types)),
+        max_file_size_bytes=size,
+        concurrent_downloads=_parse_concurrent_downloads(
+            d.get("concurrent_downloads", fallback.concurrent_downloads)
+        ),
     )
 
 
@@ -541,10 +551,35 @@ def _validate_choice(value: str, allowed: set[str], field_name: str) -> str:
     return value
 
 
-def _parse_action_section(raw: dict[str, Any], section: str, allowed: set[str]) -> str:
+def _parse_action_section(raw: dict[str, Any], section: str, allowed: set[str], default: str) -> str:
     """Read the single `action` key of a section that has only that key."""
     data = _check_keys(_require_mapping(raw.get(section, {}), section), _ACTION_SECTION_KEYS, section)
-    return _validate_choice(data.get("action", "skip"), allowed, f"{section}.action")
+    return _validate_choice(data.get("action", default), allowed, f"{section}.action")
+
+
+def _parse_output_section(raw: dict[str, Any]) -> OutputConfig:
+    """Read the `output` section, filling what it omits from the dataclass."""
+    out_raw = _check_keys(_require_mapping(raw.get("output", {}), "output"), _OUTPUT_KEYS, "output")
+    bare = OutputConfig()
+    return OutputConfig(
+        # The shell expands ~ only for unquoted arguments, so a path written in
+        # YAML reaches us verbatim: without this a directory literally named ~
+        # would be created in the current working directory.
+        path=str(Path(out_raw.get("path", bare.path)).expanduser()),
+        format=_validate_choice(out_raw.get("format", bare.format), _OUTPUT_FORMATS, "output.format"),
+    )
+
+
+def _parse_defaults_section(raw: dict[str, Any]) -> DefaultsConfig:
+    """Read the `defaults` section, filling what it omits from the dataclass."""
+    def_raw = _check_keys(_require_mapping(raw.get("defaults", {}), "defaults"), _DEFAULTS_KEYS, "defaults")
+    bare = DefaultsConfig()
+    return DefaultsConfig(
+        media=_parse_media_config(def_raw.get("media", {}), "defaults.media"),
+        date_from=_parse_date(def_raw.get("date_from"), "defaults.date_from"),
+        date_to=_parse_date(def_raw.get("date_to"), "defaults.date_to"),
+        export_service_messages=def_raw.get("export_service_messages", bare.export_service_messages),
+    )
 
 
 def load_config(path: Path) -> Config:
@@ -569,24 +604,12 @@ def load_config(path: Path) -> Config:
         known_str = ", ".join(sorted(_KNOWN_TOP_LEVEL_KEYS))
         raise ConfigError(f"Unknown config key(s): {unknown_str}. Known keys: {known_str}")
 
-    # Output
-    out_raw = _check_keys(_require_mapping(raw.get("output", {}), "output"), _OUTPUT_KEYS, "output")
-    output = OutputConfig(
-        # The shell expands ~ only for unquoted arguments, so a path written in
-        # YAML reaches us verbatim: without this a directory literally named ~
-        # would be created in the current working directory.
-        path=str(Path(out_raw.get("path", "./export_output")).expanduser()),
-        format=_validate_choice(out_raw.get("format", "html"), _OUTPUT_FORMATS, "output.format"),
-    )
-
-    # Defaults
-    def_raw = _check_keys(_require_mapping(raw.get("defaults", {}), "defaults"), _DEFAULTS_KEYS, "defaults")
-    defaults = DefaultsConfig(
-        media=_parse_media_config(def_raw.get("media", {}), "defaults.media"),
-        date_from=_parse_date(def_raw.get("date_from"), "defaults.date_from"),
-        date_to=_parse_date(def_raw.get("date_to"), "defaults.date_to"),
-        export_service_messages=def_raw.get("export_service_messages", True),
-    )
+    # Every value a key may omit comes from the dataclass: it is the one place a
+    # default is written, and `bare` is what the loader reads instead of
+    # repeating the literal.
+    bare = Config()
+    output = _parse_output_section(raw)
+    defaults = _parse_defaults_section(raw)
 
     # Import existing
     import_existing = [_parse_import_entry(entry) for entry in raw.get("import_existing", [])]
@@ -617,20 +640,22 @@ def load_config(path: Path) -> Config:
     # Left channels, archived, unmatched: one `action` key each. A scalar used
     # to fall back to "skip", turning `unmatched: export_with_defaults` into
     # the opposite of what it says.
-    left_channels_action = _parse_action_section(raw, "left_channels", _LEFT_CHANNELS_ACTIONS)
-    archived_action = _parse_action_section(raw, "archived", _ARCHIVED_ACTIONS)
-    unmatched_action = _parse_action_section(raw, "unmatched", _UNMATCHED_ACTIONS)
+    left_channels_action = _parse_action_section(
+        raw, "left_channels", _LEFT_CHANNELS_ACTIONS, bare.left_channels_action
+    )
+    archived_action = _parse_action_section(raw, "archived", _ARCHIVED_ACTIONS, bare.archived_action)
+    unmatched_action = _parse_action_section(raw, "unmatched", _UNMATCHED_ACTIONS, bare.unmatched_action)
 
     return Config(
         output=output,
         defaults=defaults,
-        personal_info=_require_bool(raw, "personal_info"),
-        contacts=_require_bool(raw, "contacts"),
-        sessions=_require_bool(raw, "sessions"),
-        userpics=_require_bool(raw, "userpics"),
-        stories=_require_bool(raw, "stories"),
-        profile_music=_require_bool(raw, "profile_music"),
-        other_data=_require_bool(raw, "other_data"),
+        personal_info=_require_bool(raw, "personal_info", bare.personal_info),
+        contacts=_require_bool(raw, "contacts", bare.contacts),
+        sessions=_require_bool(raw, "sessions", bare.sessions),
+        userpics=_require_bool(raw, "userpics", bare.userpics),
+        stories=_require_bool(raw, "stories", bare.stories),
+        profile_music=_require_bool(raw, "profile_music", bare.profile_music),
+        other_data=_require_bool(raw, "other_data", bare.other_data),
         left_channels_action=left_channels_action,
         archived_action=archived_action,
         import_existing=import_existing,

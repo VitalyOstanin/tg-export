@@ -197,6 +197,13 @@ def format_catalog_json(chats: list[Chat]) -> str:
     return json.dumps(data, ensure_ascii=False, indent=2)
 
 
+# The starting config offers more media types than the loader's default of
+# `[photo]`: a first export that saves photographs alone surprises more people
+# than it saves disk space. The same list is written in `config.example.yaml`,
+# and the two are kept together by a test rather than by attention.
+TEMPLATE_MEDIA_TYPES = ["photo", "video", "voice", "video_note", "sticker", "gif", "document"]
+
+
 def generate_config_template(chats: list[Chat], account: str | None = None) -> str:
     """Build the starting config of one account, with its chats listed as comments.
 
@@ -205,7 +212,9 @@ def generate_config_template(chats: list[Chat], account: str | None = None) -> s
     starting point, the template is generated for the chat list of a particular
     account. The values that are also defaults of the loader are taken from
     `Config()` rather than written here again -- otherwise a changed default
-    would leave the template quietly claiming the old one.
+    would leave the template quietly claiming the old one. The one value that
+    is deliberately not the loader's default is the media type list: see
+    `TEMPLATE_MEDIA_TYPES`.
     """
     from tg_export.config import Config
 
@@ -224,7 +233,7 @@ def generate_config_template(chats: list[Chat], account: str | None = None) -> s
         "",
         "defaults:",
         "  media:",
-        "    types: [photo, video, voice, video_note, sticker, gif, document]",
+        f"    types: [{', '.join(TEMPLATE_MEDIA_TYPES)}]",
         f"    max_file_size: {media.max_file_size_bytes // 1024**2}MB",
         f"    concurrent_downloads: {media.concurrent_downloads}",
         f"  export_service_messages: {str(defaults.defaults.export_service_messages).lower()}",

@@ -871,3 +871,20 @@ def test_no_module_constant_is_read_above_its_declaration():
             if late:
                 offenders.append(f"{path.relative_to(PROJECT)}:{node.lineno} {node.name} -> {late}")
     assert not offenders, f"константа объявлена ниже места чтения: {offenders}"
+
+
+def test_the_message_walk_is_written_once():
+    """Обе фазы экспорта обходили сообщения своей копией одного и того же цикла.
+
+    Совпадали двадцать четыре строки подряд: условия остановки, фильтр,
+    отправка в конвейер медиа, порог сброса пакета и периодичность строки
+    прогресса. Правка доходила до одной копии из двух -- так коммит про учёт
+    прогресса поменял тело только второй фазы.
+    """
+    tree = _tree("exporter.py")
+    walks = [
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFor) and _called_name(node.iter) == "iter_messages"
+    ]
+    assert len(walks) == 1, f"обход сообщений объявлен несколько раз, строки: {walks}"
