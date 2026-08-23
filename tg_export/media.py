@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import errno
 import logging
 import os
 import random
@@ -44,6 +45,22 @@ _PROGRESS_NAME_ELLIPSIS = "..."
 # network-only tuple below never covered them and a single one of them lost the
 # file. FloodWaitError is different in kind -- the server states how long to
 # wait -- and is handled separately, so it is not listed here.
+# OSError covers the network, but also the filesystem, and there a repeat
+# changes nothing: no space, no permission, a read-only filesystem or a name
+# too long answer the same way on every attempt. Retrying them cost each file
+# the full 2**attempt backoff before the error reached the caller, which turned
+# a full disk into a long idle pass over the whole catalog.
+_PERMANENT_OS_ERRORS = frozenset(
+    {
+        errno.ENOSPC,
+        errno.EACCES,
+        errno.EPERM,
+        errno.EROFS,
+        errno.ENAMETOOLONG,
+        errno.EDQUOT,
+    }
+)
+
 _TRANSIENT_DOWNLOAD_ERRORS: tuple[type[BaseException], ...] = (
     ConnectionError,
     TimeoutError,
@@ -125,15 +142,22 @@ def check_disk_space(path: Path, min_free_bytes: int) -> bool:
 
 
 def _link_or_copy(src: Path, dst: Path) -> bool:
-    """Hardlink src to dst, copying instead across filesystems. Blocking."""
+    """Hardlink src to dst, copying instead across filesystems. Blocking.
+
+    A refusal here is not "there was nothing to reuse" but "reusing it did not
+    work" -- no permission on the target directory, no space, an unreadable
+    source -- and its consequence is a full download instead of a link. Both
+    failures are logged, as the neighbouring branches of the caller do.
+    """
     try:
         os.link(src, dst)
         return True
-    except OSError:
+    except OSError as link_error:
         try:
             shutil.copy2(src, dst)
             return True
-        except OSError:
+        except OSError as copy_error:
+            logger.debug("reuse failed for %s -> %s: link (%s), copy (%s)", src, dst, link_error, copy_error)
             return False
 
 
@@ -737,6 +761,13 @@ class MediaDownloader:
                     logger.debug("msg %d: attempt %d failed, flood wait %ds", msg_id, attempt + 1, e.seconds)
                     await asyncio.sleep(e.seconds)
                 except _TRANSIENT_DOWNLOAD_ERRORS as e:
+                    if isinstance(e, OSError) and e.errno in _PERMANENT_OS_ERRORS:
+                        logger.debug(
+                            "msg %d: %s is not a failure a retry can change, giving up on the file",
+                            msg_id,
+                            errno.errorcode.get(e.errno, e.errno),
+                        )
+                        raise
                     if attempt == _MAX_DOWNLOAD_ATTEMPTS - 1:
                         # The exception itself travels on to the caller; this
                         # line is what ties the final failure to the attempts

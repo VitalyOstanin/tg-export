@@ -619,9 +619,13 @@ async def _run_export(
         _forget_cancellation()
     finally:
         # Releasing must not raise over the outcome of the export itself, and a
-        # second Ctrl+C lands here as CancelledError.
-        with contextlib.suppress(Exception, asyncio.CancelledError):
+        # second Ctrl+C lands here as CancelledError. Silence, though, used to
+        # hide a database that did not close: the user read "Export complete"
+        # and exit code 0 over a failed WAL flush.
+        try:
             await resources.aclose()
+        except (Exception, asyncio.CancelledError) as e:
+            logger.warning("resources of the export were not released cleanly: %s", e)
 
     # An export that logged errors did not do what it was asked to do, so it must
     # not report success; a signal outranks that and maps to 128 + signum.

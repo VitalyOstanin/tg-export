@@ -362,3 +362,110 @@ def test_a_database_failure_in_purge_is_not_read_as_a_missing_chat(tmp_path, acc
 
     assert isinstance(result.exception, ValueError), result.output
     assert "No chats found" not in result.output, result.output
+
+
+@pytest.mark.asyncio
+async def test_a_permanent_os_error_is_not_retried(tmp_path, monkeypatch):
+    """Повтор осмыслен для сетевого сбоя, а не для отказа файловой системы.
+
+    `OSError` попал в список преходящих ошибок целиком, вместе с «нет места»,
+    «нет прав» и «файловая система только для чтения»: каждый такой файл
+    проходил три попытки с ожиданием 2**attempt секунд, то есть исчерпание
+    места превращалось в долгий холостой проход по всему каталогу.
+    """
+    import errno
+
+    from tg_export.config import MediaConfig
+    from tg_export.media import MediaDownloader
+
+    attempts = 0
+
+    async def download_media(tl_message, target_dir, progress_cb=None):
+        nonlocal attempts
+        attempts += 1
+        raise OSError(errno.EACCES, "Permission denied")
+
+    api = MagicMock()
+    api.download_media = download_media
+    cfg = MediaConfig(types=["all"], max_file_size_bytes=1024, concurrent_downloads=1)
+    downloader = MediaDownloader(api, MagicMock(), cfg, min_free_bytes=0)
+
+    slept: list[float] = []
+    monkeypatch.setattr("tg_export.media.asyncio.sleep", AsyncMock(side_effect=lambda d: slept.append(d)))
+
+    tl_message = MagicMock()
+    tl_message.id = 7
+    tl_message.file = None
+
+    with pytest.raises(OSError):
+        await downloader._download_with_retry(tl_message, tmp_path)
+
+    assert attempts == 1, f"попыток: {attempts}"
+    assert not slept, f"ожидание перед повтором непреходящей ошибки: {slept}"
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_open_releases_the_lock_and_the_connection(tmp_path, monkeypatch):
+    """Второй Ctrl+C отменяет задачу, а CancelledError -- не наследник Exception.
+
+    Отмена между захватом блокировки и концом open() оставляла блокировку
+    взятой, а соединение -- открытым: `__aenter__` не завершился, поэтому
+    стек ресурсов его не зарегистрировал и закрыть уже не мог. Поток aiosqlite
+    висел до конца процесса.
+    """
+    import asyncio
+
+    from tg_export.state import ExportState
+
+    state = ExportState(tmp_path / "state.db")
+
+    async def cancelled(self):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(ExportState, "_apply_pragmas", cancelled)
+
+    with pytest.raises(asyncio.CancelledError):
+        await state.open()
+
+    assert state._db is None, "соединение осталось открытым"
+    assert not state._lock.held, "блокировка осталась взятой"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_close_still_releases_the_lock(tmp_path, caplog):
+    """Отказ закрытия оставлял блокировку взятой и соединение неочищенным."""
+    from tg_export.state import ExportState
+
+    state = ExportState(tmp_path / "state.db")
+    await state.open()
+
+    broken = MagicMock()
+    broken.close = AsyncMock(side_effect=RuntimeError("WAL flush failed"))
+    real_db, state._db = state._db, broken
+
+    with caplog.at_level(logging.WARNING):
+        await state.close()
+
+    assert state._db is None
+    assert not state._lock.held, "блокировка осталась взятой"
+    assert any("WAL flush failed" in r.getMessage() for r in caplog.records), caplog.text
+    await real_db.close()
+
+
+def test_a_refused_reuse_says_why(tmp_path, caplog):
+    """Отказ переиспользования означает «не удалось», а не «нечего брать».
+
+    `_link_or_copy` возвращал голое `False`, вызывающий делал `continue`, и
+    полная повторная загрузка вместо ссылки не объяснялась ничем в журнале --
+    при том что соседние ветки того же метода причину записывают.
+    """
+    from tg_export.media import _link_or_copy
+
+    src = tmp_path / "src.jpg"
+    src.write_bytes(b"x")
+    dst = tmp_path / "missing-dir" / "dst.jpg"
+
+    with caplog.at_level(logging.DEBUG):
+        assert _link_or_copy(src, dst) is False
+
+    assert any("dst.jpg" in r.getMessage() for r in caplog.records), caplog.text

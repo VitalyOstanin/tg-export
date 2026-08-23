@@ -138,8 +138,10 @@ def _extract_chat_name(msg_html: Path) -> str | None:
                     name_line = next(f, "").strip()
                     if name_line:
                         return name_line
-    except OSError:
-        pass
+    except OSError as e:
+        # Without this line the chat is simply missing from the index and the
+        # import silently does nothing for it.
+        logger.debug("tdesktop chat name unreadable in %s: %s", msg_html, e)
     return None
 
 

@@ -443,7 +443,17 @@ class ExportState:
             # tightened here; the database file itself was created private above.
             for suffix in ("", "-wal", "-shm"):
                 restrict_file(Path(f"{self.db_path}{suffix}"))
-        except Exception:
+        except BaseException:
+            # BaseException, not Exception: a second Ctrl+C cancels the task,
+            # and CancelledError is not an Exception. Cancelled between the
+            # lock and the end of open(), this used to leave the lock taken and
+            # the connection open, with __aenter__ never finished -- so the
+            # resource stack had nothing registered to close, and the aiosqlite
+            # thread stayed until the process ended.
+            if self._db is not None:
+                with contextlib.suppress(Exception):
+                    await self._db.close()
+                self._db = None
             self._release_lock()
             raise
 
@@ -463,10 +473,20 @@ class ExportState:
             await self.db.execute(pragma)
 
     async def close(self):
-        if self._db:
-            await self._db.close()
-            self._db = None
-        self._release_lock()
+        """Close the connection and release the lock, in that order.
+
+        The lock is released even when closing fails: leaving it taken makes
+        the next run report the database as busy, while the failure itself is
+        worth a line rather than the silence it used to get.
+        """
+        db, self._db = self._db, None
+        try:
+            if db is not None:
+                await db.close()
+        except Exception as e:
+            logger.warning("state database did not close cleanly: %s", e)
+        finally:
+            self._release_lock()
 
     async def commit(self):
         # Why: a second SIGINT cancels the export task, including the one

@@ -101,8 +101,13 @@ class TgApi:
         # Release the takeout context first: it must not outlive the connection
         # it is proxying. Releasing keeps the takeout session alive on the
         # server -- see stop_takeout.
-        with contextlib.suppress(Exception):
+        try:
             await self.stop_takeout()
+        except Exception as e:
+            # Releasing the takeout context has a server-side effect, so its
+            # failure is worth a line; it still must not replace the outcome of
+            # the run the caller is finishing.
+            logger.debug("takeout context was not released cleanly: %s", e)
         try:
             result = self.client.disconnect()
             if result is not None:
