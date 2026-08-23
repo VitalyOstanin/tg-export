@@ -43,6 +43,70 @@ def _section(changelog: str, version: str) -> tuple[str, str]:
     return date_match.group(1), body
 
 
+# Categories of the CHANGELOG that carry a size: everything else releases as a patch.
+BREAKING_HEADING = "Ломающие изменения"
+FEATURE_HEADING = "Добавлено"
+
+_ORDER = ("patch", "minor", "major")
+
+
+def _previous_version(changelog: str, version: str) -> str | None:
+    """Version of the section right below ``version``; None when it is the first one."""
+    versions = re.findall(r"^## \[([0-9]+\.[0-9]+\.[0-9]+)\]", changelog, re.MULTILINE)
+    if version not in versions:
+        return None
+    below = versions[versions.index(version) + 1 :]
+    return below[0] if below else None
+
+
+def _required_bump(body: str) -> str:
+    """Smallest bump the notes of this section justify."""
+    headings = [h.strip() for h in re.findall(r"^###\s+(.+?)\s*$", body, re.MULTILINE)]
+    if BREAKING_HEADING in headings:
+        return "major"
+    if FEATURE_HEADING in headings:
+        return "minor"
+    return "patch"
+
+
+def _actual_bump(previous: str, current: str) -> str | None:
+    """Size of the step from ``previous`` to ``current``; None when it is not a step up."""
+    old = tuple(int(part) for part in previous.split("."))
+    new = tuple(int(part) for part in current.split("."))
+    if new[0] > old[0]:
+        return "major"
+    if new[:1] == old[:1] and new[1] > old[1]:
+        return "minor"
+    if new[:2] == old[:2] and new[2] > old[2]:
+        return "patch"
+    return None
+
+
+def _check_bump(changelog: str, version: str, body: str) -> None:
+    """Refuse a version number smaller than what the notes announce.
+
+    The gate used to check the tag, the manifest and the presence of notes, but
+    not whether the number matches what accumulated: a section changing exit
+    codes or the output directory could ship as a patch, and PyPI has no undo.
+    """
+    previous = _previous_version(changelog, version)
+    if previous is None:
+        return
+    required = _required_bump(body)
+    actual = _actual_bump(previous, version)
+    if actual is not None and _ORDER.index(actual) >= _ORDER.index(required):
+        return
+    major, minor, _ = (int(part) for part in previous.split("."))
+    smallest = f"{major + 1}.0.0" if required == "major" else f"{major}.{minor + 1}.0"
+    reason = f"section '{BREAKING_HEADING}'" if required == "major" else f"section '{FEATURE_HEADING}'"
+    step = f"a {actual} bump" if actual else "not a bump at all"
+    raise SystemExit(
+        f"version {version} is {step} over {previous}, but the notes carry a {reason} and ask for "
+        f"a {required} bump: release it as {smallest} or later, or move the entries into a "
+        f"category that matches the number."
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("tag", help="release tag, with or without the leading 'v'")
@@ -58,7 +122,9 @@ def main() -> None:
             f"Bump the manifest (and uv.lock) in the commit the tag points at."
         )
 
-    date, body = _section((args.root / "CHANGELOG.md").read_text(encoding="utf-8"), version)
+    changelog = (args.root / "CHANGELOG.md").read_text(encoding="utf-8")
+    date, body = _section(changelog, version)
+    _check_bump(changelog, version, body)
     args.output.write_text(f"## tg-export v{version} -- {date}\n\n{body}\n", encoding="utf-8")
     print(f"release notes for {version} ({date}): {len(body.splitlines())} lines -> {args.output}")
 

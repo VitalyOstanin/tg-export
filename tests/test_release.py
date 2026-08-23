@@ -69,6 +69,72 @@ def test_an_empty_changelog_section_stops_the_release(tmp_path):
     assert result.returncode != 0
 
 
+BREAKING = (
+    "# Changelog\n\n## [{version}] -- 2026-08-23\n\n"
+    "### Ломающие изменения\n\n- Каталог выгрузки переехал.\n\n"
+    "## [1.5.1] -- 2026-07-30\n\n- Старое.\n"
+)
+
+FEATURE = (
+    "# Changelog\n\n## [{version}] -- 2026-08-23\n\n"
+    "### Добавлено\n\n- Новая опция.\n\n"
+    "## [1.5.1] -- 2026-07-30\n\n- Старое.\n"
+)
+
+
+def test_a_breaking_section_without_a_major_bump_stops_the_release(tmp_path):
+    """Смена контракта под номером 1.6.0 доходит до пользователя без предупреждения."""
+    result, _ = _run(
+        "v1.6.0", tmp_path, pyproject_version="1.6.0", changelog=BREAKING.format(version="1.6.0")
+    )
+
+    assert result.returncode != 0
+    assert "major" in result.stderr, result.stderr
+    assert "2.0.0" in result.stderr, result.stderr
+
+
+def test_a_breaking_section_passes_with_a_major_bump(tmp_path):
+    result, _ = _run(
+        "v2.0.0", tmp_path, pyproject_version="2.0.0", changelog=BREAKING.format(version="2.0.0")
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_new_features_under_a_patch_bump_stop_the_release(tmp_path):
+    """«Добавлено» -- это minor по SemVer; patch-номер скрывает новую функциональность."""
+    result, _ = _run("v1.5.2", tmp_path, pyproject_version="1.5.2", changelog=FEATURE.format(version="1.5.2"))
+
+    assert result.returncode != 0
+    assert "1.6.0" in result.stderr, result.stderr
+
+
+def test_fixes_alone_pass_as_a_patch(tmp_path):
+    result, _ = _run(
+        "v1.5.2",
+        tmp_path,
+        pyproject_version="1.5.2",
+        changelog=(
+            "# Changelog\n\n## [1.5.2] -- 2026-08-23\n\n### Исправлено\n\n- Починено.\n\n"
+            "## [1.5.1] -- 2026-07-30\n\n- Старое.\n"
+        ),
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_the_first_release_has_nothing_to_compare_with(tmp_path):
+    """Единственный раздел в файле -- предыдущей версии нет, сверять размер не с чем."""
+    result, _ = _run(
+        "v1.0.0",
+        tmp_path,
+        pyproject_version="1.0.0",
+        changelog="# Changelog\n\n## [1.0.0] -- 2026-08-23\n\n### Добавлено\n\n- Всё.\n",
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
 def test_a_tag_without_the_v_prefix_is_accepted(tmp_path):
     """Имя тега приходит из workflow как есть; префикс -- дело конвенции."""
     result, _ = _run("1.5.1", tmp_path)
