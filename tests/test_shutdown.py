@@ -109,3 +109,37 @@ async def test_run_survives_a_platform_without_signal_handlers(monkeypatch):
     stats = await exporter.run(chat_list=None)
 
     assert stats is not None
+
+
+@pytest.mark.asyncio
+async def test_cancellation_is_not_mistaken_for_a_failed_chat(tmp_path):
+    """Отмена -- не отказ одного чата, и гасить её на этом уровне нельзя.
+
+    `_export_chat_entry` перехватывал CancelledError и возвращал False. Цикл по
+    чатам выходил через break, флаг принудительной остановки оставался снятым,
+    и `run` тут же запускал фазу глобальных данных: контакты, сессии, истории,
+    аватары -- целую новую порцию сетевой работы уже после того, как прогон
+    попросили остановить.
+    """
+    from unittest.mock import AsyncMock
+
+    from tg_export.exporter import ExportStats
+
+    state = MagicMock()
+    state.cache_catalog = AsyncMock()
+    exporter = _exporter()
+    exporter.state = state
+    exporter.export_chat = AsyncMock(side_effect=asyncio.CancelledError)
+    exporter._cleanup_orphaned_files = AsyncMock()
+    exporter.downloader.tdesktop_indexes = []
+
+    chat = MagicMock(id=1, folder=None, is_left=False, is_archived=False)
+    # `name` -- служебный аргумент конструктора MagicMock, задаётся отдельно.
+    chat.name = "Chat"
+    chat.type.value = "private"
+    chat.messages_count = 1
+
+    with pytest.raises(asyncio.CancelledError):
+        await exporter._export_chat_entry(
+            chat, MagicMock(), tmp_path, ExportStats(), MagicMock(), MagicMock()
+        )

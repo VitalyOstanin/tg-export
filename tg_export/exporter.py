@@ -60,6 +60,20 @@ def _log(msg: str):
     console.print(msg, markup=False, highlight=False, soft_wrap=True)
 
 
+def _forget_cancellation() -> None:
+    """Declare a cancellation request answered, so the task stops counting as cancelling.
+
+    Catching CancelledError does not clear the request: the task keeps a
+    non-zero `cancelling()` for the rest of its life, and every enclosing
+    asyncio.timeout or TaskGroup then treats an ordinary exit as a cancellation
+    it has to propagate. Call this wherever cancellation is deliberately turned
+    into "state saved, we are done" instead of being re-raised.
+    """
+    task = asyncio.current_task()
+    if task is not None and task.cancelling():
+        task.uncancel()
+
+
 def chat_export_line(
     chat_name: str,
     chat_type: str,
@@ -797,13 +811,31 @@ class Exporter:
             stats.errors.append(str(e))
             return False
         except asyncio.CancelledError:
+            # Re-raised on purpose: cancellation is not the failure of one chat,
+            # and swallowing it here left the run looking healthy -- the loop
+            # broke, the shutdown flags stayed down, and the global data phase
+            # started a fresh round of network work right after the run was
+            # asked to stop. `run` is where cancellation is turned into an
+            # orderly exit.
             console.print("[yellow]Force shutdown during export...[/]")
-            return False
+            raise
         except Exception as e:
             logger.warning("Export failed: chat_id=%s name=%s", chat.id, chat.name, exc_info=True)
             console.print(chat_error_line(chat.name, e, chat_id=chat.id))
             stats.errors.append(f"{chat.name} (id={chat.id}): {describe_error(e)}")
         return True
+
+    def _live_display(self, build_table) -> contextlib.AbstractContextManager[object]:
+        """The Live progress panel, or nothing at all.
+
+        Quiet mode disables it because the panel repaints over the output, and
+        a non-TTY because the escape sequences would end up in the redirected
+        stream.
+        """
+        self._use_live = console.is_terminal and not self.quiet
+        if not self._use_live:
+            return contextlib.nullcontext()
+        return Live(console=console, refresh_per_second=2, get_renderable=build_table)
 
     async def run(
         self,
@@ -842,19 +874,8 @@ class Exporter:
                 line2=status.line2(),
             )
 
-        # Quiet mode disables the Live progress display; non-TTY also disables it.
-        use_live = console.is_terminal and not self.quiet
-        self._use_live = use_live
-
-        live_cm: contextlib.AbstractContextManager[object] = (
-            Live(
-                console=console,
-                refresh_per_second=2,
-                get_renderable=_build_status_table_local,
-            )
-            if use_live
-            else contextlib.nullcontext()
-        )
+        live_cm = self._live_display(_build_status_table_local)
+        use_live = self._use_live
 
         try:
             with live_cm:
@@ -894,6 +915,11 @@ class Exporter:
 
         except asyncio.CancelledError:
             self._force_shutdown = True
+            # The request is answered here, so the task must stop counting as
+            # cancelling: a task left with a pending cancellation makes every
+            # enclosing asyncio.timeout and TaskGroup -- including those inside
+            # Telethon -- behave as if the cancellation were still on its way.
+            _forget_cancellation()
 
         if not dry_run and not self._force_shutdown and not self._shutdown:
             await self._run_global_data_phase(stats)

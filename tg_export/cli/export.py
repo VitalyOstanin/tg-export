@@ -529,7 +529,7 @@ async def _run_export(
     rerender=False,
 ):
     from tg_export.catalog import fetch_catalog
-    from tg_export.exporter import Exporter
+    from tg_export.exporter import Exporter, _forget_cancellation
     from tg_export.html.renderer import HtmlRenderer
     from tg_export.state import ExportState
 
@@ -601,6 +601,10 @@ async def _run_export(
 
     except asyncio.CancelledError:
         common._diag("\nForce shutdown — saving state...", essential=True)
+        # Cancellation ends here: the command answers it with an exit code, so
+        # the task must not keep a pending request that would turn the ordinary
+        # return below into a cancellation for anything awaiting this one.
+        _forget_cancellation()
     finally:
         # Releasing must not raise over the outcome of the export itself, and a
         # second Ctrl+C lands here as CancelledError.
