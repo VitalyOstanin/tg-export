@@ -692,16 +692,22 @@ class Exporter:
         """Signal that stopped the run, for the ``128 + signum`` exit code."""
         return self._shutdown_signal
 
-    def _report_exported(self, count: int, noun: str, failed: int = 0) -> None:
+    def _report_exported(self, noun: str, *, considered: int, failed: int = 0) -> None:
         """Report what a section of global data produced, failures included.
 
         A success counter without a failure counter reads as completeness: 10
         of 60 profile photos printed as `exported: 10 profile photos`.
+
+        `considered` is how many records the section went through, failures
+        among them. The two numbers used to be read as disjoint, which held for
+        one caller of three: a story or a ringtone joins its list whether or
+        not its media arrived, so ten stories with two failures printed as
+        twelve records and logged "2 of 12".
         """
-        line = f"  [green]exported[/]: {count} {noun}"
+        line = f"  [green]exported[/]: {considered - failed} {noun}"
         if failed:
             line += f", {failed} failed"
-            logger.warning("%s: %d of %d could not be downloaded", noun, failed, count + failed)
+            logger.warning("%s: %d of %d could not be downloaded", noun, failed, considered)
         self._status_print(line)
 
     def _status_print(self, *args, **kwargs) -> None:
@@ -1692,7 +1698,7 @@ class Exporter:
                 logger.debug("Failed to download userpic %d: %s", seq, e)
 
         await asyncio.to_thread(self.renderer.render_userpics, photos)
-        self._report_exported(len(photos), "profile photos", failed)
+        self._report_exported("profile photos", considered=len(photos) + failed, failed=failed)
 
     async def _export_stories(self):
         """Fetch and render stories."""
@@ -1754,7 +1760,7 @@ class Exporter:
             )
 
         await asyncio.to_thread(self.renderer.render_stories, stories)
-        self._report_exported(len(stories), "stories", failed)
+        self._report_exported("stories", considered=len(stories), failed=failed)
 
     async def _export_other_data(self):
         """Fetch and render ringtones and other data."""
@@ -1800,7 +1806,7 @@ class Exporter:
 
         await asyncio.to_thread(self.renderer.render_other_data, {"ringtones": ringtones})
         if ringtones or failed:
-            self._report_exported(len(ringtones), "ringtones", failed)
+            self._report_exported("ringtones", considered=len(ringtones), failed=failed)
 
     async def _verify_files(self, stats: ExportStats):
         """Verify integrity of downloaded files and re-download broken ones."""

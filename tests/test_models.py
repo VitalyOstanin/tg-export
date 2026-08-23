@@ -19,3 +19,39 @@ def test_media_without_a_class_marker_loads_by_its_type():
     media = media_from_dict({"type": "photo", "file": None, "width": 640, "height": 480})
 
     assert isinstance(media, PhotoMedia)
+
+
+def test_media_of_an_unknown_class_degrades_instead_of_failing():
+    """Запасная ветка давала ровно тот отказ, который должна была предотвращать.
+
+    База, записанная другой версией (класс удалён, переименован или ещё не
+    существует здесь), читается при рендере месяца, поэтому `TypeError` из
+    `cls(**d)` терял не одно сообщение, а страницу чата.
+    """
+    from tg_export.models import MediaType, UnsupportedMedia, media_from_dict
+
+    media = media_from_dict(
+        {
+            "__media_class__": "FutureMedia",
+            "type": "photo",
+            "file": None,
+            "width": 1,
+            "height": 2,
+            "spoilered": False,
+        }
+    )
+
+    assert isinstance(media, UnsupportedMedia)
+    assert media.type is MediaType.photo
+
+
+def test_a_service_action_of_an_unknown_class_degrades_instead_of_failing():
+    """То же для системных сообщений: базовый класс не принимает полей производных."""
+    from tg_export.models import ServiceAction, action_from_dict
+
+    action = action_from_dict(
+        {"__action_class__": "ActionUnknownFuture", "type": "ActionUnknownFuture", "title": "x"}
+    )
+
+    assert isinstance(action, ServiceAction)
+    assert action.type == "ActionUnknownFuture"

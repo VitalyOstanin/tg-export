@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+import logging
+from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime
 from enum import Enum, StrEnum
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Enums
@@ -769,6 +772,22 @@ def media_to_dict(media: Media) -> dict[str, Any]:
     return d
 
 
+def _fields_the_class_takes(cls, d: dict[str, Any], *, what: str) -> dict[str, Any]:
+    """Drop what `cls` cannot take, saying in the log what was dropped.
+
+    Reached when a record names a class this version does not have: written by
+    a newer version, or by one where the class had another name. The base class
+    accepts none of the fields of a derived one, so passing the record on as it
+    is raises TypeError -- the very failure the fallback exists to prevent, and
+    it surfaces while rendering a month, losing the page rather than the record.
+    """
+    known = {field.name for field in fields(cls)}
+    dropped = sorted(set(d) - known)
+    if dropped:
+        logger.debug("%s: %s does not take %s -- dropped", what, cls.__name__, ", ".join(dropped))
+    return {name: value for name, value in d.items() if name in known}
+
+
 def media_from_dict(d: dict[str, Any]) -> Media:
     """Rebuild media from a stored record; `type` stands in for a missing marker.
 
@@ -808,7 +827,7 @@ def media_from_dict(d: dict[str, Any]) -> Media:
     if "items" in d and isinstance(d.get("items"), list) and cls in (TodoListMedia,):
         d["items"] = [TodoItem(**item) for item in d["items"]]
 
-    return cls(**d)
+    return cls(**_fields_the_class_takes(cls, d, what="media"))
 
 
 def action_to_dict(action: ServiceAction) -> dict[str, Any]:
@@ -828,7 +847,7 @@ def action_from_dict(d: dict[str, Any]) -> ServiceAction:
     if "items" in d and isinstance(d["items"], list):
         d["items"] = [TodoItem(**item) if isinstance(item, dict) else item for item in d["items"]]
 
-    return cls(**d)
+    return cls(**_fields_the_class_takes(cls, d, what="service action"))
 
 
 # ---------------------------------------------------------------------------

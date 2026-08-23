@@ -382,3 +382,47 @@ def test_a_chat_admitted_by_a_flag_survives_the_unmatched_rule(chat: Chat, confi
 
     assert len(included) == 1, "чат, разрешённый флагом, отброшен веткой unmatched"
     assert stats.chats_skipped == 0
+
+
+@pytest.mark.asyncio
+async def test_the_story_summary_counts_failures_inside_the_total(tmp_path, caplog):
+    """Итог складывал удачные и неудачные, будто они не пересекаются.
+
+    Запись об истории попадает в список независимо от того, скачалось ли
+    медиа, а `failed` к этому моменту уже увеличен: при десяти историях, две
+    из которых не отдали медиа, вывод читался как двенадцать штук всего, а в
+    журнал уходило «stories: 2 of 12 could not be downloaded».
+    """
+    import logging
+
+    stories = [SimpleNamespace(id=i, media=object(), caption="", date=None) for i in range(3)]
+    api = MagicMock()
+    api.get_stories = AsyncMock(return_value=(SimpleNamespace(stories=stories), SimpleNamespace(stories=[])))
+    api.client = MagicMock()
+    api.client.download_media = AsyncMock(
+        side_effect=[
+            str(tmp_path / "stories" / "s0.jpg"),
+            Exception("no media"),
+            str(tmp_path / "stories" / "s2.jpg"),
+        ]
+    )
+
+    renderer = MagicMock()
+    renderer.output_dir = tmp_path
+    exporter = Exporter(
+        api=api,
+        state=AsyncMock(),
+        config=MagicMock(),
+        renderer=renderer,
+        downloader=AsyncMock(),
+        account="test",
+    )
+
+    printed: list[str] = []
+    exporter._status_print = lambda line, *args, **kwargs: printed.append(line)
+
+    with caplog.at_level(logging.WARNING):
+        await exporter._export_stories()
+
+    assert any("2 stories" in line and "1 failed" in line for line in printed), printed
+    assert "1 of 3" in caplog.text, caplog.text
