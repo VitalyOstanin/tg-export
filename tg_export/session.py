@@ -43,7 +43,7 @@ Upstream fixed the unpack in commit b6a451e07 (2026-08-19), which is not on
 PyPI yet. Even after upgrading past it this class cannot simply be deleted:
 files written with the swapped layout still need migrating.
 
-The description above holds for Telethon 1.43.2, session schema version 8.
+The description above holds for Telethon 1.44.0, session schema version 8.
 Nothing here fails loudly when that changes -- the values are read and written
 by position, so a reordered or extended ``sessions`` table would quietly put
 them in the wrong slots. ``tests/test_telethon_contract.py`` pins the layout

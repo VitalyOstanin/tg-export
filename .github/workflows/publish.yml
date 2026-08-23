@@ -15,9 +15,9 @@ jobs:
       id-token: write
 
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d  # v10.0.1
         with:
           version: "latest"
           enable-cache: true
@@ -66,7 +66,13 @@ jobs:
           uv run --no-project --with "$WHEEL" python "$SCRIPT"
 
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # v1.14.0
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33  # v1.14.2
+        with:
+          # PEP 740: артефакты подписываются через тот же OIDC, что и загрузка,
+          # и PyPI показывает, каким workflow собран пакет. Значение совпадает
+          # с умолчанием действия и задано явно: умолчание может измениться, а
+          # публикация необратима, и потерю аттестаций заметили бы не сразу.
+          attestations: true
 
       - name: Create GitHub Release
         env:
