@@ -19,7 +19,7 @@ import click
 from tg_export.cli import common
 from tg_export.cli.common import (
     DEFAULT_MESSAGE_TEXT_LENGTH,
-    _fail,
+    fail,
 )
 from tg_export.errors import (
     EXIT_FAILURE,
@@ -88,11 +88,11 @@ def _message_preview(msg, *, truncate: int = DEFAULT_MESSAGE_TEXT_LENGTH) -> tup
 
 async def _tg_messages(chat_id, account, limit, truncate=DEFAULT_MESSAGE_TEXT_LENGTH, as_json=False):
     """Print the last messages of a chat: date, sender and the cut text."""
-    async with common._connected_api(account) as (api, account):
+    async with common.connected_api(account) as (api, account):
         entity = await api.client.get_entity(chat_id)
         title = getattr(entity, "title", None) or _entity_name(entity)
         if as_json:
-            common._diag(f"# {title} (id={chat_id})")
+            common.diag(f"# {title} (id={chat_id})")
         else:
             click.echo(f"# {title} (id={chat_id})\n")
 
@@ -173,7 +173,7 @@ def tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_file, as_
         _tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_file, as_json)
     )
     if exit_code:
-        _fail(code=exit_code)
+        fail(code=exit_code)
 
 
 def _write_info_results(results: list[dict], output_file, as_json: bool) -> None:
@@ -183,7 +183,7 @@ def _write_info_results(results: list[dict], output_file, as_json: bool) -> None
     if output_file:
         with open(output_file, "w", encoding="utf-8") as f:
             json.dump(results, f, ensure_ascii=False, indent=2)
-        common._diag(f"Saved {len(results)} entries to {output_file}")
+        common.diag(f"Saved {len(results)} entries to {output_file}")
 
 
 async def _resolve_entities(api, ids: list) -> dict:
@@ -281,10 +281,10 @@ def _report_info_lines(results: list[dict], *, output_file, as_json: bool) -> No
         cid = entry["id"]
         if "error" in entry:
             if not output_file:
-                common._diag(f"[{idx}/{total}] id={cid}: ERROR {entry['error']}", essential=True)
+                common.diag(f"[{idx}/{total}] id={cid}: ERROR {entry['error']}", essential=True)
             continue
         if total > 1:
-            common._diag(f"  [{idx}/{total}] {entry['name']} (id={cid})")
+            common.diag(f"  [{idx}/{total}] {entry['name']} (id={cid})")
         if not output_file and not as_json:
             click.echo(f"{entry['name']} (id={cid}): {entry['messages']} msgs, last: {entry['last_date']}")
 
@@ -311,7 +311,7 @@ async def _tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_fi
         _write_info_results([], output_file, as_json)
         return EXIT_OK
 
-    async with common._connected_api(account) as (api, account):
+    async with common.connected_api(account) as (api, account):
         entities = await _resolve_entities(api, ids)
         semaphore = asyncio.Semaphore(INFO_CONCURRENCY)
 
@@ -370,7 +370,7 @@ def tg_send(account, files, text, as_document, recipients):
 
     exit_code = asyncio.run(_tg_send(account, parsed, text, files, as_document))
     if exit_code:
-        _fail(code=exit_code)
+        fail(code=exit_code)
 
 
 @contextlib.contextmanager
@@ -503,7 +503,7 @@ async def _send_files(client, recipient, file_paths, text, as_document):
 
 
 async def _tg_send(account_name, recipients, text, files, as_document=False):
-    async with common._connected_api(account_name) as (api, _):
+    async with common.connected_api(account_name) as (api, _):
         file_paths = [Path(f) for f in files] if files else None
         sent_count = 0
         failed: list[tuple[object, str]] = []
@@ -516,14 +516,14 @@ async def _tg_send(account_name, recipients, text, files, as_document=False):
                 elif text:
                     await api.client.send_message(recipient, text)
 
-                common._diag(f"  sent to {recipient}")
+                common.diag(f"  sent to {recipient}")
                 sent_count += 1
             except Exception as e:
-                common._error(f"  error sending to {recipient}: {e}")
+                common.error(f"  error sending to {recipient}: {e}")
                 failed.append((recipient, str(e)))
 
         if failed:
-            common._diag(
+            common.diag(
                 f"\nDelivered to {sent_count}/{total} recipients. "
                 f"{len(failed)} failed. Re-running this command will resend "
                 f"to ALL {total} recipients (no idempotency).",
@@ -545,7 +545,7 @@ def tg_download(account, output, chat_id, msg_id):
     """
     exit_code = asyncio.run(_tg_download(account, chat_id, msg_id, output))
     if exit_code:
-        _fail(code=exit_code)
+        fail(code=exit_code)
 
 
 def _file_head_sha256(path: Path, n_bytes: int = _FINGERPRINT_HEAD_BYTES) -> str:
@@ -594,19 +594,19 @@ async def _download_if_new(client, msg, out: Path, downloaded: set[Path]) -> str
 
 async def _tg_download(account_name: str | None, chat_id: int, msg_id: int, out: Path) -> int:
     out.mkdir(parents=True, exist_ok=True)
-    async with common._connected_api(account_name) as (api, _):
+    async with common.connected_api(account_name) as (api, _):
         from tg_export.api import one_message
 
         tl_msg = one_message(await api.client.get_messages(chat_id, ids=msg_id))
         if tl_msg is None:
-            common._diag(f"Message {msg_id} not found in chat {chat_id}", essential=True)
+            common.diag(f"Message {msg_id} not found in chat {chat_id}", essential=True)
             return EXIT_FAILURE
 
         msg_text = getattr(tl_msg, "text", None)
         if msg_text:
             text_file = out / f"{msg_id}.txt"
             text_file.write_text(msg_text, encoding="utf-8")
-            common._diag(f"  text: {text_file}")
+            common.diag(f"  text: {text_file}")
 
         # Only what this call downloaded: the set decides whether a new file is a
         # duplicate to be deleted, and the output directory defaults to the current
@@ -617,7 +617,7 @@ async def _tg_download(account_name: str | None, chat_id: int, msg_id: int, out:
         if tl_msg.media:
             path = await _download_if_new(api.client, tl_msg, out, downloaded)
             if path:
-                common._diag(f"  media: {path}")
+                common.diag(f"  media: {path}")
 
         if tl_msg.grouped_id:
             count = 0
@@ -633,11 +633,11 @@ async def _tg_download(account_name: str | None, chat_id: int, msg_id: int, out:
                 ):
                     path = await _download_if_new(api.client, grouped_msg, out, downloaded)
                     if path:
-                        common._diag(f"  album media: {path}")
+                        common.diag(f"  album media: {path}")
                         count += 1
             if count:
-                common._diag(f"  ({count} additional album files)")
+                common.diag(f"  ({count} additional album files)")
 
         if not msg_text and not tl_msg.media:
-            common._diag("  (empty message, no text or media)")
+            common.diag("  (empty message, no text or media)")
         return EXIT_OK

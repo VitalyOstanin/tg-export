@@ -24,21 +24,26 @@ logger = logging.getLogger(__name__)
 
 # Set by main() from the global --debug flag; used by run_cli() to decide
 # whether to show a full traceback or a short message for domain errors.
+# Underscored on purpose, unlike the helpers of this module: the flags are
+# state of the run, written in one place and read through the module
+# (`common._DEBUG`), never imported by name -- an imported copy would keep the
+# value it had at import time.
 _DEBUG = False
 
 
-def _mgr() -> AccountManager:
-    mgr = AccountManager()
-    mgr.ensure_dirs()
-    return mgr
+def account_manager() -> AccountManager:
+    manager = AccountManager()
+    manager.ensure_dirs()
+    return manager
 
 
 # Set by main() from the global --quiet flag. When True, non-essential status
 # and progress messages are suppressed; errors and final summaries still print.
+# Underscored for the same reason as `_DEBUG` above.
 _QUIET = False
 
 
-def _diag(message: str, *, essential: bool = False, **kwargs) -> None:
+def diag(message: str, *, essential: bool = False, **kwargs) -> None:
     """Print a diagnostic / status / error message to stderr.
 
     stdout is reserved for machine-readable output of query commands
@@ -53,15 +58,15 @@ def _diag(message: str, *, essential: bool = False, **kwargs) -> None:
     click.echo(message, err=True, **kwargs)
 
 
-def _error(message: str, **kwargs) -> None:
+def error(message: str, **kwargs) -> None:
     """Print a message the user must see even under --quiet.
 
     Every reason a command refuses to do its job goes through here, so that a
     non-zero exit code is never the only thing the user gets. Marking such
-    messages one by one on ``_diag`` is not enough: the flag is easy to forget
+    messages one by one on ``diag`` is not enough: the flag is easy to forget
     exactly where the refusal happens.
     """
-    _diag(message, essential=True, **kwargs)
+    diag(message, essential=True, **kwargs)
 
 
 # EXIT_OK / EXIT_FAILURE / EXIT_SIGINT come from tg_export.errors, where they
@@ -69,7 +74,7 @@ def _error(message: str, **kwargs) -> None:
 # re-exported here because commands read them by these names.
 
 
-def _db_rows_line(counts: dict[str, int], label: str = "DB") -> str:
+def db_rows_line(counts: dict[str, int], label: str = "DB") -> str:
     """The row counts a destructive command is about to remove, as one line.
 
     Printed by `purge` and by both branches of `state reset --delete-messages`,
@@ -84,7 +89,7 @@ def _db_rows_line(counts: dict[str, int], label: str = "DB") -> str:
     return f"  {label}: " + ", ".join(f"{table}={number}" for table, number in counts.items())
 
 
-def _fail(message: str | None = None, code: int = EXIT_FAILURE) -> NoReturn:
+def fail(message: str | None = None, code: int = EXIT_FAILURE) -> NoReturn:
     """Report a refusal and end the command with ``code``.
 
     One place decides how a command stops, instead of each site pairing its own
@@ -102,18 +107,18 @@ def _fail(message: str | None = None, code: int = EXIT_FAILURE) -> NoReturn:
     broad handlers are the rule.
 
     NoReturn is part of the contract: both branches raise, and without the
-    annotation the code after a call reads as reachable -- `_resolve_output`
+    annotation the code after a call reads as reachable -- `resolve_output`
     went on to load a config file it had just refused over.
     """
     if message:
-        _error(message)
+        error(message)
     ctx = click.get_current_context(silent=True)
     if ctx is not None:
         ctx.exit(code)
     raise SystemExit(code)
 
 
-def _export_exit_code(*, signum: int | None, error_count: int) -> int:
+def export_exit_code(*, signum: int | None, error_count: int) -> int:
     """Turn the outcome of an export into an exit code.
 
     An interrupted run outranks a failed one: the signal is what the caller
@@ -130,7 +135,7 @@ STATE_DB_NAME = ".tg-export-state.db"
 
 
 @contextlib.asynccontextmanager
-async def _connected_api(account_name):
+async def connected_api(account_name):
     """Connect to Telegram for one account; yield ``(api, account)``.
 
     Every command needs the same prologue -- resolve the account, load the
@@ -140,7 +145,7 @@ async def _connected_api(account_name):
     """
     from tg_export.api import TgApi
 
-    mgr = _mgr()
+    mgr = account_manager()
     account = mgr.resolve_account(account_name)
     api_id, api_hash = mgr.load_credentials()
     proxy = mgr.load_proxy()
@@ -153,7 +158,7 @@ async def _connected_api(account_name):
 MISSING_CONFIG_HINT = "Create it with: tg-export init --account {account}"
 
 
-def _resolve_output(
+def resolve_output(
     account: str | None,
     config_override: Path | None,
     output_override: Path | None,
@@ -170,24 +175,24 @@ def _resolve_output(
     """
     from tg_export.config import load_config
 
-    mgr = _mgr()
+    mgr = account_manager()
     account = mgr.resolve_account(account)
     config_path = mgr.resolve_config(account, config_override)
     if not config_path.exists():
-        _error(f"Config not found: {config_path}")
+        error(f"Config not found: {config_path}")
         if missing_config_hint:
-            _error(missing_config_hint.format(account=account))
-        _fail()
+            error(missing_config_hint.format(account=account))
+        fail()
 
     cfg = load_config(config_path)
     if output_override:
         output_base = output_override.expanduser()
     else:
-        output_base = _account_output_dir(Path(cfg.output.path), account)
+        output_base = account_output_dir(Path(cfg.output.path), account)
     return account, cfg, output_base
 
 
-def _account_output_dir(base: Path, account: str) -> Path:
+def account_output_dir(base: Path, account: str) -> Path:
     """Return the export directory of one account under the configured base.
 
     The documented layout is ``{output.path}/{alias}``: accounts sharing one
@@ -204,7 +209,7 @@ def _account_output_dir(base: Path, account: str) -> Path:
 
 
 @contextlib.asynccontextmanager
-async def _opened_state(account, config_override, output_override, *, required: bool = True):
+async def opened_state(account, config_override, output_override, *, required: bool = True):
     """Open the state database of an account; yield ``(state, output_base, account)``.
 
     With ``required=False`` a missing database yields ``(None, ...)`` instead of
@@ -213,12 +218,12 @@ async def _opened_state(account, config_override, output_override, *, required: 
     """
     from tg_export.state import ExportState
 
-    account, _, output_base = _resolve_output(account, config_override, output_override)
+    account, _, output_base = resolve_output(account, config_override, output_override)
     state_path = output_base / STATE_DB_NAME
 
     if not state_path.exists():
         if required:
-            _fail("No state database found.")
+            fail("No state database found.")
         yield None, output_base, account
         return
 
@@ -235,7 +240,7 @@ DEFAULT_MESSAGE_TEXT_LENGTH = 200
 ACCOUNT_HELP = "Account alias (default: the one set by 'account default')"
 
 
-def _one_account(positional: str | None, option: str | None) -> str | None:
+def one_account(positional: str | None, option: str | None) -> str | None:
     """The account of a command that accepts both a positional NAME and --account.
 
     Two commands took the alias positionally while nine took it as an
@@ -259,7 +264,7 @@ _THIRD_PARTY_LOGGERS = ("telethon", "aiosqlite")
 _ALL_SUFFIX = ":ALL"
 
 
-def _resolve_log_level(debug: bool, log_level: str | None) -> tuple[int, bool]:
+def resolve_log_level(debug: bool, log_level: str | None) -> tuple[int, bool]:
     """Resolve the effective log level and whether libraries share it.
 
     Priority (highest first): --debug flag, --log-level flag, LOG_LEVEL env var,
@@ -286,7 +291,7 @@ def _resolve_log_level(debug: bool, log_level: str | None) -> tuple[int, bool]:
     return getattr(logging, name), include_libraries
 
 
-def _quiet_third_party_loggers(level: int, *, include_libraries: bool = False) -> None:
+def quiet_third_party_loggers(level: int, *, include_libraries: bool = False) -> None:
     """Hold third-party loggers at WARNING unless the caller asked for them."""
     for name in _THIRD_PARTY_LOGGERS:
         logging.getLogger(name).setLevel(level if include_libraries else max(level, logging.WARNING))

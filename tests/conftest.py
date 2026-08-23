@@ -12,7 +12,7 @@ def config_dir_of_its_own(tmp_path, monkeypatch):
 
     `AccountManager()` без явного пути читает окружение
     (`TG_EXPORT_CONFIG_DIR` > `XDG_CONFIG_HOME` > `~/.config/tg-export`), а
-    `_mgr()` ещё и создаёт каталоги. Изоляция держалась на том, что каждый тест
+    `mgr()` ещё и создаёт каталоги. Изоляция держалась на том, что каждый тест
     сам подменяет менеджер: забытая подмена в тесте `init` означала бы запись
     шаблона поверх настоящей конфигурации того, кто запустил тесты.
     """
@@ -38,5 +38,5 @@ def account_env(tmp_path, monkeypatch):
     mgr.save_credentials(1, "hash")
     mgr.set_default_account("acc")
     mgr.session_path("acc").write_bytes(b"")
-    monkeypatch.setattr(cli_common, "_mgr", lambda: AccountManager(config_dir=cfg_dir))
+    monkeypatch.setattr(cli_common, "account_manager", lambda: AccountManager(config_dir=cfg_dir))
     return cfg_dir

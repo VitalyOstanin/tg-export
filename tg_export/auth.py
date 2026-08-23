@@ -65,7 +65,7 @@ def _notify(message: str) -> None:
 
     stdout carries the machine-readable output of the query commands, so status
     lines of an interactive login belong on the other stream -- the same rule
-    the CLI applies through its own ``_diag``.
+    the CLI applies through its own ``diag``.
     """
     click.echo(message, err=True)
 

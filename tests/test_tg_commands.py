@@ -152,7 +152,10 @@ def _invoke_tg_messages(args: list[str], text: str = "hello", media: str | None 
     mock_api.connect = AsyncMock()
     mock_api.disconnect = AsyncMock()
 
-    with patch("tg_export.cli.common._mgr") as mock_mgr, patch("tg_export.api.TgApi", return_value=mock_api):
+    with (
+        patch("tg_export.cli.common.account_manager") as mock_mgr,
+        patch("tg_export.api.TgApi", return_value=mock_api),
+    ):
         mgr = MagicMock()
         mgr.resolve_account.return_value = "test"
         mgr.load_credentials.return_value = ("id", "hash")
@@ -385,7 +388,7 @@ class TestTgSend:
             yield api, "acc"
 
         with (
-            patch("tg_export.cli.common._connected_api", fake_connected_api),
+            patch("tg_export.cli.common.connected_api", fake_connected_api),
             patch.object(cli_common, "_QUIET", True),
         ):
             asyncio.run(_tg_send("acc", [123], text, files, as_document))
@@ -619,7 +622,10 @@ def _invoke_tg_info(args: list[str], *, chat_ids=("123",), fail_on=(), calls: li
     mock_api.connect = AsyncMock()
     mock_api.disconnect = AsyncMock()
 
-    with patch("tg_export.cli.common._mgr") as mock_mgr, patch("tg_export.api.TgApi", return_value=mock_api):
+    with (
+        patch("tg_export.cli.common.account_manager") as mock_mgr,
+        patch("tg_export.api.TgApi", return_value=mock_api),
+    ):
         mgr = MagicMock()
         mgr.resolve_account.return_value = "test"
         mgr.load_credentials.return_value = ("id", "hash")
@@ -819,7 +825,7 @@ async def test_download_compares_only_with_what_this_call_downloaded(monkeypatch
     async def fake(_account_name):
         yield api, "me"
 
-    monkeypatch.setattr(cli_common, "_connected_api", fake)
+    monkeypatch.setattr(cli_common, "connected_api", fake)
 
     code = await cli_tg._tg_download("acc", 1, 2, tmp_path)
 

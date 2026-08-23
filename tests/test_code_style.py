@@ -164,9 +164,9 @@ def test_every_telegram_client_is_built_on_the_fixed_session():
 
 
 def _exit_is_a_failure(node) -> bool:
-    """True for a call to `_fail(...)` with a non-zero code.
+    """True for a call to `fail(...)` with a non-zero code.
 
-    `_fail` is the single way a command stops with a failure (см.
+    `fail` is the single way a command stops with a failure (см.
     tg_export/cli/common.py); до этого то же место выглядело как
     `raise click.exceptions.Exit(1)`, и обе формы здесь распознаются.
     """
@@ -180,7 +180,7 @@ def _exit_is_a_failure(node) -> bool:
         return False
     func = call.func
     name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
-    if name not in ("Exit", "_fail"):
+    if name not in ("Exit", "fail"):
         return False
     args = list(call.args) + [kw.value for kw in call.keywords if kw.arg == "code"]
     codes = [a for a in args if isinstance(a, ast.Constant) and isinstance(a.value, int)]
@@ -188,14 +188,14 @@ def _exit_is_a_failure(node) -> bool:
 
 
 def _is_suppressible_diag(node) -> bool:
-    """Истина для вызова `_diag(...)`, который проглотит `--quiet`."""
+    """Истина для вызова `diag(...)`, который проглотит `--quiet`."""
     import ast
 
     if not isinstance(node, ast.Expr) or not isinstance(node.value, ast.Call):
         return False
     func = node.value.func
     name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
-    if name != "_diag":
+    if name != "diag":
         return False
     return not any(kw.arg == "essential" for kw in node.value.keywords)
 
@@ -204,7 +204,7 @@ def test_messages_before_a_failure_exit_survive_quiet():
     """Сообщение, за которым команда завершается ошибкой, обязано пережить --quiet.
 
     Признак essential проставлялся вручную у отдельных вызовов, и из 94 вызовов
-    _diag его получили 20, из которых 17 -- строки итоговой сводки. Поэтому
+    diag его получили 20, из которых 17 -- строки итоговой сводки. Поэтому
     `--quiet tg send 123` печатал пустоту и возвращал 1: причина отказа
     оставалась невидимой. Проверка статическая -- поведенческий тест на каждый
     путь отказа пришлось бы писать отдельно, а новый путь появляется с каждой
@@ -450,7 +450,7 @@ def test_cli_helpers_are_context_managers():
 
     src = _read("cli/common.py")
     tree = ast.parse(src)
-    for name in ("_connected_api", "_opened_state"):
+    for name in ("connected_api", "opened_state"):
         fn = next(
             (n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef) and n.name == name),
             None,
@@ -924,7 +924,7 @@ def test_the_tests_speak_russian():
 def test_no_question_is_asked_on_stdout():
     """stdout принадлежит машиночитаемому выводу запросных команд.
 
-    Правило записано в docstring `_diag` и модуля вывода, и все `_diag`
+    Правило записано в docstring `diag` и модуля вывода, и все `diag`
     соблюдают его именно потому, что поток задан в одном месте. Прямые вызовы
     `click.confirm`/`click.prompt` его обходили: приглашение по умолчанию
     печатается в stdout, поэтому у `purge > /dev/null` пользователь видел
@@ -1027,3 +1027,30 @@ def test_no_time_format_is_spelled_as_a_literal():
                 if isinstance(argument, ast.Constant) and isinstance(argument.value, str):
                     offenders.append(f"{path.relative_to(PROJECT)}:{node.lineno} {argument.value!r}")
     assert not offenders, f"формат времени выписан литералом: {offenders}"
+
+
+def test_no_command_group_reaches_for_an_underscored_name_of_another_module():
+    """Подчёркивание перестаёт что-либо значить, если так назван весь интерфейс.
+
+    `cli/common.py` существует ради того, чтобы его читали остальные группы
+    команд, но почти всё, что он отдавал, было названо как внутреннее: 119
+    обращений вида `common._имя` из других модулей при публичных константах в
+    том же файле. По имени нельзя было отличить то, что зовут снаружи, от
+    настоящей внутренней детали.
+    """
+    allowed = {"_QUIET", "_DEBUG"}  # состояние прогона, читается через модуль
+    offenders = []
+    for path in sorted((PROJECT / "cli").glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Attribute) and node.attr.startswith("_") and node.attr not in allowed:
+                owner = node.value
+                if isinstance(owner, ast.Name) and owner.id in {"common", "cli_common"}:
+                    offenders.append(f"{path.name}:{node.lineno} {owner.id}.{node.attr}")
+            if isinstance(node, ast.ImportFrom) and node.module == "tg_export.cli.common":
+                offenders += [
+                    f"{path.name}:{node.lineno} import {alias.name}"
+                    for alias in node.names
+                    if alias.name.startswith("_") and alias.name not in allowed
+                ]
+    assert not offenders, f"чужое имя с подчёркиванием: {offenders}"

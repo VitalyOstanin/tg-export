@@ -44,7 +44,7 @@ import click
 # Modules, not the group objects inside them: `tg_export.cli.tg` then means the
 # module in every context, and nothing shadows it at package level.
 from tg_export.cli import account, auth, common, export, state, takeout, tg
-from tg_export.cli.common import STATE_DB_NAME, _quiet_third_party_loggers, _resolve_log_level
+from tg_export.cli.common import STATE_DB_NAME, quiet_third_party_loggers, resolve_log_level
 from tg_export.errors import EXIT_FAILURE, EXIT_OK, EXIT_SIGINT, TgExportError
 
 logger = logging.getLogger(__name__)
@@ -95,14 +95,14 @@ def main(debug, log_level, quiet):
 
     from tg_export.console import console as export_console
 
-    level, include_libraries = _resolve_log_level(debug, log_level)
+    level, include_libraries = resolve_log_level(debug, log_level)
 
     logging.basicConfig(
         level=level,
         format="%(name)s %(message)s",
         handlers=[RichHandler(console=export_console, rich_tracebacks=True, show_path=debug)],
     )
-    _quiet_third_party_loggers(level, include_libraries=include_libraries)
+    quiet_third_party_loggers(level, include_libraries=include_libraries)
     # One home for the two flags. They used to be written here twice -- into
     # these globals and into ctx.obj -- and read from both, while ctx.obj["debug"]
     # was read nowhere; run_cli reports errors outside any click context and

@@ -9,7 +9,7 @@ import logging
 import click
 
 from tg_export.cli import common
-from tg_export.cli.common import _fail
+from tg_export.cli.common import fail
 from tg_export.console import ask
 from tg_export.errors import (
     EXIT_FAILURE,
@@ -39,9 +39,9 @@ def auth_credentials(api_id, api_hash):
         # hide_input: the hash authenticates the application the same way a
         # password does; typed in the open it stays in the shell history.
         api_hash = ask("API Hash", hide_input=True)
-    mgr = common._mgr()
+    mgr = common.account_manager()
     mgr.save_credentials(api_id=api_id, api_hash=api_hash)
-    common._diag("Credentials saved.")
+    common.diag("Credentials saved.")
 
 
 @auth.command("add")
@@ -50,12 +50,12 @@ def auth_add(name):
     """Add a new Telegram account (interactive login)."""
     if name is None:
         name = ask("Account alias")
-    mgr = common._mgr()
+    mgr = common.account_manager()
     cred_path = mgr.config_dir / "api_credentials.yaml"
     if not cred_path.exists():
-        _fail("No API credentials found. Run 'tg-export auth credentials' first.")
+        fail("No API credentials found. Run 'tg-export auth credentials' first.")
     asyncio.run(mgr.add_account(name))
-    common._diag(f"Account '{name}' added successfully.")
+    common.diag(f"Account '{name}' added successfully.")
 
 
 @auth.command("check")
@@ -64,23 +64,23 @@ def auth_add(name):
 @click.option("--json", "as_json", is_flag=True, help="Output as machine-readable JSON")
 def auth_check(name, account, as_json):
     """Check if account sessions are valid."""
-    name = common._one_account(name, account)
+    name = common.one_account(name, account)
     exit_code = asyncio.run(_auth_check(name, as_json))
     if exit_code:
-        _fail(code=exit_code)
+        fail(code=exit_code)
 
 
 async def _auth_check(name, as_json=False):
     """Connect as each account in turn and report whether it is usable."""
     from tg_export.api import TgApi
 
-    mgr = common._mgr()
+    mgr = common.account_manager()
     accounts = [name] if name else mgr.list_accounts()
     if not accounts:
         if as_json:
             click.echo(json.dumps([], ensure_ascii=False, indent=2))
         else:
-            common._diag("No accounts configured.")
+            common.diag("No accounts configured.")
         return
 
     api_id, api_hash = mgr.load_credentials()
@@ -90,7 +90,7 @@ async def _auth_check(name, as_json=False):
         if not session.exists():
             results.append({"account": acc, "status": "session_missing"})
             if not as_json:
-                common._error(f"  {acc}: session file missing")
+                common.error(f"  {acc}: session file missing")
             continue
         proxy = mgr.load_proxy()
         try:
@@ -109,15 +109,15 @@ async def _auth_check(name, as_json=False):
                         }
                     )
                     if not as_json:
-                        common._diag(f"  {acc}: OK - {first} {last} (id={me_id})")
+                        common.diag(f"  {acc}: OK - {first} {last} (id={me_id})")
                 else:
                     results.append({"account": acc, "status": "not_authorized"})
                     if not as_json:
-                        common._error(f"  {acc}: not authorized")
+                        common.error(f"  {acc}: not authorized")
         except Exception as e:
             results.append({"account": acc, "status": "error", "error": str(e)})
             if not as_json:
-                common._error(f"  {acc}: error - {e}")
+                common.error(f"  {acc}: error - {e}")
 
     if as_json:
         click.echo(json.dumps(results, ensure_ascii=False, indent=2))

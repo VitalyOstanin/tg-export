@@ -39,7 +39,7 @@ def run_env(tmp_path, monkeypatch):
         "    max_file_size: 50MB\n"
         "    concurrent_downloads: 3\n"
     )
-    monkeypatch.setattr(cli_common, "_mgr", lambda: AccountManager(config_dir=cfg_dir))
+    monkeypatch.setattr(cli_common, "account_manager", lambda: AccountManager(config_dir=cfg_dir))
 
     api = MagicMock()
     api.connect = AsyncMock()
@@ -164,7 +164,7 @@ def test_takeout_clear_finishes_the_session_on_the_server(tmp_path, monkeypatch)
     mgr.save_credentials(1, "hash")
     mgr.set_default_account("acc")
     mgr.session_path("acc").write_bytes(b"")
-    monkeypatch.setattr(cli_common, "_mgr", lambda: AccountManager(config_dir=cfg_dir))
+    monkeypatch.setattr(cli_common, "account_manager", lambda: AccountManager(config_dir=cfg_dir))
 
     api = MagicMock()
     api.connect = AsyncMock()

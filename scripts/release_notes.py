@@ -99,13 +99,29 @@ def _check_bump(changelog: str, version: str, body: str) -> None:
     actual = _actual_bump(previous, version)
     if actual is not None and _ORDER.index(actual) >= _ORDER.index(required):
         return
-    major, minor, _ = (int(part) for part in previous.split("."))
-    smallest = f"{major + 1}.0.0" if required == "major" else f"{major}.{minor + 1}.0"
-    reason = f"section '{BREAKING_HEADING}'" if required == "major" else f"section '{FEATURE_HEADING}'"
-    step = f"a {actual} bump" if actual else "not a bump at all"
+    major, minor, patch = (int(part) for part in previous.split("."))
+    if actual is None:
+        # Not a step up at all: the section below carries a number that is not
+        # smaller than this one -- a duplicated section, sections out of order,
+        # or a number that went down. The notes have nothing to do with it, so
+        # naming a category here would send the reader to the wrong place.
+        raise SystemExit(
+            f"version {version} is not a step up over {previous}, the number of the section below "
+            f"it in the changelog: check that the sections are in order and that no number repeats."
+        )
+    smallest = {
+        "major": f"{major + 1}.0.0",
+        "minor": f"{major}.{minor + 1}.0",
+        "patch": f"{major}.{minor}.{patch + 1}",
+    }[required]
+    reason = {
+        "major": f"section '{BREAKING_HEADING}'",
+        "minor": f"section '{FEATURE_HEADING}'",
+        "patch": "entries of its own",
+    }[required]
     raise SystemExit(
-        f"version {version} is {step} over {previous}, but the notes carry a {reason} and ask for "
-        f"a {required} bump: release it as {smallest} or later, or move the entries into a "
+        f"version {version} is a {actual} bump over {previous}, but the notes carry a {reason} and "
+        f"ask for a {required} bump: release it as {smallest} or later, or move the entries into a "
         f"category that matches the number."
     )
 

@@ -10,7 +10,7 @@ from pathlib import Path
 import click
 
 from tg_export.cli import common
-from tg_export.cli.common import _fail
+from tg_export.cli.common import fail
 from tg_export.console import confirm
 from tg_export.errors import (
     EXIT_FAILURE,
@@ -70,14 +70,14 @@ def state_show(account, config, output, as_json, chat_id):
 
 async def _state_show(account, config_override, output_override, chat_id, as_json=False):
     """Show the export state: one chat when it is named, the whole account otherwise."""
-    async with common._opened_state(account, config_override, output_override) as (st, _, account):
+    async with common.opened_state(account, config_override, output_override) as (st, _, account):
         if chat_id:
             chat_state = await st.get_chat_state(chat_id)
             if not chat_state:
                 if as_json:
                     click.echo(json.dumps(None))
                 else:
-                    common._diag(f"No state for chat {chat_id}")
+                    common.diag(f"No state for chat {chat_id}")
                 return
             msg_count = await st.count_messages(chat_id)
             if as_json:
@@ -114,7 +114,7 @@ async def _state_show(account, config_override, output_override, chat_id, as_jso
                 click.echo(json.dumps(payload, ensure_ascii=False, indent=2))
                 return
             if not rows:
-                common._diag("No export state records.")
+                common.diag("No export state records.")
                 return
             header = _STATE_TABLE_HEADER
             click.echo(header)
@@ -155,7 +155,7 @@ def state_reset(account, config, output, reset_all, delete_messages, yes, chat_i
         _state_reset(account, config, output, reset_all, delete_messages, chat_id, skip_confirm=yes)
     )
     if exit_code:
-        _fail(code=exit_code)
+        fail(code=exit_code)
 
 
 async def _state_reset(
@@ -168,42 +168,42 @@ async def _state_reset(
     *,
     skip_confirm: bool = False,
 ):
-    async with common._opened_state(account, config_override, output_override) as (st, _, account):
+    async with common.opened_state(account, config_override, output_override) as (st, _, account):
         if reset_all:
             # essential: the question below authorises rewinding -- and with
             # --delete-messages, emptying -- the whole account. A prompt whose
             # subject was hidden by --quiet is a prompt nobody can answer.
             counts = await st.count_all_rows()
-            common._diag(f"Account: {account}", essential=True)
-            common._diag(common._db_rows_line(counts), essential=True)
+            common.diag(f"Account: {account}", essential=True)
+            common.diag(common.db_rows_line(counts), essential=True)
             what = (
                 "Delete every message and file record and rewind all chats?"
                 if delete_messages
                 else ("Rewind export progress of all chats?")
             )
             if not skip_confirm and not confirm(what):
-                common._diag("Cancelled.", essential=True)
+                common.diag("Cancelled.", essential=True)
                 return EXIT_OK
             await st.reset_chat_progress(delete_messages=delete_messages)
-            common._diag("Reset all chats.")
+            common.diag("Reset all chats.")
         else:
             chat_state = await st.get_chat_state(chat_id)
             if not chat_state:
-                common._diag(f"No state for chat {chat_id}", essential=True)
+                common.diag(f"No state for chat {chat_id}", essential=True)
                 return EXIT_FAILURE
             if delete_messages:
                 # essential: for the same reason as the branch above -- the
                 # messages and file records of the chat go for good, and the
                 # question about it must not be hidden by --quiet.
                 counts = await st.count_chat_rows(chat_id)
-                common._diag(f"Chat: {chat_id}", essential=True)
-                common._diag(common._db_rows_line(counts), essential=True)
+                common.diag(f"Chat: {chat_id}", essential=True)
+                common.diag(common.db_rows_line(counts), essential=True)
                 if not skip_confirm and not confirm("Delete every message and file record of this chat?"):
-                    common._diag("Cancelled.", essential=True)
+                    common.diag("Cancelled.", essential=True)
                     return EXIT_OK
             await st.reset_chat_progress(chat_id, delete_messages=delete_messages)
             msg = f"Reset chat {chat_id}."
             if delete_messages:
                 msg += " Messages and files records deleted."
-            common._diag(msg)
+            common.diag(msg)
         return EXIT_OK

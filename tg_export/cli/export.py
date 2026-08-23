@@ -24,8 +24,8 @@ import yaml
 from tg_export.cli import common
 from tg_export.cli.common import (
     STATE_DB_NAME,
-    _export_exit_code,
-    _fail,
+    export_exit_code,
+    fail,
 )
 from tg_export.console import confirm
 from tg_export.errors import (
@@ -60,7 +60,7 @@ _GLOBAL_DATA_FLAGS = (
 @click.option("--json", "as_json", is_flag=True, help="Output as machine-readable JSON")
 def show_config(verbose, as_json):
     """Show current configuration (global + per-account)."""
-    mgr = common._mgr()
+    mgr = common.account_manager()
     if as_json:
         click.echo(json.dumps(_config_payload(mgr, verbose=verbose), ensure_ascii=False, indent=2))
         return
@@ -275,7 +275,7 @@ def _free_space_check_path(mgr) -> Path:
     """Directory whose free space this line is about: the one the export writes to.
 
     The path is read the way the export reads it -- `load_config` expands `~`
-    and `_account_output_dir` appends the alias. Parsing the YAML here directly
+    and `account_output_dir` appends the alias. Parsing the YAML here directly
     did neither, so `~/exports` looked like a missing directory and the line
     reported the current working directory instead. Before the first run the
     export directory does not exist yet: its nearest existing parent stands for
@@ -294,7 +294,7 @@ def _free_space_check_path(mgr) -> Path:
     except (OSError, ConfigError) as e:
         logger.debug("show config: cannot read account config %s: %s", default_name, e)
         return Path.cwd()
-    output_base = common._account_output_dir(Path(base), default_name)
+    output_base = common.account_output_dir(Path(base), default_name)
     return next((p for p in (output_base, *output_base.parents) if p.exists()), Path.cwd())
 
 
@@ -398,13 +398,13 @@ def list_chats(account, output, as_json, fmt, include_left):
 async def _list_chats(account, output, fmt, include_left):
     from tg_export.catalog import fetch_catalog, format_catalog_json, format_catalog_yaml
 
-    async with common._connected_api(account) as (api, account):
+    async with common.connected_api(account) as (api, account):
         chats = await fetch_catalog(api, include_left=include_left)
         result = format_catalog_json(chats) if fmt == "json" else format_catalog_yaml(chats)
 
         if output:
             output.write_text(result, encoding="utf-8")
-            common._diag(f"Catalog saved to {output}")
+            common.diag(f"Catalog saved to {output}")
         else:
             click.echo(result)
 
@@ -447,11 +447,11 @@ async def _init_config(account, from_catalog, output, force=False):
     """
     from tg_export.catalog import generate_config_template
 
-    mgr = common._mgr()
+    mgr = common.account_manager()
     account = mgr.resolve_account(account)
     config_path = output or mgr.config_path(account)
     if config_path.exists() and not force:
-        _fail(
+        fail(
             f"Config {config_path} already exists. "
             f"Pass --force to overwrite it (the previous one is kept as {config_path.name}.bak), "
             f"or --output-file to write elsewhere."
@@ -462,7 +462,7 @@ async def _init_config(account, from_catalog, output, force=False):
     else:
         from tg_export.catalog import fetch_catalog
 
-        async with common._connected_api(account) as (api, account):
+        async with common.connected_api(account) as (api, account):
             chats = await fetch_catalog(api)
 
     if config_path.exists():
@@ -471,12 +471,12 @@ async def _init_config(account, from_catalog, output, force=False):
         # memory.
         backup = config_path.with_suffix(config_path.suffix + ".bak")
         shutil.copy2(config_path, backup)
-        common._diag(f"Previous config kept as {backup}")
+        common.diag(f"Previous config kept as {backup}")
     # The template carries a line per chat of the account -- ids, names and
     # message counts -- so it is written private from the start, like the
     # credentials file and the state database.
     write_private_text(config_path, generate_config_template(chats, account=account))
-    common._diag(f"Config template saved to {config_path}")
+    common.diag(f"Config template saved to {config_path}")
 
 
 def _chats_from_catalog_file(path: Path):
@@ -568,7 +568,7 @@ def run_export(account, config, output, verify, dry_run, require_takeout, no_tak
         )
     )
     if exit_code:
-        _fail(code=exit_code)
+        fail(code=exit_code)
 
 
 async def _start_takeout(api, cfg, *, require: bool) -> bool:
@@ -608,12 +608,12 @@ async def _start_takeout(api, cfg, *, require: bool) -> bool:
     except (RPCError, ValueError, OSError) as e:
         reason = f"Takeout not available: {e}"
     else:
-        common._diag("Takeout session started.")
+        common.diag("Takeout session started.")
         return True
 
     if require:
         raise TakeoutUnavailableError(f"{reason} Takeout was required (--require-takeout).")
-    common._diag(
+    common.diag(
         f"{reason} Using regular API: the export continues, but it is slower "
         f"and subject to the usual rate limits.",
         essential=True,
@@ -633,7 +633,7 @@ def _build_downloader(api, state, cfg, output_base: Path):
 
     tdesktop_indexes = build_tdesktop_indexes(cfg.import_existing)
     for idx in tdesktop_indexes:
-        common._diag(f"tdesktop import: {idx.export_path}")
+        common.diag(f"tdesktop import: {idx.export_path}")
 
     sibling_dbs = []
     for sibling in output_base.parent.iterdir():
@@ -645,9 +645,9 @@ def _build_downloader(api, state, cfg, output_base: Path):
             logger.debug("sibling state DB: %s", sdb)
     if sibling_dbs:
         names = [s.parent.name for s in sibling_dbs]
-        common._diag(f"Sibling exports for file dedup: {', '.join(names)}")
+        common.diag(f"Sibling exports for file dedup: {', '.join(names)}")
 
-    min_free = common._mgr().load_min_free_space()
+    min_free = common.account_manager().load_min_free_space()
     return MediaDownloader(
         api=api,
         state=state,
@@ -665,17 +665,17 @@ async def _print_export_summary(stats, state, output_base: Path, *, takeout_acti
     artifacts themselves are the files written to disk.
     """
 
-    common._diag("\nExport complete:", essential=True)
+    common.diag("\nExport complete:", essential=True)
     # Which API served the export decides how complete and how fast it was, so
     # it belongs in the summary rather than only in a line printed at start-up
     # and long scrolled away.
-    common._diag(f"  API: {'takeout' if takeout_active else 'regular (no takeout)'}", essential=True)
-    common._diag(
+    common.diag(f"  API: {'takeout' if takeout_active else 'regular (no takeout)'}", essential=True)
+    common.diag(
         f"  Chats: {stats.chats_exported}/{stats.chats_included} (skipped {stats.chats_skipped})",
         essential=True,
     )
-    common._diag(f"  Messages: {stats.messages_exported}", essential=True)
-    common._diag(f"  Files downloaded: {stats.files_downloaded}", essential=True)
+    common.diag(f"  Messages: {stats.messages_exported}", essential=True)
+    common.diag(f"  Files downloaded: {stats.files_downloaded}", essential=True)
     for label, value in (
         ("Files existing", stats.files_existing),
         ("Reused from chat", stats.files_reused_chat),
@@ -685,22 +685,22 @@ async def _print_export_summary(stats, state, output_base: Path, *, takeout_acti
         ("Skipped by type", stats.files_skipped_by_type),
     ):
         if value:
-            common._diag(f"  {label}: {value}", essential=True)
+            common.diag(f"  {label}: {value}", essential=True)
     if stats.data_size:
-        common._diag(f"  Downloaded: {format_size(stats.data_size)}", essential=True)
+        common.diag(f"  Downloaded: {format_size(stats.data_size)}", essential=True)
 
     file_counts = await state.count_files()
-    common._diag(
+    common.diag(
         f"  Files: {file_counts['files_downloaded']}/{file_counts['expected_files']} "
         f"(media messages: {file_counts['media_messages']})",
         essential=True,
     )
     db_size = state.db_path.stat().st_size if state.db_path.exists() else 0
-    common._diag(f"  DB size: {format_size(db_size)}", essential=True)
+    common.diag(f"  DB size: {format_size(db_size)}", essential=True)
     # Why to_thread: du can take seconds on a large export; don't block the loop.
     total_disk = await asyncio.to_thread(_get_dir_size, output_base)
     if total_disk is not None:
-        common._diag(f"  Export size on disk: {format_size(total_disk)}", essential=True)
+        common.diag(f"  Export size on disk: {format_size(total_disk)}", essential=True)
     _print_export_errors(stats.errors)
 
 
@@ -730,12 +730,12 @@ def _print_export_errors(errors) -> None:
     """
     if not errors:
         return
-    common._diag(f"  Errors: {len(errors)}", essential=True)
+    common.diag(f"  Errors: {len(errors)}", essential=True)
     for error in errors[:_SUMMARY_ERROR_LIMIT]:
-        common._diag(f"    {error}", essential=True)
+        common.diag(f"    {error}", essential=True)
     hidden = len(errors) - _SUMMARY_ERROR_LIMIT
     if hidden > 0:
-        common._diag(f"    ... and {hidden} more (see the log)", essential=True)
+        common.diag(f"    ... and {hidden} more (see the log)", essential=True)
 
 
 def _export_destination(account, config_override, output_override):
@@ -744,13 +744,13 @@ def _export_destination(account, config_override, output_override):
     The directory is created private -- the tree holds every exported message
     and file -- while an existing one keeps the mode the user gave it.
     """
-    account, cfg, output_base = common._resolve_output(
+    account, cfg, output_base = common.resolve_output(
         account,
         config_override,
         output_override,
     )
-    common._diag(f"Account: {account}")
-    common._diag(f"Output: {output_base.resolve()}")
+    common.diag(f"Account: {account}")
+    common.diag(f"Output: {output_base.resolve()}")
     ensure_private_dir(output_base)
     return account, cfg, output_base, output_base / STATE_DB_NAME
 
@@ -783,7 +783,7 @@ async def _run_export(
     resources = contextlib.AsyncExitStack()
     try:
         state = await resources.enter_async_context(ExportState(state_path))
-        api, _ = await resources.enter_async_context(common._connected_api(account))
+        api, _ = await resources.enter_async_context(common.connected_api(account))
 
         takeout_active = await _takeout_for_run(
             api, cfg, require_takeout=require_takeout, no_takeout=no_takeout
@@ -823,7 +823,7 @@ async def _run_export(
         )
 
     except asyncio.CancelledError:
-        common._diag("\nForce shutdown — saving state...", essential=True)
+        common.diag("\nForce shutdown — saving state...", essential=True)
         # Cancellation ends here: the command answers it with an exit code, so
         # the task must not keep a pending request that would turn the ordinary
         # return below into a cancellation for anything awaiting this one.
@@ -840,7 +840,7 @@ async def _run_export(
 
     # An export that logged errors did not do what it was asked to do, so it must
     # not report success; a signal outranks that and maps to 128 + signum.
-    return _export_exit_code(
+    return export_exit_code(
         signum=exporter.shutdown_signal if exporter else None,
         error_count=len(stats.errors) if stats else 0,
     )
@@ -854,7 +854,7 @@ async def _takeout_for_run(api, cfg, *, require_takeout: bool, no_takeout: bool)
     question when the caller already knows they do not want to wait for it.
     """
     if no_takeout:
-        common._diag("Takeout not requested (--no-takeout); using the regular API.")
+        common.diag("Takeout not requested (--no-takeout); using the regular API.")
         return False
     return await _start_takeout(api, cfg, require=require_takeout)
 
@@ -868,7 +868,7 @@ async def _report_export_result(
     not finish writing.
     """
     if exporter.force_shutdown:
-        common._diag("\nForce shutdown — state saved.", essential=True)
+        common.diag("\nForce shutdown — state saved.", essential=True)
         return
     if not dry_run:
         await _render_index(renderer, chats, cfg, state, should_stop=lambda: exporter.shutdown_requested)
@@ -1024,7 +1024,7 @@ async def _purge_chat(chat_arg, account, config_override, output_override, skip_
     The chat is named either by id or by name, the rows and the directories
     are counted before the question, and both are removed only after it.
     """
-    async with common._opened_state(account, config_override, output_override) as (
+    async with common.opened_state(account, config_override, output_override) as (
         state,
         output_base,
         account,
@@ -1038,12 +1038,12 @@ async def _purge_chat(chat_arg, account, config_override, output_override, skip_
         except ValueError:
             matches = await state.find_chat_by_name(chat_arg)
             if not matches:
-                _fail(f"No chats found matching '{chat_arg}'")
+                fail(f"No chats found matching '{chat_arg}'")
             if len(matches) > 1:
-                common._error(f"Multiple chats match '{chat_arg}':")
+                common.error(f"Multiple chats match '{chat_arg}':")
                 for m in matches:
-                    common._error(f"  {m['chat_id']}  {m['name']}  ({m['type']})")
-                _fail("Specify exact chat ID.")
+                    common.error(f"  {m['chat_id']}  {m['name']}  ({m['type']})")
+                fail("Specify exact chat ID.")
             chat_id = matches[0]["chat_id"]
             chat_name = matches[0]["name"]
         else:
@@ -1076,22 +1076,22 @@ async def _purge_chat(chat_arg, account, config_override, output_override, skip_
         chat_dirs: list[Path] = []
         for d in candidate_dirs:
             if d.is_symlink():
-                common._diag(f"  SKIP (symlink): {d}")
+                common.diag(f"  SKIP (symlink): {d}")
                 continue
             try:
                 d_resolved = d.resolve()
             except OSError:
                 continue
             if not d_resolved.is_relative_to(output_resolved):
-                common._diag(f"  SKIP (outside output): {d}")
+                common.diag(f"  SKIP (outside output): {d}")
                 continue
             chat_dirs.append(d)
 
         # essential: the confirmation below asks to authorise an irreversible
         # deletion, so the description of what it covers must not be suppressed.
         # A prompt with the subject hidden is a prompt the user cannot answer.
-        common._diag(f"Chat: {chat_name} (id={chat_id})", essential=True)
-        common._diag(common._db_rows_line(counts), essential=True)
+        common.diag(f"Chat: {chat_name} (id={chat_id})", essential=True)
+        common.diag(common.db_rows_line(counts), essential=True)
         if chat_dirs:
             for d in chat_dirs:
                 # du rather than a stat() per file: a chat directory holds tens
@@ -1099,22 +1099,22 @@ async def _purge_chat(chat_arg, account, config_override, output_override, skip_
                 # interactive question. When du is missing the size is dropped.
                 size = _get_dir_size(d)
                 measured = f" ({format_size(size)})" if size is not None else ""
-                common._diag(f"  Dir: {d}{measured}", essential=True)
+                common.diag(f"  Dir: {d}{measured}", essential=True)
         else:
-            common._diag("  Dir: not found", essential=True)
+            common.diag("  Dir: not found", essential=True)
 
         if not skip_confirm and not confirm("Delete all data for this chat?"):
-            common._diag("Cancelled.", essential=True)
+            common.diag("Cancelled.", essential=True)
             return
 
         deleted = await state.purge_chat(chat_id)
-        common._diag(common._db_rows_line(deleted, "Deleted from DB"))
+        common.diag(common.db_rows_line(deleted, "Deleted from DB"))
 
         for d in chat_dirs:
             shutil.rmtree(d)
-            common._diag(f"  Removed: {d}")
+            common.diag(f"  Removed: {d}")
 
-        common._diag("Done.")
+        common.diag("Done.")
 
 
 @click.command("verify")
@@ -1129,37 +1129,37 @@ def verify_files(account, config, output):
     """Verify integrity of previously downloaded files."""
     exit_code = asyncio.run(_verify_files(account, config, output))
     if exit_code:
-        _fail(code=exit_code)
+        fail(code=exit_code)
 
 
 async def _verify_files(account, config_override, output_override):
-    async with common._opened_state(account, config_override, output_override, required=False) as (
+    async with common.opened_state(account, config_override, output_override, required=False) as (
         state,
         output_base,
         account,
     ):
         if state is None:
-            common._diag("No state database found. Nothing to verify.")
+            common.diag("No state database found. Nothing to verify.")
             return EXIT_OK
 
         broken = await state.get_files_to_verify()
         if not broken:
-            common._diag("All files OK.")
+            common.diag("All files OK.")
             return EXIT_OK
 
-        common._diag(f"Found {len(broken)} files with issues:")
+        common.diag(f"Found {len(broken)} files with issues:")
         for f in broken:
-            common._diag(
+            common.diag(
                 f"  {f['local_path']} - status: {f['status']}, "
                 f"expected: {f['expected_size']}, actual: {f['actual_size']}"
             )
 
         # The config is read again here for one number: how many downloads may
-        # run at once. `_opened_state` drops it, and the alternative -- one file
+        # run at once. `opened_state` drops it, and the alternative -- one file
         # at a time -- leaves the network idle for a whole round-trip per file.
-        _, cfg, _ = common._resolve_output(account, config_override, output_override)
+        _, cfg, _ = common.resolve_output(account, config_override, output_override)
 
-        async with common._connected_api(account) as (api, account):
+        async with common.connected_api(account) as (api, account):
             await asyncio.to_thread(clean_staging, output_base)
             redownloaded = 0
             outcomes = await redownload_broken_files(
@@ -1168,20 +1168,20 @@ async def _verify_files(account, config_override, output_override):
             for outcome in outcomes:
                 entry = outcome.entry
                 if outcome.error is not None:
-                    common._diag(f"  [error] {entry['local_path']}: {outcome.error}", essential=True)
+                    common.diag(f"  [error] {entry['local_path']}: {outcome.error}", essential=True)
                 elif outcome.result is RedownloadResult.no_media:
-                    common._error(f"  [skip] msg {entry['msg_id']}: not found or no media")
+                    common.error(f"  [skip] msg {entry['msg_id']}: not found or no media")
                 elif outcome.result is RedownloadResult.nothing_downloaded:
-                    common._error(f"  [fail] {entry['local_path']}")
+                    common.error(f"  [fail] {entry['local_path']}")
                 elif outcome.result is RedownloadResult.replaced:
                     redownloaded += 1
-                    common._diag(f"  [ok] {outcome.path}")
+                    common.diag(f"  [ok] {outcome.path}")
                 else:
                     # An outcome added to the enum and left unhandled here: the
                     # file stays broken, so it must not pass as re-downloaded.
-                    common._error(f"  [fail] {entry['local_path']}: unhandled outcome {outcome.result!r}")
+                    common.error(f"  [fail] {entry['local_path']}: unhandled outcome {outcome.result!r}")
 
-            common._diag(f"\nRe-downloaded: {redownloaded}/{len(broken)}", essential=True)
+            common.diag(f"\nRe-downloaded: {redownloaded}/{len(broken)}", essential=True)
             if redownloaded < len(broken):
                 return EXIT_FAILURE
             return EXIT_OK

@@ -111,10 +111,10 @@ def test_debug_does_not_turn_on_the_libraries_own_logging():
     """
 
     try:
-        level, include_libraries = cli_common._resolve_log_level(debug=True, log_level=None)
+        level, include_libraries = cli_common.resolve_log_level(debug=True, log_level=None)
         assert (level, include_libraries) == (logging.DEBUG, False)
 
-        cli_common._quiet_third_party_loggers(level, include_libraries=include_libraries)
+        cli_common.quiet_third_party_loggers(level, include_libraries=include_libraries)
         assert logging.getLogger("telethon").level == logging.WARNING
         assert logging.getLogger("aiosqlite").level == logging.WARNING
     finally:
@@ -126,10 +126,10 @@ def test_the_all_suffix_lifts_the_libraries_too():
     """Полный вывод библиотек должен оставаться доступным -- отдельным словом."""
 
     try:
-        level, include_libraries = cli_common._resolve_log_level(debug=False, log_level="DEBUG:all")
+        level, include_libraries = cli_common.resolve_log_level(debug=False, log_level="DEBUG:all")
         assert (level, include_libraries) == (logging.DEBUG, True)
 
-        cli_common._quiet_third_party_loggers(level, include_libraries=include_libraries)
+        cli_common.quiet_third_party_loggers(level, include_libraries=include_libraries)
         assert logging.getLogger("telethon").level == logging.DEBUG
     finally:
         for name in cli_common._THIRD_PARTY_LOGGERS:

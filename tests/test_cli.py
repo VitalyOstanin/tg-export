@@ -56,7 +56,7 @@ async def test_render_index_respects_should_stop():
 
 
 class _RecordingDiag:
-    """Collect _diag calls so tests can assert on visibility, not just text."""
+    """Collect diag calls so tests can assert on visibility, not just text."""
 
     def __init__(self):
         self.calls = []
@@ -80,7 +80,7 @@ def _takeout_cfg(max_file_size=1024):
 async def test_start_takeout_returns_true_on_success(monkeypatch):
 
     diag = _RecordingDiag()
-    monkeypatch.setattr(cli_common, "_diag", diag)
+    monkeypatch.setattr(cli_common, "diag", diag)
     api = MagicMock()
     api.start_takeout = AsyncMock()
 
@@ -95,7 +95,7 @@ async def test_start_takeout_fallback_is_essential(monkeypatch):
     from telethon.errors import RPCError
 
     diag = _RecordingDiag()
-    monkeypatch.setattr(cli_common, "_diag", diag)
+    monkeypatch.setattr(cli_common, "diag", diag)
     api = MagicMock()
     api.start_takeout = AsyncMock(side_effect=RPCError(request=None, message="no takeout"))
 
@@ -109,7 +109,7 @@ async def test_start_takeout_cooldown_is_essential(monkeypatch):
     from telethon.errors import TakeoutInitDelayError
 
     diag = _RecordingDiag()
-    monkeypatch.setattr(cli_common, "_diag", diag)
+    monkeypatch.setattr(cli_common, "diag", diag)
     err = TakeoutInitDelayError(request=None, capture=0)
     err.seconds = 7200
     api = MagicMock()
@@ -126,7 +126,7 @@ async def test_start_takeout_require_turns_fallback_into_error(monkeypatch):
 
     from tg_export.errors import TakeoutUnavailableError
 
-    monkeypatch.setattr(cli_common, "_diag", _RecordingDiag())
+    monkeypatch.setattr(cli_common, "diag", _RecordingDiag())
     api = MagicMock()
     api.start_takeout = AsyncMock(side_effect=RPCError(request=None, message="no takeout"))
 
@@ -139,7 +139,7 @@ async def test_start_takeout_does_not_swallow_programming_errors(monkeypatch):
     # Широкий except Exception прятал и дефекты самого кода — например TypeError
     # из повреждённого takeout_id. Такие ошибки должны доходить до вызывающего.
 
-    monkeypatch.setattr(cli_common, "_diag", _RecordingDiag())
+    monkeypatch.setattr(cli_common, "diag", _RecordingDiag())
     api = MagicMock()
     api.start_takeout = AsyncMock(side_effect=TypeError("object supporting the buffer API required"))
 
@@ -151,28 +151,28 @@ async def test_start_takeout_does_not_swallow_programming_errors(monkeypatch):
 
 
 def test_resolve_log_level_priority(monkeypatch):
-    from tg_export.cli.common import _resolve_log_level
+    from tg_export.cli.common import resolve_log_level
 
     # Второй элемент пары -- включать ли собственные логи библиотек.
     monkeypatch.delenv("LOG_LEVEL", raising=False)
-    assert _resolve_log_level(debug=False, log_level=None) == (logging.WARNING, False)
+    assert resolve_log_level(debug=False, log_level=None) == (logging.WARNING, False)
 
     monkeypatch.setenv("LOG_LEVEL", "ERROR")
-    assert _resolve_log_level(debug=False, log_level=None) == (logging.ERROR, False)
+    assert resolve_log_level(debug=False, log_level=None) == (logging.ERROR, False)
     # Флаг перекрывает переменную окружения...
-    assert _resolve_log_level(debug=False, log_level="INFO") == (logging.INFO, False)
+    assert resolve_log_level(debug=False, log_level="INFO") == (logging.INFO, False)
     # ...а --debug перекрывает и флаг.
-    assert _resolve_log_level(debug=True, log_level="INFO") == (logging.DEBUG, False)
+    assert resolve_log_level(debug=True, log_level="INFO") == (logging.DEBUG, False)
 
 
 def test_resolve_log_level_rejects_unknown_name(monkeypatch):
     import click
 
-    from tg_export.cli.common import _resolve_log_level
+    from tg_export.cli.common import resolve_log_level
 
     monkeypatch.setenv("LOG_LEVEL", "not-a-level")
     with pytest.raises(click.BadParameter):
-        _resolve_log_level(debug=False, log_level=None)
+        resolve_log_level(debug=False, log_level=None)
 
 
 def test_diag_hides_routine_lines_under_quiet(monkeypatch):
@@ -182,8 +182,8 @@ def test_diag_hides_routine_lines_under_quiet(monkeypatch):
     printed = []
     monkeypatch.setattr(cli.click, "echo", lambda msg, **kw: printed.append(msg))
 
-    cli_common._diag("routine status")
-    cli_common._diag("something failed", essential=True)
+    cli_common.diag("routine status")
+    cli_common.diag("something failed", essential=True)
 
     assert printed == ["something failed"]
 
@@ -195,8 +195,8 @@ def test_diag_prints_everything_without_quiet(monkeypatch):
     printed = []
     monkeypatch.setattr(cli.click, "echo", lambda msg, **kw: printed.append(msg))
 
-    cli_common._diag("routine status")
-    cli_common._diag("something failed", essential=True)
+    cli_common.diag("routine status")
+    cli_common.diag("something failed", essential=True)
 
     assert printed == ["routine status", "something failed"]
 
@@ -249,7 +249,7 @@ async def test_start_takeout_asks_for_the_largest_configured_limit(monkeypatch):
     правилам: правило чата с большим max_file_size иначе было бы урезано
     самой сессией."""
 
-    monkeypatch.setattr(cli_common, "_diag", _RecordingDiag())
+    monkeypatch.setattr(cli_common, "diag", _RecordingDiag())
     api = MagicMock()
     api.start_takeout = AsyncMock()
 
@@ -274,7 +274,7 @@ def test_init_from_catalog_writes_the_config_file(tmp_path, monkeypatch):
     cfg_dir = tmp_path / "config"
     mgr = AccountManager(config_dir=cfg_dir)
     mgr.ensure_dirs()
-    monkeypatch.setattr("tg_export.cli.common._mgr", lambda: AccountManager(config_dir=cfg_dir))
+    monkeypatch.setattr("tg_export.cli.common.account_manager", lambda: AccountManager(config_dir=cfg_dir))
 
     catalog = tmp_path / "catalog.yaml"
     catalog.write_text(
@@ -303,13 +303,13 @@ def test_init_from_catalog_writes_the_config_file(tmp_path, monkeypatch):
 def _account_with_config(tmp_path, monkeypatch, output_path: str, account: str = "acc"):
     """Завести один аккаунт, в конфиге которого указан ``output_path``; вернуть менеджер."""
     from tg_export.auth import AccountManager
-    from tg_export.cli.common import _mgr  # noqa: F401  -- patched below
+    from tg_export.cli.common import account_manager  # noqa: F401  -- patched below
 
     cfg_dir = tmp_path / "config"
     mgr = AccountManager(config_dir=cfg_dir)
     mgr.ensure_dirs()
     mgr.config_path(account).write_text(f"output:\n  path: {output_path}\n", encoding="utf-8")
-    monkeypatch.setattr("tg_export.cli.common._mgr", lambda: AccountManager(config_dir=cfg_dir))
+    monkeypatch.setattr("tg_export.cli.common.account_manager", lambda: AccountManager(config_dir=cfg_dir))
     return mgr
 
 
@@ -323,7 +323,7 @@ def test_each_account_exports_into_its_own_directory(tmp_path, monkeypatch):
     base = tmp_path / "exports"
     _account_with_config(tmp_path, monkeypatch, str(base))
 
-    _, _, output_base = cli_common._resolve_output("acc", None, None)
+    _, _, output_base = cli_common.resolve_output("acc", None, None)
 
     assert output_base == base / "acc"
 
@@ -334,7 +334,7 @@ def test_a_path_that_already_names_the_account_is_not_doubled(tmp_path, monkeypa
     base = tmp_path / "exports" / "acc"
     _account_with_config(tmp_path, monkeypatch, str(base))
 
-    _, _, output_base = cli_common._resolve_output("acc", None, None)
+    _, _, output_base = cli_common.resolve_output("acc", None, None)
 
     assert output_base == base
 
@@ -348,7 +348,7 @@ def test_an_existing_export_stays_where_it_was_written(tmp_path, monkeypatch):
     (base / cli.STATE_DB_NAME).write_bytes(b"")
     _account_with_config(tmp_path, monkeypatch, str(base))
 
-    _, _, output_base = cli_common._resolve_output("acc", None, None)
+    _, _, output_base = cli_common.resolve_output("acc", None, None)
 
     assert output_base == base
 
@@ -359,7 +359,7 @@ def test_the_output_override_names_the_directory_itself(tmp_path, monkeypatch):
     _account_with_config(tmp_path, monkeypatch, str(tmp_path / "exports"))
     override = tmp_path / "elsewhere"
 
-    _, _, output_base = cli_common._resolve_output("acc", None, override)
+    _, _, output_base = cli_common.resolve_output("acc", None, override)
 
     assert output_base == override
 
@@ -425,7 +425,7 @@ def test_reset_of_the_whole_database_asks_before_deleting(tmp_path, monkeypatch)
         finally:
             await st.close()
 
-    monkeypatch.setattr(cli_common, "_opened_state", fake)
+    monkeypatch.setattr(cli_common, "opened_state", fake)
     asked = []
     monkeypatch.setattr(cli.click, "confirm", lambda text, **kw: asked.append(text) or False)
 
@@ -453,7 +453,7 @@ def test_reset_of_the_whole_database_skips_the_question_with_yes(tmp_path, monke
         finally:
             await st.close()
 
-    monkeypatch.setattr(cli_common, "_opened_state", fake)
+    monkeypatch.setattr(cli_common, "opened_state", fake)
     monkeypatch.setattr(cli.click, "confirm", lambda *a, **k: pytest.fail("вопрос задан вопреки --yes"))
 
     code = asyncio.run(cli_state._state_reset("acc", None, None, True, True, None, skip_confirm=True))
@@ -478,7 +478,7 @@ def _state_with_one_chat(tmp_path, monkeypatch, chat_id=42):
         finally:
             await st.close()
 
-    monkeypatch.setattr(cli_common, "_opened_state", fake)
+    monkeypatch.setattr(cli_common, "opened_state", fake)
     return st
 
 
@@ -497,7 +497,7 @@ def test_reset_of_one_chat_asks_before_deleting_its_messages(tmp_path, monkeypat
 
     _state_with_one_chat(tmp_path, monkeypatch)
     lines = []
-    monkeypatch.setattr(cli_common, "_diag", lambda text, **kw: lines.append((text, kw)))
+    monkeypatch.setattr(cli_common, "diag", lambda text, **kw: lines.append((text, kw)))
     asked = []
     monkeypatch.setattr(cli.click, "confirm", lambda text, **kw: asked.append(text) or False)
 
@@ -570,7 +570,7 @@ def test_init_refuses_to_overwrite_an_existing_config(tmp_path, monkeypatch):
 
     cfg_dir = tmp_path / "config"
     AccountManager(config_dir=cfg_dir).ensure_dirs()
-    monkeypatch.setattr("tg_export.cli.common._mgr", lambda: AccountManager(config_dir=cfg_dir))
+    monkeypatch.setattr("tg_export.cli.common.account_manager", lambda: AccountManager(config_dir=cfg_dir))
 
     existing = tmp_path / "generated.yaml"
     existing.write_text("chats:\n  - id: 1\n    skip: true\n", encoding="utf-8")
@@ -593,7 +593,7 @@ def test_init_force_keeps_the_previous_config_next_to_the_new_one(tmp_path, monk
 
     cfg_dir = tmp_path / "config"
     AccountManager(config_dir=cfg_dir).ensure_dirs()
-    monkeypatch.setattr("tg_export.cli.common._mgr", lambda: AccountManager(config_dir=cfg_dir))
+    monkeypatch.setattr("tg_export.cli.common.account_manager", lambda: AccountManager(config_dir=cfg_dir))
 
     existing = tmp_path / "generated.yaml"
     existing.write_text("chats:\n  - id: 1\n    skip: true\n", encoding="utf-8")
@@ -753,7 +753,7 @@ def test_account_default_without_a_default_leaves_stdout_empty(tmp_path, monkeyp
     cfg_dir = tmp_path / "config"
     mgr = AccountManager(config_dir=cfg_dir)
     mgr.ensure_dirs()
-    monkeypatch.setattr(cli_common, "_mgr", lambda: AccountManager(config_dir=cfg_dir))
+    monkeypatch.setattr(cli_common, "account_manager", lambda: AccountManager(config_dir=cfg_dir))
 
     result = CliRunner().invoke(main, ["account", "default"])
 
@@ -789,7 +789,7 @@ def test_auth_check_takes_the_account_as_an_option_too(tmp_path, monkeypatch):
     mgr.save_credentials(1, "hash")
     for alias in ("first", "second"):
         mgr.session_path(alias).write_bytes(b"")
-    monkeypatch.setattr(cli_common, "_mgr", lambda: AccountManager(config_dir=cfg_dir))
+    monkeypatch.setattr(cli_common, "account_manager", lambda: AccountManager(config_dir=cfg_dir))
 
     api = MagicMock()
     api.__aenter__ = AsyncMock(side_effect=RuntimeError("cannot connect"))
@@ -817,7 +817,7 @@ def test_takeout_clear_takes_the_account_as_an_option_too(tmp_path, monkeypatch)
         api.client.session = None
         yield api, account_name or "acc"
 
-    monkeypatch.setattr(cli_common, "_connected_api", fake)
+    monkeypatch.setattr(cli_common, "connected_api", fake)
 
     result = CliRunner().invoke(main, ["takeout", "clear", "--account", "second"])
 

@@ -104,12 +104,12 @@ def test_api_hash_prompt_hides_input(monkeypatch, tmp_path):
 
     monkeypatch.setattr(auth_cli, "ask", fake_ask)
 
-    def _mgr():
+    def mgr():
         mgr = AccountManager(config_dir=tmp_path / "config")
         mgr.ensure_dirs()
         return mgr
 
-    monkeypatch.setattr(cli_common, "_mgr", _mgr)
+    monkeypatch.setattr(cli_common, "account_manager", mgr)
 
     result = CliRunner().invoke(auth_cli.auth_credentials, [])
 

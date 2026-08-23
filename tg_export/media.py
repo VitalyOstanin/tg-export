@@ -597,24 +597,25 @@ class MediaDownloader:
             if existing and existing["status"] == FileStatus.done:
                 return Path(existing["local_path"]), DownloadStatus.existing
 
-        # Try to hardlink from another chat within this account
-        if media.file:
-            linked = await self._try_link_intra_account(media, chat_dir, chat_id)
-            if linked:
-                await self._register(tl_message, media, linked, chat_id)
-                return linked, DownloadStatus.reused_chat
-
-        # Try to copy from tdesktop export instead of downloading
-        imported = await self._try_import_tdesktop(tl_message, media, chat_dir)
-        if imported:
-            await self._register(tl_message, media, imported, chat_id)
-            return imported, DownloadStatus.reused_tdesktop
-
-        # Try to hardlink from sibling account export
-        linked = await self._try_link_sibling(media, chat_dir)
-        if linked:
-            await self._register(tl_message, media, linked, chat_id)
-            return linked, DownloadStatus.reused_sibling
+        # Bytes already on this disk beat bytes over the network, whichever
+        # export left them there. Each source is asked in turn, and what
+        # follows a hit -- registering the file and reporting where it came
+        # from -- is written once for all of them.
+        # Callables, not coroutines: a coroutine built for a source that is
+        # never reached is never awaited, and Python reports that as a warning.
+        sources = (
+            (DownloadStatus.reused_chat, lambda: self._try_link_intra_account(media, chat_dir, chat_id)),
+            (
+                DownloadStatus.reused_tdesktop,
+                lambda: self._try_import_tdesktop(tl_message, media, chat_dir),
+            ),
+            (DownloadStatus.reused_sibling, lambda: self._try_link_sibling(media, chat_dir)),
+        )
+        for status, attempt in sources:
+            reused = await attempt()
+            if reused:
+                await self._register(tl_message, media, reused, chat_id)
+                return reused, status
 
         chat_dir.mkdir(parents=True, exist_ok=True)
         if not self._has_free_space(chat_dir):

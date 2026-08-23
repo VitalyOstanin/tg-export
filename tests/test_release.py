@@ -368,3 +368,38 @@ def test_the_changelog_index_lists_every_version_section():
 
     assert headings, "в CHANGELOG нет ни одного раздела версии"
     assert listed == headings, f"оглавление и разделы разошлись: {listed} != {headings}"
+
+
+def test_a_number_that_is_not_a_step_up_is_named_as_such(tmp_path):
+    """Отказ строился так, будто до него доходят только minor и major.
+
+    Обе тернарные ветки выбирали «минорный» вариант и при `patch`: сообщение
+    называло раздел «Добавлено», которого в заметках нет, в одной фразе
+    требовало patch и «1.3.0 или позже», а настоящая причина -- нижняя секция
+    с тем же номером -- не упоминалась вовсе.
+    """
+    changelog = (
+        "# Changelog\n\n## [1.2.3] -- 2026-07-30\n\n### Исправлено\n\n- Починено.\n\n"
+        "## [1.2.3] -- 2026-07-29\n\n### Исправлено\n\n- Старое.\n"
+    )
+    result, _ = _run("v1.2.3", tmp_path, pyproject_version="1.2.3", changelog=changelog)
+
+    assert result.returncode != 0, result.stdout
+    message = result.stdout + result.stderr
+    assert "Добавлено" not in message, message
+    assert "1.3.0" not in message, message
+    assert "1.2.3" in message
+
+
+def test_a_missing_bump_names_the_section_that_asks_for_it(tmp_path):
+    """Заметки с разделом «Добавлено» требуют minor, и отказ обязан это назвать."""
+    changelog = (
+        "# Changelog\n\n## [1.2.4] -- 2026-07-30\n\n### Добавлено\n\n- Новое.\n\n"
+        "## [1.2.3] -- 2026-07-29\n\n### Исправлено\n\n- Старое.\n"
+    )
+    result, _ = _run("v1.2.4", tmp_path, pyproject_version="1.2.4", changelog=changelog)
+
+    assert result.returncode != 0, result.stdout
+    message = result.stdout + result.stderr
+    assert "Добавлено" in message
+    assert "1.3.0" in message
