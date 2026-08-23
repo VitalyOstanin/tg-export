@@ -4,7 +4,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from tg_export.config import Config
 from tg_export.exporter import Exporter, resolve_chat_dir, sanitize_name
+from tg_export.models import Chat, ChatType
 
 
 @pytest.mark.asyncio
@@ -327,3 +329,56 @@ def test_orphan_cleanup_leaves_alone_what_lies_outside_the_chat_directory(tmp_pa
 
     assert outside.exists(), "удалён файл за пределами каталога чата"
     assert (photos / "link.jpg").is_symlink()
+
+
+def _catalog_chat(*, is_left: bool = False, is_archived: bool = False) -> Chat:
+    """Собрать запись каталога, задав только флаги, важные для отбора."""
+    return Chat(
+        id=1,
+        name="Left channel",
+        type=ChatType.public_channel,
+        username=None,
+        folder=None,
+        members_count=None,
+        last_message_date=None,
+        messages_count=0,
+        is_left=is_left,
+        is_archived=is_archived,
+        is_forum=False,
+        migrated_to_id=None,
+        migrated_from_id=None,
+        is_monoforum=False,
+    )
+
+
+@pytest.mark.parametrize(
+    ("chat", "config"),
+    [
+        (_catalog_chat(is_left=True), Config(left_channels_action="export_with_defaults")),
+        (_catalog_chat(is_archived=True), Config(archived_action="export_with_defaults")),
+    ],
+    ids=["left", "archived"],
+)
+def test_a_chat_admitted_by_a_flag_survives_the_unmatched_rule(chat: Chat, config: Config):
+    """Отбор чатов терял то, что уже разрешено настройкой `left_channels`/`archived`.
+
+    Флаг снимал запрет, но чат затем шёл через общий подбор правил и отсекался
+    веткой `unmatched: skip` -- значением по умолчанию. Настройка не выгружала
+    ничего, хотя каталог покинутых каналов запрашивался у сервера.
+    """
+    from tg_export.exporter import ExportStats
+
+    exporter = Exporter(
+        api=AsyncMock(),
+        state=AsyncMock(),
+        config=config,
+        renderer=MagicMock(),
+        downloader=AsyncMock(),
+        account="test",
+    )
+    stats = ExportStats()
+
+    included = exporter._select_chats([chat], stats)
+
+    assert len(included) == 1, "чат, разрешённый флагом, отброшен веткой unmatched"
+    assert stats.chats_skipped == 0

@@ -769,11 +769,19 @@ class Exporter:
                 stats.chats_skipped += 1
                 continue
 
+            # A chat these two settings let through must not be dropped again
+            # by `unmatched: skip`, the default: the setting that admitted it
+            # would then change nothing.
+            admitted_by_flag = (
+                chat.is_left and self.config.left_channels_action == "export_with_defaults"
+            ) or (chat.is_archived and self.config.archived_action == "export_with_defaults")
+
             chat_config = self.config.resolve_chat_config(
                 chat_id=chat.id,
                 chat_name=chat.name,
                 folder=chat.folder,
                 chat_type=chat.type.value,
+                allow_unmatched=admitted_by_flag,
             )
             if chat_config is None:
                 stats.chats_skipped += 1

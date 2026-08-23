@@ -34,8 +34,17 @@ _SIZE_MULTIPLIERS = {
 
 
 def parse_size(s: str | int) -> int:
-    """Parse '50MB', '2GB' etc. into bytes. Plain int passes through."""
+    """Parse '50MB', '2GB' etc. into bytes. Plain int passes through as bytes.
+
+    `bool` is an int in Python, so `max_file_size: true` used to become one
+    byte -- a ban on downloading anything, written as what looks like a switch.
+    A negative number is the same ban from the other side.
+    """
+    if isinstance(s, bool):
+        raise ConfigError(f"Invalid size format: {s!r} (a size cannot be a boolean)")
     if isinstance(s, (int, float)):
+        if s < 0:
+            raise ConfigError(f"Invalid size format: {s!r} (a size cannot be negative)")
         return int(s)
     m = _SIZE_RE.match(str(s))
     if not m:
@@ -177,11 +186,17 @@ class Config:
         chat_name: str,
         folder: str | None,
         chat_type: str | None = None,
+        allow_unmatched: bool = False,
     ) -> ChatExportConfig | None:
         """Resolve config for a chat using priority rules.
 
         Priority: chats > folders.chats > folders > type_rules > defaults.
         Returns None if the chat should be skipped.
+
+        `allow_unmatched` is set for a chat another setting has already let
+        through -- a left or archived one with `export_with_defaults`. Without
+        it such a chat fell into `unmatched: skip`, the default, and the
+        setting that had just admitted it changed nothing.
         """
         # Priority 1: explicit chats section.
         # A linear scan on purpose: the section is written by hand and holds
@@ -208,13 +223,18 @@ class Config:
                 if chat_rule.name is not None and chat_rule.name == chat_name:
                     return self._rule_to_export_config(chat_rule)
 
-            # Priority 3: folder-level rule
-            # If folder is defined (not skipped), check type_rules for this chat,
-            # then fall back to folder media or defaults
-            if chat_type and self.type_rules:
-                type_rule = self._match_type_rule(chat_type)
-                if type_rule is not None:
-                    return self._rule_to_export_config(type_rule)
+            # Priority 3: folder-level rule.
+            # A type rule that skips still applies inside a folder -- it bans
+            # the chat rather than describes its media. Everything else the
+            # folder says about media wins over the type: that is the order
+            # this method and docs/configuration.md both declare.
+            type_rule = self._match_type_rule(chat_type) if chat_type and self.type_rules else None
+            if type_rule is not None and type_rule.skip:
+                return None
+            if folder_rule.media is not None:
+                return self._defaults_export_config(folder_rule.media)
+            if type_rule is not None:
+                return self._rule_to_export_config(type_rule)
 
             return self._defaults_export_config(folder_rule.media)
 
@@ -225,7 +245,7 @@ class Config:
                 return self._rule_to_export_config(type_rule)
 
         # Priority 5: defaults (if unmatched allows it)
-        if self.unmatched_action == "skip":
+        if self.unmatched_action == "skip" and not allow_unmatched:
             return None
 
         return self._defaults_export_config()
@@ -501,6 +521,19 @@ def _parse_import_entry(entry: Any) -> ImportExistingEntry:
     return ImportExistingEntry(path=entry["path"], type=entry["type"])
 
 
+def _require_bool(raw: dict[str, Any], key: str, default: bool = True) -> bool:
+    """A switch that YAML did not read as a switch is a switch turned the other way.
+
+    `personal_info: "false"` is a non-empty string, that is, true: the personal
+    data went into the export although the file says it should not. Every other
+    section checks the type of what it read; these flags were the exception.
+    """
+    value = raw.get(key, default)
+    if not isinstance(value, bool):
+        raise ConfigError(f"{key} must be true or false, got {type(value).__name__} ({value!r})")
+    return value
+
+
 def _validate_choice(value: str, allowed: set[str], field_name: str) -> str:
     if value not in allowed:
         allowed_str = ", ".join(sorted(allowed))
@@ -591,13 +624,13 @@ def load_config(path: Path) -> Config:
     return Config(
         output=output,
         defaults=defaults,
-        personal_info=raw.get("personal_info", True),
-        contacts=raw.get("contacts", True),
-        sessions=raw.get("sessions", True),
-        userpics=raw.get("userpics", True),
-        stories=raw.get("stories", True),
-        profile_music=raw.get("profile_music", True),
-        other_data=raw.get("other_data", True),
+        personal_info=_require_bool(raw, "personal_info"),
+        contacts=_require_bool(raw, "contacts"),
+        sessions=_require_bool(raw, "sessions"),
+        userpics=_require_bool(raw, "userpics"),
+        stories=_require_bool(raw, "stories"),
+        profile_music=_require_bool(raw, "profile_music"),
+        other_data=_require_bool(raw, "other_data"),
         left_channels_action=left_channels_action,
         archived_action=archived_action,
         import_existing=import_existing,

@@ -536,3 +536,71 @@ def test_the_template_and_the_example_carry_the_defaults_of_the_loader(tmp_path)
             "other_data",
         ):
             assert getattr(cfg, flag) == getattr(defaults, flag), (path, flag)
+
+
+def test_folder_media_is_not_overridden_by_a_type_rule():
+    """Правило папки старше правила типа -- как объявлено в докстроке и документации.
+
+    Внутри ветки папки `type_rules` спрашивались раньше медиа-настроек самой
+    папки, и настройка папки не применялась вовсе, если для типа чата нашлось
+    правило. Порядок «chats > folders.chats > folders > type_rules > defaults»
+    записан и в методе, и в docs/configuration.md.
+    """
+    from tg_export.config import FolderRule, MediaConfig, TypeRule
+
+    cfg = Config(
+        folders={"Work": FolderRule(media=MediaConfig(types=["all"], max_file_size_bytes=1024**3))},
+        type_rules={"channels": TypeRule(media=MediaConfig(types=["photo"], max_file_size_bytes=1024**2))},
+    )
+
+    result = cfg.resolve_chat_config(1, "c", "Work", chat_type="public_channel")
+
+    assert result is not None
+    assert result.media.types == ["all"], "правило типа перекрыло медиа-настройки папки"
+    assert result.media.max_file_size_bytes == 1024**3
+
+
+def test_a_chat_allowed_by_the_left_flag_is_exported_with_defaults():
+    """`left_channels: export_with_defaults` обязан выгружать, а не молча пропускать.
+
+    Значение снимало запрет, но чат затем шёл через общий подбор правил и
+    отбрасывался веткой `unmatched: skip` -- значением по умолчанию и тем, что
+    пишет в конфиг `init`. Покинутые каналы при этом запрашивались у сервера.
+    """
+    cfg = Config(left_channels_action="export_with_defaults")
+
+    result = cfg.resolve_chat_config(
+        1, "Left channel", None, chat_type="public_channel", allow_unmatched=True
+    )
+
+    assert result is not None, "чат, разрешённый флагом, отброшен как не подошедший ни под одно правило"
+    assert result.media.types == cfg.defaults.media.types
+
+
+def test_a_boolean_setting_written_as_a_string_is_refused(tmp_path):
+    """`personal_info: "false"` включало то, что пользователь выключал.
+
+    Строка в YAML истинна, поэтому личные данные выгружались вопреки записи.
+    Остальные разделы свой тип проверяют -- булевы флаги были единственным
+    исключением.
+    """
+    path = _write_config(tmp_path, 'personal_info: "false"\n')
+
+    with pytest.raises(ConfigError, match="personal_info"):
+        load_config(path)
+
+
+def test_a_size_written_as_a_boolean_or_a_negative_number_is_refused():
+    """`max_file_size: true` и отрицательный размер не могут быть размерами.
+
+    `parse_size` пропускает любое число, а `bool` в Python -- число: `true`
+    превращался в один байт, то есть в запрет скачивать что-либо, а
+    отрицательное значение -- в тот же запрет с другой стороны.
+    """
+    from tg_export.config import parse_size
+
+    with pytest.raises(ConfigError, match="[Ss]ize"):
+        parse_size(True)
+    with pytest.raises(ConfigError, match="[Ss]ize"):
+        parse_size(-1)
+    assert parse_size(100) == 100
