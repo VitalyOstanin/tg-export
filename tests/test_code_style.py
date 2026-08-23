@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 
@@ -19,6 +20,60 @@ PROJECT = Path(__file__).resolve().parent.parent / "tg_export"
 
 def _read(name: str) -> str:
     return (PROJECT / name).read_text(encoding="utf-8")
+
+
+def _tree(name: str) -> ast.Module:
+    """Разобрать модуль пакета.
+
+    Проверки по дереву, а не по тексту: регулярное выражение по исходнику
+    находит совпадение и в комментарии, и в строке, а при ином форматировании
+    перестаёт находить вообще -- и тест становится зелёным, ничего не проверяя.
+    """
+    return ast.parse(_read(name))
+
+
+def _called_name(node: ast.AST) -> str | None:
+    """Имя вызываемого: `foo(...)` -> "foo", `bar.foo(...)` -> "foo"."""
+    if not isinstance(node, ast.Call):
+        return None
+    func = node.func
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    return getattr(func, "id", None)
+
+
+def _qualified_call(node: ast.AST) -> str | None:
+    """Полное имя вызова через точку: `console.log(...)` -> "console.log"."""
+    if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+        return None
+    parts = [node.func.attr]
+    owner = node.func.value
+    while isinstance(owner, ast.Attribute):
+        parts.append(owner.attr)
+        owner = owner.value
+    if isinstance(owner, ast.Name):
+        parts.append(owner.id)
+    return ".".join(reversed(parts))
+
+
+def _bare_prints(tree: ast.AST) -> list[int]:
+    """Строки вызовов `print(...)` без владельца (не `console.print`)."""
+    return [
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "print"
+    ]
+
+
+def _function(tree: ast.AST, name: str) -> ast.FunctionDef | ast.AsyncFunctionDef:
+    """Найти функцию по имени; её отсутствие -- отказ, а не повод пропустить проверку."""
+    found = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name == name
+    ]
+    assert found, f"функция {name} не найдена: проверка ниже не имела бы смысла"
+    return found[0]
 
 
 # CLI разложен на пакет: модуль на группу команд плюс common. Проверки, которые
@@ -31,44 +86,44 @@ def _read_cli() -> str:
 
 
 def test_auth_uses_click_echo_not_bare_print():
-    """auth.py не должен вызывать bare print(); используй click.echo."""
-    src = _read("auth.py")
-    matches = []
-    for ln_no, line in enumerate(src.splitlines(), start=1):
-        # bare print(, не console.print, не click.print и т.п.
-        if re.search(r"(?<![\w.])print\(", line):
-            matches.append((ln_no, line.strip()))
-    assert not matches, f"auth.py содержит bare print(): {matches!r}"
+    """auth.py не должен вызывать bare print(); используй click.echo.
+
+    print пишет в stdout, зарезервированный за машиночитаемым выводом команд
+    запроса, и не подчиняется --quiet.
+    """
+    lines = _bare_prints(_tree("auth.py"))
+    assert not lines, f"auth.py содержит bare print() на строках: {lines}"
 
 
 def test_log_function_uses_rich_console_not_bare_print():
-    """exporter._log не должен использовать bare print, чтобы не зависеть от состояния Live."""
-    src = _read("exporter.py")
-    m = re.search(
-        r"^def _log\([^)]*\)[^\n]*:\n(?:\s+\".*?\"\"\"\n)?(?P<body>(?:    [^\n]*\n)+)",
-        src,
-        flags=re.MULTILINE | re.DOTALL,
+    """exporter._log не должен использовать bare print, чтобы не зависеть от состояния Live.
+
+    Прежняя редакция искала тело функции регулярным выражением и проверяла его
+    только при совпадении: переименование, декоратор или иное форматирование --
+    и проверка молча переставала что-либо проверять.
+    """
+    lines = _bare_prints(_function(_tree("exporter.py"), "_log"))
+    assert not lines, (
+        f"_log использует bare print() на строках {lines}; нужен console.print(..., markup=False)"
     )
-    if m:
-        body = m.group("body")
-        # bare print( без префикса (например, console.print)
-        assert not re.search(r"(?<![\w.])print\(", body), (
-            "_log не должен использовать bare print(); используй console.print(..., markup=False)"
-        )
 
 
 def test_no_console_log_calls_in_exporter():
     """Унификация: console.log смешан с console.print. Используем только console.print."""
-    src = _read("exporter.py")
-    matches = re.findall(r"console\.log\(", src)
-    assert not matches, f"console.log() не должен использоваться: {len(matches)} вхождений"
+    lines = [
+        node.lineno for node in ast.walk(_tree("exporter.py")) if _qualified_call(node) == "console.log"
+    ]
+    assert not lines, f"console.log() не должен использоваться, строки: {lines}"
 
 
 def test_no_manual_live_enter_exit_in_exporter():
     """Live должен использоваться через with-блок, а не ручным __enter__/__exit__."""
-    src = _read("exporter.py")
-    assert "live_ctx.__enter__" not in src, "Live должен использоваться через with-блок"
-    assert "live_ctx.__exit__" not in src, "Live должен использоваться через with-блок"
+    manual = [
+        (node.lineno, _called_name(node))
+        for node in ast.walk(_tree("exporter.py"))
+        if _called_name(node) in {"__enter__", "__exit__"}
+    ]
+    assert not manual, f"Live должен использоваться через with-блок: {manual}"
 
 
 def test_every_telegram_client_is_built_on_the_fixed_session():
@@ -170,15 +225,22 @@ def test_no_manual_async_context_calls_in_api():
     """Takeout-контекст должен вестись через AsyncExitStack, а не ручными
     __aenter__/__aexit__: при ручном вызове выход из контекста не привязан к
     выходу из функции, и отпустить сессию на всех путях выполнения нечем."""
-    src = _read("api.py")
-    calls = re.findall(r"\.__a(?:enter|exit)__\(", src)
-    assert not calls, f"используй AsyncExitStack вместо ручного вызова контекста: {calls}"
+    manual = [
+        (node.lineno, _called_name(node))
+        for node in ast.walk(_tree("api.py"))
+        if _called_name(node) in {"__aenter__", "__aexit__"}
+    ]
+    assert not manual, f"используй AsyncExitStack вместо ручного вызова контекста: {manual}"
 
 
 def test_strip_markup_function_removed():
     """_strip_markup дублирует Text.from_markup(s).plain и не нужен после рефактора _log."""
-    src = _read("exporter.py")
-    assert "def _strip_markup" not in src, (
+    defined = [
+        node.name
+        for node in ast.walk(_tree("exporter.py"))
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name == "_strip_markup"
+    ]
+    assert not defined, (
         "_strip_markup должен быть удалён -- используй console.print(markup=False) или "
         "rich.text.Text.from_markup(s).plain"
     )
@@ -186,31 +248,36 @@ def test_strip_markup_function_removed():
 
 def test_logger_declared_after_all_module_imports():
     """logger = logging.getLogger должен идти после блока импортов (PEP 8)."""
-    src = _read("exporter.py")
-    lines = src.splitlines()
-
+    body = _tree("exporter.py").body
     logger_idx = next(
-        (i for i, ln in enumerate(lines) if re.match(r"^logger\s*=\s*logging\.getLogger", ln)),
+        (
+            i
+            for i, node in enumerate(body)
+            if isinstance(node, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == "logger" for t in node.targets)
+        ),
         None,
     )
     assert logger_idx is not None, "logger не объявлен"
 
-    after = lines[logger_idx + 1 :]
-    bad_imports = [
-        (logger_idx + 1 + i, ln) for i, ln in enumerate(after) if re.match(r"^(import|from)\s+\w", ln)
+    late = [
+        (node.lineno, ast.unparse(node))
+        for node in body[logger_idx + 1 :]
+        if isinstance(node, ast.Import | ast.ImportFrom)
     ]
-    assert not bad_imports, f"после logger=... идут module-level импорты (PEP 8): {bad_imports!r}"
+    assert not late, f"после logger=... идут module-level импорты (PEP 8): {late}"
 
 
 def test_timedelta_imported_at_module_level_in_exporter():
     """from datetime import timedelta должен быть на уровне модуля, не внутри функции."""
-    src = _read("exporter.py")
-    inside_func = re.findall(
-        r"^[ \t]+from datetime import timedelta",
-        src,
-        flags=re.MULTILINE,
+    tree = _tree("exporter.py")
+    at_module_level = any(
+        isinstance(node, ast.ImportFrom)
+        and node.module == "datetime"
+        and any(alias.name == "timedelta" for alias in node.names)
+        for node in tree.body
     )
-    assert not inside_func, "from datetime import timedelta должен быть на уровне модуля, не внутри функции"
+    assert at_module_level, "from datetime import timedelta должен стоять в шапке exporter.py"
 
 
 def test_standard_library_is_imported_at_module_level():
@@ -222,7 +289,6 @@ def test_standard_library_is_imported_at_module_level():
     интерпретатором, а импорт внутри функции вдобавок перекрывал модульный
     `logger` локальной переменной.
     """
-    import ast
     import sys
 
     offenders = []
@@ -246,10 +312,13 @@ def test_standard_library_is_imported_at_module_level():
 
 def test_exporter_imports_rich_escape():
     """exporter должен импортировать rich.markup.escape, чтобы экранировать пользовательский ввод."""
-    src = _read("exporter.py")
-    assert re.search(r"from rich\.markup import\b.*\bescape\b", src), (
-        "exporter.py должен импортировать escape из rich.markup для эскейпа имён чатов/файлов"
+    imported = any(
+        isinstance(node, ast.ImportFrom)
+        and node.module == "rich.markup"
+        and any(alias.name == "escape" for alias in node.names)
+        for node in ast.walk(_tree("exporter.py"))
     )
+    assert imported, "exporter.py должен импортировать escape из rich.markup для эскейпа имён чатов/файлов"
 
 
 def test_every_package_data_file_is_declared_for_packaging():
@@ -379,12 +448,13 @@ def test_cli_does_not_run_sql_of_its_own():
     и кортеж таблиц чата был продублирован в двух местах: правка схемы в одном
     из них давала purge, который удаляет не то, о чём предупредил.
     """
-    src = _read_cli()
-    hits = [
-        (n, line.strip())
-        for n, line in enumerate(src.splitlines(), start=1)
-        if re.search(r"\b(?:state|st)\.db\.", line)
-    ]
+    hits = []
+    for path in CLI_MODULES:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            call = _qualified_call(node)
+            if call and re.match(r"^(?:state|st)\.db\.", call):
+                hits.append((path.name, node.lineno, call))
     assert not hits, f"обращайся к БД через методы ExportState: {hits}"
 
 

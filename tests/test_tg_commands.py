@@ -568,3 +568,29 @@ def test_tg_info_reports_a_failed_chat_on_stderr():
     assert result.exit_code == 1
     assert "ERROR" not in result.stdout
     assert "chat unavailable" in result.stderr
+
+
+def test_upload_progress_yields_nothing_under_a_running_live(monkeypatch):
+    """Рисует только верхний живой виджет console; остальные rich держит в стеке.
+
+    Экспорт держит `Live` на общем console, прогресс отправки рисуется на нём
+    же. Сегодня пути не пересекаются, но переиспользование `_send_files` внутри
+    экспорта дало бы прогресс-бар, который стоит обновлений и ничего не
+    показывает.
+    """
+    import io
+
+    from rich.console import Console
+    from rich.live import Live
+
+    import tg_export.cli.tg as cli_tg
+    import tg_export.console as console_module
+
+    test_console = Console(file=io.StringIO(), force_terminal=True)
+    monkeypatch.setattr(console_module, "console", test_console)
+
+    with (
+        Live(console=test_console, redirect_stdout=False, redirect_stderr=False),
+        cli_tg._upload_progress(by_bytes=True) as progress,
+    ):
+        assert progress is None

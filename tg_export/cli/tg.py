@@ -301,6 +301,18 @@ def _upload_progress(by_bytes: bool):
         yield None
         return
 
+    # Only the topmost live display of a console renders; rich keeps the rest
+    # on a stack and draws nothing for them. The export status and this bar
+    # share one console, so reusing _send_files inside an export would create a
+    # Progress that costs its updates and shows nothing. Today the paths do not
+    # meet -- the export never sends files -- and this keeps it that way on
+    # purpose: the upload proceeds without a second bar rather than with an
+    # invisible one.
+    if getattr(console, "_live_stack", None):
+        logger.debug("a live display is already running on this console; upload progress is skipped")
+        yield None
+        return
+
     columns = [
         TextColumn("[progress.description]{task.description}"),
         BarColumn(),

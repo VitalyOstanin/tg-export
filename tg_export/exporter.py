@@ -387,6 +387,16 @@ class _MediaPipeline:
     async def __aexit__(self, *exc_info) -> bool:
         # Whatever is still in flight when the loop is left -- a break, an
         # error, a cancellation -- must not outlive the chat export.
+        #
+        # Why gather and not asyncio.TaskGroup: a task group owns the scope of
+        # its tasks and awaits them all at its exit, whereas this pipeline
+        # awaits them one by one in arrival order -- that order is what lets a
+        # message be handed back only after its own download finished, and it
+        # is what keeps the window at `limit` instead of the whole chat. The
+        # group's other property, cancelling the siblings when one task fails,
+        # buys nothing here: _process_media records its failures in the
+        # statistics and does not raise. What a task group would give for free
+        # -- keeping references to running tasks -- the deque already does.
         for task, _ in self._pending:
             task.cancel()
         if self._pending:
