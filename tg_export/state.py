@@ -630,23 +630,46 @@ class ExportState:
         update_cols = [*fields.keys(), "updated_at"]
         update_values = {**fields, "updated_at": now}
 
-        # last_msg_id only ever grows: "everything above this id is exported".
-        # Callers write it from a copy read at the start of a chat export, so a
-        # plain assignment would roll the pointer back whenever something else
-        # advanced it meanwhile -- phase 1 of the same run, or a parallel
-        # process -- and the messages in between would be re-fetched forever.
-        def _assignment(column: str) -> str:
+        # Three of the columns may only move one way, and the writers work from
+        # a copy read at the start of a chat export -- the whole chat happens
+        # between the read and this write. A plain assignment would undo
+        # whatever advanced meanwhile: phase 1 of the same run, or a parallel
+        # process the advisory lock did not stop (it is a no-op where fcntl is
+        # missing, and flock does not reach across machines on a network
+        # share). last_msg_id only grows ("everything above this id is
+        # exported"), oldest_msg_id only falls ("this far down we descended"),
+        # full_history only turns on ("the chat holds nothing older" is a fact
+        # about the chat, not about this run). A deliberate rewind of any of
+        # them goes through reset_chat_progress, where the intent is explicit.
+        # messages_count stays a plain assignment: it is recounted every time,
+        # and after a purge the smaller number is the true one.
+        def _assignment(column: str, value: Any) -> tuple[str, list[Any]]:
             if column == "last_msg_id":
-                return "last_msg_id=MAX(export_state.last_msg_id, ?)"
-            return f"{column}=?"
+                return "last_msg_id=MAX(export_state.last_msg_id, ?)", [value]
+            if column == "oldest_msg_id":
+                # Zero means "never descended", not "descended to the very
+                # bottom": it must neither win the minimum nor be overwritten
+                # by a caller that has nothing to write.
+                return (
+                    "oldest_msg_id=COALESCE("
+                    "MIN(NULLIF(export_state.oldest_msg_id, 0), NULLIF(?, 0)), "
+                    "NULLIF(?, 0), export_state.oldest_msg_id)",
+                    [value, value],
+                )
+            if column == "full_history":
+                return "full_history=MAX(IFNULL(export_state.full_history, 0), ?)", [value]
+            return f"{column}=?", [value]
 
+        assignments = [_assignment(column, update_values[column]) for column in update_cols]
         sql = (
             f"INSERT INTO export_state ({', '.join(insert_cols)}) "
             f"VALUES ({', '.join('?' * len(insert_cols))}) "
             f"ON CONFLICT(chat_id) DO UPDATE SET "
-            f"{', '.join(_assignment(c) for c in update_cols)}"
+            f"{', '.join(fragment for fragment, _ in assignments)}"
         )
-        params = [insert_values[c] for c in insert_cols] + [update_values[c] for c in update_cols]
+        params = [insert_values[c] for c in insert_cols] + [
+            value for _, values in assignments for value in values
+        ]
         await self.db.execute(sql, params)
         await self.commit()
 
@@ -654,9 +677,19 @@ class ExportState:
         await self._upsert_chat_state(chat_id, last_msg_id=msg_id)
 
     async def set_oldest_msg_id(self, chat_id: int, msg_id: int):
+        """Record how far down the history the export descended.
+
+        The mark only falls: a larger id, and the zero of "not descended yet",
+        leave the recorded one alone -- see _upsert_chat_state.
+        """
         await self._upsert_chat_state(chat_id, oldest_msg_id=msg_id)
 
     async def set_full_history(self, chat_id: int, full: bool = True):
+        """Record that the chat holds nothing older than what is exported.
+
+        The flag only turns on; `full=False` writes nothing, because clearing
+        it is a rewind and belongs to reset_chat_progress.
+        """
         await self._upsert_chat_state(chat_id, full_history=int(full))
 
     async def update_messages_count(self, chat_id: int, count: int):

@@ -812,3 +812,43 @@ def test_the_stored_json_of_a_message_keeps_its_shape(tmp_path):
     assert _reactions_to_json(reactions) == (
         '[{"type": "emoji", "emoji": "👍", "document_id": null, "count": 2, "recent": null}]'
     )
+
+
+@pytest.mark.asyncio
+async def test_chat_progress_never_moves_backwards(state):
+    """Три колонки из четырёх откатывались записью из устаревшей копии.
+
+    Прогресс чата читается один раз в начале обхода, а пишется в конце фазы 2,
+    между этими точками -- весь чат. Для `last_msg_id` защита от отката была
+    введена явно, а `oldest_msg_id` (спуск вниз по истории) и `full_history`
+    («ниже в чате ничего нет») писались присваиванием. Второй процесс, которого
+    не остановила advisory-блокировка -- её нет там, где нет `fcntl`, и она не
+    действует между машинами на сетевом хранилище, -- поднимал отметку спуска
+    наверх и снимал признак дочитанного чата, после чего пропуск в истории
+    оставался навсегда: фаза 2 больше не запускалась.
+    """
+    await state.commit_phase_progress(
+        chat_id=5, last_msg_id=900, oldest_msg_id=100, full_history=True, messages_count=10
+    )
+    # Запись из копии, снятой до того, как чат был дочитан вниз.
+    await state.commit_phase_progress(
+        chat_id=5, last_msg_id=800, oldest_msg_id=500, full_history=False, messages_count=8
+    )
+
+    row = await state.get_chat_state(5)
+    assert row["last_msg_id"] == 900, row
+    assert row["oldest_msg_id"] == 100, row
+    assert row["full_history"] == 1, row
+
+
+@pytest.mark.asyncio
+async def test_the_first_descent_sets_the_bottom_mark_and_zero_never_wins(state):
+    """Ноль в `oldest_msg_id` -- «ещё не спускались», а не «спустились до дна»."""
+    await state.set_last_msg_id(chat_id=6, msg_id=900)
+    assert (await state.get_chat_state(6))["oldest_msg_id"] == 0
+
+    await state.set_oldest_msg_id(chat_id=6, msg_id=500)
+    assert (await state.get_chat_state(6))["oldest_msg_id"] == 500
+
+    await state.set_oldest_msg_id(chat_id=6, msg_id=0)
+    assert (await state.get_chat_state(6))["oldest_msg_id"] == 500
