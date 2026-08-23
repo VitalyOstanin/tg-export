@@ -15,12 +15,32 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # Larger than the 15 minutes of ci.yml: one matrix entry there runs the
+    # same checks, this job adds uv build and a smoke test of the wheel in a
+    # fresh environment that resolves dependencies past the project cache.
+    timeout-minutes: 20
     permissions:
       contents: read
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # Full history: the tag is checked against master below, and a
+          # shallow clone has no merge base to check against.
+          fetch-depth: 0
+
+      - name: Verify the tag sits on master
+        # The workflow fires on any v* tag, and the checks know nothing about
+        # branches: a tag left on a work branch, on a commit before the merge
+        # or on a reverted state would publish a version whose contents never
+        # reached master.
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin master
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/master; then
+            echo "::error::$GITHUB_REF_NAME points at a commit that is not on master" >&2
+            exit 1
+          fi
 
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d  # v10.0.1
         with:
@@ -113,6 +133,12 @@ jobs:
           # change, publishing is irreversible, and losing the attestations
           # would go unnoticed for a while.
           attestations: true
+          # A rerun after a failure further down the pipeline (the GitHub
+          # Release step, a timeout) must not stop here: an upload of a version
+          # already in the index is skipped instead of failing the job. A
+          # duplicate release is prevented earlier anyway -- the tag is checked
+          # against the manifest and the CHANGELOG before anything is built.
+          skip-existing: true
 
   github-release:
     needs: publish
@@ -131,9 +157,21 @@ jobs:
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # Idempotent: this is the only step left after the irreversible
+        # upload, so a rerun must be able to finish the release instead of
+        # refusing over the release the previous run already created.
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            --repo "$GITHUB_REPOSITORY" \
-            --title "$GITHUB_REF_NAME" \
-            --notes-file release_notes.md \
-            --latest
+          set -euo pipefail
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit "$GITHUB_REF_NAME" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$GITHUB_REF_NAME" \
+              --notes-file release_notes.md \
+              --latest
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$GITHUB_REF_NAME" \
+              --notes-file release_notes.md \
+              --latest
+          fi

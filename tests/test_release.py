@@ -286,3 +286,22 @@ def test_bad_arguments_keep_the_exit_code_of_argparse(tmp_path):
 
     assert result.returncode == 2, result.stderr
     assert "usage" in result.stderr.lower(), result.stderr
+
+
+def test_the_changelog_index_lists_every_version_section():
+    """Оглавление CHANGELOG ведётся руками и в шагах релиза не упоминалось.
+
+    Забытая строка даёт файл, оглавление которого не показывает свежий релиз,
+    и замечают это при следующем чтении файла целиком.
+    """
+    import re
+
+    changelog = (Path(__file__).resolve().parent.parent / "CHANGELOG.md").read_text(encoding="utf-8")
+    index, _, body = changelog.partition("\n## [")
+    body = "## [" + body
+
+    headings = re.findall(r"^## \[([^\]]+)\]", body, re.M)
+    listed = re.findall(r"^- \[\\?\[([^\]\\]+)\\?\]", index, re.M)
+
+    assert headings, "в CHANGELOG нет ни одного раздела версии"
+    assert listed == headings, f"оглавление и разделы разошлись: {listed} != {headings}"
