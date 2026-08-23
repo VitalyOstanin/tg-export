@@ -570,7 +570,7 @@ def test_every_command_is_described_in_the_cli_reference():
             for sub in cmd.commands.values():
                 yield from names(sub, f"{prefix}{cmd.name} " if prefix or cmd.name != "main" else "")
         else:
-            yield (prefix + cmd.name).strip()
+            yield (prefix + (cmd.name or "")).strip()
 
     missing = [name for name in names(main) if f"`{name}`" not in reference]
     assert not missing, f"команды не описаны в docs/cli.md: {missing}"
@@ -710,3 +710,47 @@ def test_the_package_and_its_build_files_speak_english():
     ]
 
     assert not offenders, f"артефакт пакета написан не на английском: {offenders}"
+
+
+def _command_paths():
+    """Every command of the tree as the user types it: `run`, `tg info`, ..."""
+    import click
+
+    from tg_export.cli import main
+
+    def walk(cmd, prefix=""):
+        if isinstance(cmd, click.Group):
+            for sub in cmd.commands.values():
+                yield from walk(sub, f"{prefix}{cmd.name} " if prefix or cmd.name != "main" else "")
+        yield (prefix + (cmd.name or "")).strip()
+
+    return {path for path in walk(main)} - {"main"}
+
+
+def test_every_command_named_in_the_code_exists():
+    """Подсказка, называющая несуществующую команду, уводит в `No such command`.
+
+    Так уже случилось со справкой шести опций (`auth default` вместо
+    `account default`): текст был виден пользователю и расходился и с
+    интерфейсом, и со справочником.
+    """
+    valid = _command_paths()
+    groups = {path for path in valid if " " not in path}
+    offenders = []
+    for path in sorted(PROJECT.glob("**/*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+                continue
+            for double, single in re.findall(r"``([^`]+)``|`([^`]+)`", node.value):
+                words = []
+                for word in re.sub(r"^tg-export\s+", "", (double or single).strip()).split():
+                    if not re.fullmatch(r"[a-z][a-z-]*", word):
+                        break
+                    words.append(word)
+                if not words or words[0] not in groups:
+                    continue
+                named = " ".join(words[:2])
+                if named not in valid:
+                    offenders.append(f"{path.relative_to(PROJECT)}:{node.lineno} {named!r}")
+    assert not offenders, f"названы несуществующие команды: {offenders}"

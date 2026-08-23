@@ -185,7 +185,7 @@ class TgApi:
 
         By default the session stays open on the server so the next run reuses
         its id instead of paying the init cooldown. Pass an explicit ``success``
-        to finish it for good (``tg takeout clear``).
+        to finish it for good (``takeout clear``).
         """
         stack, self._takeout_stack = self._takeout_stack, None
         self.takeout = None

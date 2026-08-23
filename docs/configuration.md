@@ -124,8 +124,8 @@ min_free_space: 20GB
 
 Генерируется командой `tg-export init --account <alias>`: она запрашивает список чатов
 у Telegram и пишет шаблон. Если каталог уже выгружен командой
-`tg-export list --account <alias> --output catalog.yaml`, шаблон строится из файла без
-обращения к сети: `tg-export init --from catalog.yaml --output <alias>.yaml`. Принимается
+`tg-export list --account <alias> --output-file catalog.yaml`, шаблон строится из файла без
+обращения к сети: `tg-export init --from-catalog catalog.yaml --output <alias>.yaml`. Принимается
 и YAML-каталог с разделами `folders`/`unfiled`/`archived`/`left`, и плоский JSON-каталог
 (`list --format json`).
 
@@ -443,23 +443,37 @@ unmatched:
 
 ### Полный конфиг
 
-Тот же пример лежит в корне репозитория файлом [config.example.yaml](../config.example.yaml)
-и загружается как есть.
+Этот же текст лежит в корне репозитория файлом
+[config.example.yaml](../config.example.yaml) и загружается как есть; совпадение
+двух текстов проверяется тестом.
 
 ```yaml
+# Пример конфигурации tg-export.
+#
+# Рабочая отправная точка: скопируйте файл в ~/.config/tg-export/<алиас>.yaml
+# (или укажите путь флагом --config) и правьте под себя. Полное описание всех
+# разделов -- docs/configuration.md; шаблон под конкретный список чатов
+# генерирует команда `tg-export init`.
+#
+# Имена чатов и идентификаторы здесь вымышленные.
+
 output:
+  # Каталог выгрузки. Алиас аккаунта добавляется сам: ./export_output/<алиас>.
   path: ./export_output
   format: html
 
+# Правила, которые действуют, когда чат не подошёл ни под одно другое правило.
 defaults:
   media:
     types: [photo, video, voice, video_note, sticker, gif, document]
     max_file_size: 100MB
     concurrent_downloads: 3
+  # Границы периода: null -- без ограничения.
   date_from: null
   date_to: null
   export_service_messages: true
 
+# Общие данные аккаунта: профиль, контакты, сессии, аватары, истории, музыка.
 personal_info: true
 contacts: true
 sessions: true
@@ -468,59 +482,55 @@ stories: true
 profile_music: true
 other_data: true
 
+# Правила по типу чата. Точный тип важнее категории.
+# Категории: private, public, groups, channels, bots.
+# Точные типы: personal, bot, self, private_group, private_supergroup,
+#   public_supergroup, private_channel, public_channel.
 type_rules:
   bots:
     skip: true
-  channels:
+  public_channel:
     media:
       types: [photo]
-      max_file_size: 50MB
+      max_file_size: 10MB
 
-left_channels:
-  action: skip
-
-archived:
-  action: skip
-
-import_existing:
-  - path: ~/TelegramExport_2024
-    type: tdesktop
-
+# Правила по папкам Telegram. Внутри папки можно задать правило для чата.
 folders:
   "Работа":
     media:
       types: [photo, document]
       max_file_size: 100MB
     chats:
-      - name: "Рабочий чат"
+      - name: "Проект «Ромашка»"
         media:
           types: [document]
           max_file_size: 500MB
-      - id: 1234567890
-        media:
-          types: all
 
-  "Семья":
-    media:
-      types: all
-      max_file_size: 500MB
-
-  "Новости":
-    skip: true
-
+# Правила для отдельных чатов. Приоритет выше папок и типов.
 chats:
-  - name: "Saved Messages"
+  - id: 1234567890
     media:
       types: all
-      max_file_size: 2GB
+  - name: "Иван Иванов"
+    date_from: 2024-01-01
 
-  - id: 9876543210
-    media:
-      types: [photo]
-    date_from: 2024-06-01
+# Покинутые каналы: skip | export_with_defaults.
+left_channels:
+  action: skip
 
+# Архивные чаты: skip | export_with_defaults.
+archived:
+  action: skip
+
+# Чат, не подошедший ни под одно правило: skip | export_with_defaults.
 unmatched:
   action: skip
+
+# Переиспользование файлов из экспорта Telegram Desktop вместо повторного
+# скачивания. Экспорты самого tg-export, лежащие рядом, находятся сами.
+# import_existing:
+#   - path: ~/TelegramExport_2024
+#     type: tdesktop
 ```
 
 ### Глобальный конфиг с прокси

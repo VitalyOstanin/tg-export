@@ -337,7 +337,7 @@ async def _init_config(account, from_catalog, output, force=False):
 
 
 def _chats_from_catalog_file(path: Path):
-    """Read the chat list out of a catalog written by ``tg chats --format yaml``."""
+    """Read the chat list out of a catalog written by ``list --format yaml``."""
     from tg_export.catalog import chats_from_catalog
     from tg_export.config import ConfigError
 

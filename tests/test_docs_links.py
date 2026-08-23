@@ -177,3 +177,126 @@ def test_contributing_tells_how_to_run_a_single_test_file() -> None:
     contributing = (ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
 
     assert "--no-cov" in contributing, "в разделе о запуске тестов не сказано про частичный прогон"
+
+
+def _deprecated_option_spellings():
+    """Old spellings kept for compatibility, by command: `list` -> {--output}."""
+    import click
+
+    from tg_export.cli import main
+
+    def walk(cmd, prefix=""):
+        if isinstance(cmd, click.Group):
+            for sub in cmd.commands.values():
+                yield from walk(sub, f"{prefix}{cmd.name} " if prefix or cmd.name != "main" else "")
+            return
+        long_opts = {
+            (prefix + (cmd.name or "")).strip(): {
+                opt for param in cmd.params for opt in [o for o in param.opts if o.startswith("--")][1:]
+            }
+        }
+        yield from long_opts.items()
+
+    return {name: opts for name, opts in walk(main) if opts}
+
+
+def test_the_documentation_teaches_canonical_option_spellings():
+    """Примеры в документации не должны учить написаниям, объявленным старыми.
+
+    Справочник `docs/cli.md` -- исключение: он перечисляет принимаемые синонимы,
+    а CHANGELOG описывает историю. Остальная документация -- обучение, и при
+    удалении старого написания сломается именно она.
+    """
+    deprecated = _deprecated_option_spellings()
+    skip = {"docs/cli.md", "CHANGELOG.md"}
+    offenders = []
+    for path in _tracked_markdown():
+        if str(path.relative_to(ROOT)) in skip:
+            continue
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            for example in re.findall(r"tg-export ((?:[a-z][a-z-]*|--[a-z-]+|\S+)(?:\s+\S+)*)", line):
+                words = example.split()
+                command = " ".join(w for w in words[:2] if re.fullmatch(r"[a-z][a-z-]*", w))
+                while command and command not in deprecated:
+                    command = command.rsplit(" ", 1)[0] if " " in command else ""
+                if not command:
+                    continue
+                used = deprecated[command] & set(words)
+                if used:
+                    offenders.append(f"{path.relative_to(ROOT)}:{number} {command}: {sorted(used)}")
+    assert not offenders, f"документация учит старым написаниям опций: {offenders}"
+
+
+def test_the_readme_names_every_command_that_accepts_json():
+    """Перечень команд с `--json` -- единственное место, где их видно вместе.
+
+    Список отставал от интерфейса: `list` получил флаг, попал в справочник и в
+    CHANGELOG, а в README остались четыре команды из пяти -- при том, что
+    соседний абзац сам называл `list` среди команд с машиночитаемым выводом.
+    """
+    import click
+
+    from tg_export.cli import main
+
+    def walk(cmd, prefix=""):
+        if isinstance(cmd, click.Group):
+            for sub in cmd.commands.values():
+                yield from walk(sub, f"{prefix}{cmd.name} " if prefix or cmd.name != "main" else "")
+            return
+        if any("--json" in param.opts for param in cmd.params):
+            yield (prefix + (cmd.name or "")).strip()
+
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    line = next(ln for ln in readme.splitlines() if "`--json`" in ln and "поддерживают" in ln)
+    missing = [name for name in walk(main) if f"`{name}`" not in line]
+    assert not missing, f"в перечне команд с --json нет: {missing}\n{line}"
+
+
+# Statuses an ADR record may carry. The vocabulary is Russian, like the records
+# themselves; a second spelling of the same status means replaced records cannot
+# be found by listing.
+ADR_STATUSES = ("принято", "заменено ADR-", "устарело")
+
+
+def test_every_adr_status_comes_from_the_documented_vocabulary():
+    """Статус, записанный по-своему, нельзя найти перечислением.
+
+    Конвенции называли один и тот же статус двумя словарями -- английским
+    `superseded by` и русским `заменено ADR-NNNN`, -- а проверка требовала лишь
+    наличия строки `- Статус:` и любое значение принимала.
+    """
+    index = (ROOT / "docs" / "adr" / "README.md").read_text(encoding="utf-8")
+    assert "superseded by" not in index, "конвенции ADR называют статус вторым словарём"
+
+    offenders = []
+    for path in sorted((ROOT / "docs" / "adr").glob("[0-9][0-9][0-9][0-9]-*.md")):
+        status = next(
+            (
+                line.split(":", 1)[1].strip()
+                for line in path.read_text(encoding="utf-8").splitlines()
+                if line.startswith("- Статус:")
+            ),
+            "",
+        )
+        if not any(status.startswith(known) for known in ADR_STATUSES):
+            offenders.append(f"{path.name}: {status!r}")
+    assert not offenders, f"статус вне словаря {ADR_STATUSES}: {offenders}"
+
+
+def test_the_full_config_example_is_the_example_file_itself():
+    """Раздел «Полный конфиг» и `config.example.yaml` -- один пример, а не два.
+
+    Документация утверждала тождественность, а тексты разошлись: разные правила
+    `type_rules`, разный состав папок и чатов, `import_existing` в одном месте
+    закомментирован. Загружается и проверяется тестами только файл, а читатель
+    первым видит блок в документации.
+    """
+    source = (ROOT / "docs" / "configuration.md").read_text(encoding="utf-8")
+    heading = "### Полный конфиг"
+    assert heading in source, "раздел «Полный конфиг» переименован -- поправь проверку"
+
+    block = re.search(r"```yaml\n(.*?)```", source[source.index(heading) :], re.S)
+    assert block, "в разделе «Полный конфиг» нет YAML-блока"
+
+    example = (ROOT / "config.example.yaml").read_text(encoding="utf-8")
+    assert block.group(1) == example, "блок в документации разошёлся с config.example.yaml"
