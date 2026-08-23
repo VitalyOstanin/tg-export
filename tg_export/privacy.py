@@ -26,13 +26,41 @@ PRIVATE_DIR_MODE = 0o700
 def restrict_file(path: Path) -> None:
     """Drop group and other permissions from a file that holds a secret.
 
-    Silent when the file is missing or the filesystem refuses the change: the
-    caller is doing its own job and a mode that cannot be set is not a reason
-    to fail it.
+    A last resort for files somebody else created: the ones this package
+    creates itself are born private -- see ``create_private_file`` and
+    ``write_private_text``. Missing file is not an event; a refused change is,
+    and it leaves the secret open, so it goes into the log rather than being
+    swallowed. Neither case fails the caller, which is doing its own job.
     """
-    with contextlib.suppress(OSError):
-        if path.exists():
-            os.chmod(path, PRIVATE_FILE_MODE)
+    if not path.exists():
+        return
+    try:
+        os.chmod(path, PRIVATE_FILE_MODE)
+    except OSError as e:
+        logger.warning("%s keeps its permissions: %s", path, e)
+
+
+def create_private_file(path: Path) -> None:
+    """Make sure the file exists and only its owner can read it.
+
+    For a file a library creates for us -- Telethon's session, the SQLite
+    database: they open it with the process umask, which normally leaves it
+    readable by everyone, and tightening it afterwards leaves a window in
+    which another local user can open a descriptor that survives the change.
+    An empty file created first takes the mode away from the umask, and the
+    library then opens what is already there.
+    """
+    with contextlib.suppress(FileExistsError, OSError):
+        os.close(os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, PRIVATE_FILE_MODE))
+
+
+def write_private_text(path: Path, text: str) -> None:
+    """Write text into a file that only its owner can read, private from the start."""
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, PRIVATE_FILE_MODE)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    # An existing file keeps the mode it was created with, so say it once more.
+    restrict_file(path)
 
 
 def tighten_if_loose(path: Path) -> None:

@@ -714,3 +714,33 @@ async def test_a_chat_known_to_be_empty_is_reported_as_zero(tmp_path):
         await state.update_messages_count(11, 0)
 
         assert await state.message_counts() == {11: 0}
+
+
+def test_month_reader_opens_a_database_whose_path_holds_a_question_mark(tmp_path):
+    """Путь подставляется в URI, где `?` начинает строку параметров.
+
+    Без процентного кодирования `mode=ro` отбрасывается вместе с остатком
+    пути: SQLite открывает НОВЫЙ файл, притом на запись, рендер получает
+    пустую базу, а рядом с пишущим соединением появляется посторонняя ручка.
+    Каталог задаёт пользователь через `output.path`, так что `?` в нём
+    достижим.
+    """
+    import asyncio
+    from datetime import UTC, datetime
+
+    from tg_export.state import ExportState, month_reader
+
+    odd_dir = tmp_path / "export? (2026)"
+    odd_dir.mkdir()
+    db_path = odd_dir / "state.db"
+
+    async def fill():
+        async with ExportState(db_path) as state:
+            await state.store_messages_batch(
+                [_make_msg(msg_id=1, chat_id=10, date=datetime(2024, 1, 5, tzinfo=UTC))]
+            )
+
+    asyncio.run(fill())
+
+    with month_reader(db_path, 10) as load_month:
+        assert [m.id for m in load_month("2024-01")] == [1]

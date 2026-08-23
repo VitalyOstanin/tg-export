@@ -60,7 +60,7 @@ from telethon.crypto import AuthKey
 from telethon.sessions import SQLiteSession
 
 from tg_export.errors import ProcessLockError
-from tg_export.privacy import restrict_file
+from tg_export.privacy import create_private_file, restrict_file
 from tg_export.state import DB_TIMEOUT_SECONDS
 
 logger = logging.getLogger(__name__)
@@ -93,6 +93,13 @@ _V7_COLUMN_COUNT = 5
 
 class FixedSQLiteSession(SQLiteSession):
     def __init__(self, session_id=None, store_tmp_auth_key_on_disk: bool = False):
+        # The file carries the authorisation key, and Telethon creates it with
+        # the process umask: an empty private file made first takes that
+        # decision away from the umask, leaving no window in which another
+        # local user can open a descriptor to it.
+        session_file = self._session_path(session_id)
+        if session_file is not None and str(session_id) != ":memory:":
+            create_private_file(session_file)
         saved_takeout_id, saved_tmp_auth_key = self._extract_and_clear(session_id)
         super().__init__(session_id, store_tmp_auth_key_on_disk)
         # Defense-in-depth: even if the pre-init read missed something, after

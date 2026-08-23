@@ -13,7 +13,7 @@ import yaml
 
 from tg_export.errors import TgExportError
 from tg_export.locking import ProcessLock
-from tg_export.privacy import restrict_file, tighten_if_loose
+from tg_export.privacy import restrict_file, tighten_if_loose, write_private_text
 
 logger = logging.getLogger(__name__)
 
@@ -161,8 +161,7 @@ class AccountManager:
     def save_credentials(self, api_id: int, api_hash: str):
         cred_path = self.config_dir / "api_credentials.yaml"
         data = {"api_id": api_id, "api_hash": api_hash}
-        cred_path.write_text(yaml.dump(data, default_flow_style=False), encoding="utf-8")
-        os.chmod(cred_path, 0o600)
+        write_private_text(cred_path, yaml.dump(data, default_flow_style=False))
 
     def load_credentials(self) -> tuple[int, str]:
         cred_path = self.config_dir / "api_credentials.yaml"

@@ -10,6 +10,7 @@ import os
 import sqlite3
 import stat
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import click
 import pytest
@@ -120,3 +121,75 @@ def test_sibling_lookup_handles_a_path_with_a_question_mark(tmp_path):
     conn.close()
 
     assert _lookup_file_in_db(db_path, 7) == "/tmp/x.jpg"
+
+
+@pytest.fixture
+def relaxed_umask():
+    """Umask, при котором файл создаётся доступным на чтение всем.
+
+    Иначе проверка «создан приватным» проходит на строгом umask разработчика и
+    ничего не доказывает.
+    """
+    previous = os.umask(0o022)
+    yield
+    os.umask(previous)
+
+
+def _no_second_step(*args, **kwargs):
+    """Заглушка ужатия прав постфактум: проверяется режим при создании."""
+
+
+def test_the_credentials_file_is_private_from_the_moment_it_appears(tmp_path, monkeypatch, relaxed_umask):
+    """api_hash даёт доступ к API от имени пользователя.
+
+    Между созданием файла и `chmod` он доступен другим локальным пользователям
+    на чтение, а дескриптор, открытый в этом окне, сохраняет доступ и после
+    ужатия прав.
+    """
+    mgr = AccountManager(config_dir=tmp_path / "cfg")
+    mgr.ensure_dirs()
+    monkeypatch.setattr(os, "chmod", _no_second_step)
+
+    mgr.save_credentials(1, "hash")
+
+    assert _mode(tmp_path / "cfg" / "api_credentials.yaml") == 0o600
+
+
+def test_the_session_file_is_private_from_the_moment_it_appears(tmp_path, monkeypatch, relaxed_umask):
+    """Ключ авторизации из файла сессии даёт вход в аккаунт без второго фактора."""
+    from tg_export.session import FixedSQLiteSession
+
+    monkeypatch.setattr("tg_export.session.restrict_file", _no_second_step)
+
+    sp = tmp_path / "acc.session"
+    sess = FixedSQLiteSession(str(sp))
+    try:
+        assert _mode(sp) == 0o600
+    finally:
+        sess.close()
+
+
+@pytest.mark.asyncio
+async def test_the_state_database_is_private_from_the_moment_it_appears(tmp_path, monkeypatch, relaxed_umask):
+    """В базе состояния лежат тексты всех сообщений, телефоны и адреса сессий."""
+    from tg_export.state import ExportState
+
+    monkeypatch.setattr("tg_export.state.restrict_file", _no_second_step)
+
+    db_path = tmp_path / "state.db"
+    async with ExportState(db_path):
+        assert _mode(db_path) == 0o600
+
+
+def test_a_refused_chmod_is_reported(tmp_path, caplog):
+    """Молча проглоченный отказ оставляет секрет открытым и без следа об этом."""
+    from tg_export.privacy import restrict_file
+
+    target = tmp_path / "secret"
+    target.write_text("x", encoding="utf-8")
+
+    with caplog.at_level("WARNING"), pytest.MonkeyPatch.context() as mp:
+        mp.setattr(os, "chmod", MagicMock(side_effect=OSError("read-only filesystem")))
+        restrict_file(target)
+
+    assert any("read-only filesystem" in r.getMessage() for r in caplog.records), caplog.text

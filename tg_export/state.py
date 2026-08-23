@@ -11,6 +11,7 @@ from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import aiosqlite
 
@@ -34,7 +35,7 @@ from tg_export.models import (
     media_from_dict,
     media_to_dict,
 )
-from tg_export.privacy import restrict_file
+from tg_export.privacy import create_private_file, restrict_file
 
 logger = logging.getLogger(__name__)
 
@@ -252,11 +253,18 @@ def month_reader(db_path: Path, chat_id: int):
     with several hundred months paid all of that per month, on a connection that
     never got large enough a cache to keep anything.
     """
-    db = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=DB_TIMEOUT_SECONDS)
+    # quote: the path goes into a URI, so a `?` in it would start the query
+    # string and silently drop mode=ro -- SQLite then opens a different file,
+    # empty and writable, next to the connection that is writing the real one.
+    db = sqlite3.connect(f"file:{quote(str(db_path))}?mode=ro", uri=True, timeout=DB_TIMEOUT_SECONDS)
     try:
         db.row_factory = sqlite3.Row
         for pragma in _READER_PRAGMAS:
             db.execute(pragma)
+        # query_only does not depend on the URI being parsed the way it reads:
+        # it is the same guarantee stated once more, where a malformed path
+        # cannot reach it.
+        db.execute("PRAGMA query_only = ON")
         yield lambda month_key: _load_month(db, chat_id, month_key)
     finally:
         db.close()
@@ -416,12 +424,17 @@ class ExportState:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._acquire_lock()
         try:
+            # The database holds the text of every message: created by SQLite
+            # it would take the process umask, and tightening it afterwards
+            # leaves a window with a readable file. An empty private file made
+            # first is the one SQLite then opens.
+            create_private_file(self.db_path)
             self._db = await aiosqlite.connect(self.db_path, timeout=DB_TIMEOUT_SECONDS)
             self.db.row_factory = aiosqlite.Row
             await self._apply_pragmas()
             await self._create_tables()
-            # The database holds the text of every exported message, phone
-            # numbers and session addresses; SQLite creates it with the umask.
+            # -wal and -shm appear when the connection opens, so they are
+            # tightened here; the database file itself was created private above.
             for suffix in ("", "-wal", "-shm"):
                 restrict_file(Path(f"{self.db_path}{suffix}"))
         except Exception:
