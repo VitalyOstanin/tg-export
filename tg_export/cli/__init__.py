@@ -136,13 +136,27 @@ def run_cli() -> None:
     --debug is passed.
     """
     try:
-        main.main(standalone_mode=True)
-    except KeyboardInterrupt:
-        # Ctrl+C outside the export loop (during a prompt, a connect, a render)
-        # used to surface as 0 or 1 depending on where it landed. Report it the
+        # standalone_mode=False: in standalone mode Click catches
+        # KeyboardInterrupt itself, prints "Aborted!" and exits with 1, so the
+        # handler below never ran and Ctrl+C outside the export loop was
+        # indistinguishable from a failed command. What Click reports in that
+        # mode is reproduced by the clauses below.
+        result = main.main(standalone_mode=False)
+    except click.Abort:
+        # What Click raises for a Ctrl+C or a Ctrl+D on a prompt. Report it the
         # way `run` already reports an interrupted export: 128 + SIGINT.
         click.echo("Interrupted.", err=True)
         raise SystemExit(EXIT_SIGINT) from None
+    except KeyboardInterrupt:
+        # An interruption that arrived outside main.main -- while a lazy module
+        # was being imported, or between the parse and the call.
+        click.echo("Interrupted.", err=True)
+        raise SystemExit(EXIT_SIGINT) from None
+    except click.ClickException as e:
+        # Usage errors and their kin: their own message and code, printed by
+        # Click itself only while standalone mode is on.
+        e.show()
+        raise SystemExit(e.exit_code) from e
     except TgExportError as e:
         if common._DEBUG:
             raise
@@ -160,3 +174,8 @@ def run_cli() -> None:
         click.echo(f"Error: {type(e).__name__}: {e}", err=True)
         click.echo("Run with --debug for the full traceback.", err=True)
         raise SystemExit(EXIT_FAILURE) from e
+
+    # `ctx.exit(code)` -- how a command here reports a refusal -- is returned as
+    # the code once standalone mode is off, instead of ending the process.
+    if isinstance(result, int) and result != EXIT_OK:
+        raise SystemExit(result)

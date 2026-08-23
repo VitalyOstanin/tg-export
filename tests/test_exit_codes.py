@@ -5,6 +5,7 @@
 возвращал 0, тогда как `account default nope` -- 1.
 """
 
+import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -139,20 +140,52 @@ def test_export_exit_code_maps_signal_and_errors():
     assert _export_exit_code(signum=15, error_count=7) == 143
 
 
-def test_keyboard_interrupt_maps_to_130(monkeypatch):
-    import click
+def test_a_ctrl_c_inside_a_command_ends_the_process_with_130(monkeypatch, capsys):
+    """Прерывание обязано возбуждаться внутри команды, а не вместо click.
 
+    Прежний тест подменял `cli.main.main` -- то есть убирал ровно тот код
+    click, который перехватывает KeyboardInterrupt, печатает «Aborted!» и
+    завершается кодом 1. Такой тест зелёный при любой поломке поведения.
+    """
     from tg_export import cli
 
-    def boom(*args, **kwargs):
+    def interrupted():
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(cli.main, "main", boom)
-    monkeypatch.setattr(click, "echo", lambda *a, **k: None)
+    monkeypatch.setattr(cli_common, "_mgr", interrupted)
+    monkeypatch.setattr(sys, "argv", ["tg-export", "account", "list"])
 
     with pytest.raises(SystemExit) as excinfo:
         cli.run_cli()
+
     assert excinfo.value.code == 130
+    assert "Interrupted." in capsys.readouterr().err
+
+
+def test_an_unknown_command_still_ends_with_the_usage_code(monkeypatch, capsys):
+    """Сообщение и код 2 для неверного набора аргументов печатает сам click."""
+    from tg_export import cli
+
+    monkeypatch.setattr(sys, "argv", ["tg-export", "no-such-command"])
+
+    with pytest.raises(SystemExit) as excinfo:
+        cli.run_cli()
+
+    assert excinfo.value.code == 2
+    assert "no-such-command" in capsys.readouterr().err
+
+
+def test_a_refusal_inside_a_command_still_ends_with_one(cfg_dir, monkeypatch, capsys):
+    """`ctx.exit(code)` -- то, чем команды сообщают об отказе."""
+    from tg_export import cli
+
+    monkeypatch.setattr(sys, "argv", ["tg-export", "account", "default", "nope"])
+
+    with pytest.raises(SystemExit) as excinfo:
+        cli.run_cli()
+
+    assert excinfo.value.code == 1
+    assert "nope" in capsys.readouterr().err
 
 
 @pytest.mark.asyncio
