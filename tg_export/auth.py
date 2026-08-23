@@ -11,6 +11,7 @@ from typing import Any
 import click
 import yaml
 
+from tg_export.console import ask
 from tg_export.errors import TgExportError
 from tg_export.locking import ProcessLock
 from tg_export.privacy import restrict_file, tighten_if_loose, write_private_text
@@ -318,13 +319,13 @@ class AccountManager:
             await client.connect()
 
             if not await client.is_user_authorized():
-                phone = click.prompt("Phone number (with +)", type=str)
+                phone = ask("Phone number (with +)", type=str)
                 sent = await client.send_code_request(phone)
                 _notify(f"Code type: {type(sent.type).__name__}")
                 _notify(f"Next type: {sent.next_type.__class__.__name__ if sent.next_type else 'none'}")
                 _notify(f"Timeout: {sent.timeout}s" if sent.timeout else "No timeout")
 
-                code = click.prompt("Enter code", type=str)
+                code = ask("Enter code", type=str)
                 try:
                     await client.sign_in(phone, code)
                 except SessionPasswordNeededError:
@@ -372,7 +373,7 @@ class AccountManager:
         from telethon.errors import PasswordHashInvalidError
 
         for attempt in range(_PASSWORD_ATTEMPTS):
-            password = click.prompt("2FA password", hide_input=True, type=str)
+            password = ask("2FA password", hide_input=True, type=str)
             try:
                 await client.sign_in(password=password)
                 return

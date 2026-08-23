@@ -11,6 +11,7 @@ import click
 
 from tg_export.cli import common
 from tg_export.cli.common import _fail
+from tg_export.console import confirm
 from tg_export.errors import (
     EXIT_FAILURE,
     EXIT_OK,
@@ -151,7 +152,7 @@ async def _state_reset(
                 if delete_messages
                 else ("Rewind export progress of all chats?")
             )
-            if not skip_confirm and not click.confirm(what):
+            if not skip_confirm and not confirm(what):
                 common._diag("Cancelled.", essential=True)
                 return EXIT_OK
             await st.reset_chat_progress(delete_messages=delete_messages)
@@ -168,9 +169,7 @@ async def _state_reset(
                 counts = await st.count_chat_rows(chat_id)
                 common._diag(f"Chat: {chat_id}", essential=True)
                 common._diag(common._db_rows_line(counts), essential=True)
-                if not skip_confirm and not click.confirm(
-                    "Delete every message and file record of this chat?"
-                ):
+                if not skip_confirm and not confirm("Delete every message and file record of this chat?"):
                     common._diag("Cancelled.", essential=True)
                     return EXIT_OK
             await st.reset_chat_progress(chat_id, delete_messages=delete_messages)

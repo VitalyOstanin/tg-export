@@ -222,6 +222,7 @@ uv run pyright
 | 34 | константа объявлена выше функции, которая её читает                     | `test_no_module_constant_is_read_above_its_declaration`          |
 | 35 | обход сообщений чата объявлен один раз на обе фазы экспорта              | `test_the_message_walk_is_written_once`                          |
 | 36 | docstring и сообщения проверок в `tests/` написаны по-русски            | `test_the_tests_speak_russian`                                   |
+| 37 | вопросы пользователю задаются помощниками `ask`/`confirm`, не в stdout   | `test_no_question_is_asked_on_stdout`                            |
 
 ## Схема базы состояния
 

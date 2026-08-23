@@ -10,6 +10,7 @@ import click
 
 from tg_export.cli import common
 from tg_export.cli.common import _fail
+from tg_export.console import ask
 from tg_export.errors import (
     EXIT_FAILURE,
     EXIT_OK,
@@ -24,26 +25,31 @@ def auth():
 
 
 @auth.command("credentials")
-@click.option("--api-id", prompt="API ID (from https://my.telegram.org)", type=int, help="Telegram API ID")
+@click.option("--api-id", type=int, default=None, help="Telegram API ID")
 @click.option(
     "--api-hash",
-    prompt="API Hash",
-    # hide_input: the hash authenticates the application the same way a
-    # password does; typed in the open it stays in the shell history.
-    hide_input=True,
+    default=None,
     help="Telegram API Hash (input is hidden; passing it as an option puts it in the shell history)",
 )
 def auth_credentials(api_id, api_hash):
     """Set Telegram API credentials (api_id and api_hash)."""
+    if api_id is None:
+        api_id = ask("API ID (from https://my.telegram.org)", type=int)
+    if api_hash is None:
+        # hide_input: the hash authenticates the application the same way a
+        # password does; typed in the open it stays in the shell history.
+        api_hash = ask("API Hash", hide_input=True)
     mgr = common._mgr()
     mgr.save_credentials(api_id=api_id, api_hash=api_hash)
     common._diag("Credentials saved.")
 
 
 @auth.command("add")
-@click.option("--name", prompt="Account alias", help="Account alias")
+@click.option("--name", default=None, help="Account alias")
 def auth_add(name):
     """Add a new Telegram account (interactive login)."""
+    if name is None:
+        name = ask("Account alias")
     mgr = common._mgr()
     cred_path = mgr.config_dir / "api_credentials.yaml"
     if not cred_path.exists():

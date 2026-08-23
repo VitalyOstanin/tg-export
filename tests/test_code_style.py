@@ -919,3 +919,27 @@ def test_the_tests_speak_russian():
                 if text.strip() and not cyrillic.search(text):
                     offenders.append(f"{path.name}:{node.lineno} сообщение assert")
     assert not offenders, f"по-английски написаны: {offenders}"
+
+
+def test_no_question_is_asked_on_stdout():
+    """stdout принадлежит машиночитаемому выводу запросных команд.
+
+    Правило записано в docstring `_diag` и модуля вывода, и все `_diag`
+    соблюдают его именно потому, что поток задан в одном месте. Прямые вызовы
+    `click.confirm`/`click.prompt` его обходили: приглашение по умолчанию
+    печатается в stdout, поэтому у `purge > /dev/null` пользователь видел
+    описание удаляемого и затем молчание, а stdout переставал быть пустым.
+    """
+    offenders = []
+    for path in sorted(PROJECT.glob("**/*.py")):
+        # console.py объявляет сами помощники -- поток задан там.
+        if path.name == "console.py":
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in _calls(tree):
+            if _qualified_call(node) in {"click.confirm", "click.prompt"}:
+                offenders.append(f"{path.relative_to(PROJECT)}:{node.lineno} прямой вызов")
+            for keyword in node.keywords:
+                if keyword.arg == "prompt" and _called_name(node) == "option":
+                    offenders.append(f"{path.relative_to(PROJECT)}:{node.lineno} prompt= у опции")
+    assert not offenders, f"вопрос задаётся мимо помощника: {offenders}"

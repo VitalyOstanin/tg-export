@@ -27,6 +27,7 @@ from tg_export.cli.common import (
     _export_exit_code,
     _fail,
 )
+from tg_export.console import confirm
 from tg_export.errors import (
     EXIT_FAILURE,
     EXIT_OK,
@@ -1101,7 +1102,7 @@ async def _purge_chat(chat_arg, account, config_override, output_override, skip_
         else:
             common._diag("  Dir: not found", essential=True)
 
-        if not skip_confirm and not click.confirm("Delete all data for this chat?"):
+        if not skip_confirm and not confirm("Delete all data for this chat?"):
             common._diag("Cancelled.", essential=True)
             return
 

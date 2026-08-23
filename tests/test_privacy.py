@@ -12,7 +12,6 @@ import stat
 from pathlib import Path
 from unittest.mock import MagicMock
 
-import click
 import pytest
 
 from tg_export.auth import AccountManager
@@ -88,14 +87,35 @@ def test_existing_directory_permissions_are_left_alone(tmp_path):
     assert _mode(target) == 0o755, oct(_mode(target))
 
 
-def test_api_hash_prompt_hides_input():
+def test_api_hash_prompt_hides_input(monkeypatch, tmp_path):
     """api_hash -- секрет того же уровня, что и пароль: набранный в открытую,
     он остаётся в истории оболочки и виден в списке процессов."""
-    from tg_export.cli.auth import auth_credentials
+    from click.testing import CliRunner
 
-    option = next(p for p in auth_credentials.params if p.name == "api_hash")
-    assert isinstance(option, click.Option)
-    assert option.hide_input is True
+    from tg_export.auth import AccountManager
+    from tg_export.cli import auth as auth_cli
+    from tg_export.cli import common as cli_common
+
+    asked: list[tuple[str, dict]] = []
+
+    def fake_ask(question, **kwargs):
+        asked.append((question, kwargs))
+        return 1 if kwargs.get("type") is int else "hash"
+
+    monkeypatch.setattr(auth_cli, "ask", fake_ask)
+
+    def _mgr():
+        mgr = AccountManager(config_dir=tmp_path / "config")
+        mgr.ensure_dirs()
+        return mgr
+
+    monkeypatch.setattr(cli_common, "_mgr", _mgr)
+
+    result = CliRunner().invoke(auth_cli.auth_credentials, [])
+
+    assert result.exit_code == 0, result.output
+    hidden = [kwargs for question, kwargs in asked if "Hash" in question]
+    assert hidden and hidden[0].get("hide_input") is True, asked
 
 
 @pytest.mark.parametrize("name", ["../evil", "a/b", "", ".", "..", "a\\b"])

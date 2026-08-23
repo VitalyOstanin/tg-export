@@ -901,3 +901,32 @@ def test_purge_removes_the_chat_directory_and_names_the_rows_it_deleted(tmp_path
     purged, kept = asyncio.run(survivors())
     assert all(number == 0 for number in purged.values()), purged
     assert kept["files"] == 1 and kept["catalog_cache"] == 1, kept
+
+
+def test_the_confirmation_question_goes_to_stderr(tmp_path, account_env):
+    """Вопрос печатался в stdout, а его предмет -- в stderr, то есть ровно наоборот.
+
+    При `purge chat > /dev/null` пользователь видел описание удаляемого и
+    дальше молчание: процесс ждал ответа, а вопрос ушёл в перенаправление. Для
+    скрипта stdout переставал быть пустым и получал прозу вместе с эхом ответа.
+    """
+    import asyncio
+
+    from tg_export.cli.common import STATE_DB_NAME
+    from tg_export.state import ExportState
+
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    (account_env / "acc.yaml").write_text(f"output:\n  path: {out_dir}\n")
+
+    async def fill():
+        async with ExportState(out_dir / STATE_DB_NAME) as state:
+            await state.set_last_msg_id(42, 1)
+
+    asyncio.run(fill())
+
+    result = CliRunner().invoke(main, ["purge", "42"], input="n\n")
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout == "", f"stdout принадлежит машиночитаемому выводу: {result.stdout!r}"
+    assert "Delete all data for this chat?" in result.stderr
