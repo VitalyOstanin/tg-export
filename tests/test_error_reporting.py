@@ -469,3 +469,38 @@ def test_a_refused_reuse_says_why(tmp_path, caplog):
         assert _link_or_copy(src, dst) is False
 
     assert any("dst.jpg" in r.getMessage() for r in caplog.records), caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_section_that_cannot_reach_the_server_is_recorded_as_an_error(tmp_path):
+    """Две секции из шести гасили отказ своего запроса и завершались нормально.
+
+    Обещание `export_global_data` -- отказ секции не останавливает остальные,
+    но попадает в `stats.errors`, откуда считаются код возврата и блок
+    «Errors:». Историй и мелодий это обещание не касалось: прогон, не
+    достучавшийся до сервера, сообщал успех.
+    """
+    from tg_export.exporter import Exporter, ExportStats
+
+    api = MagicMock()
+    api.get_stories = AsyncMock(side_effect=RuntimeError("stories unavailable"))
+    renderer = MagicMock()
+    renderer.output_dir = tmp_path
+    config = MagicMock()
+    config.personal_info = config.contacts = config.sessions = False
+    config.userpics = config.profile_music = False
+    config.stories = True
+
+    exporter = Exporter(
+        api=api,
+        state=AsyncMock(),
+        config=config,
+        renderer=renderer,
+        downloader=AsyncMock(),
+        account="test",
+    )
+    stats = ExportStats()
+
+    await exporter.export_global_data(stats)
+
+    assert any("stories" in error for error in stats.errors), stats.errors

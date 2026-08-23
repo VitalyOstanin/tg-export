@@ -286,3 +286,55 @@ def test_require_takeout_and_no_takeout_together_are_refused(run_env):
     assert result.exit_code == 2
     assert "--no-takeout" in result.output
     assert "Usage:" in result.output
+
+
+def test_takeout_clear_keeps_the_id_when_the_server_could_not_be_reached(tmp_path, monkeypatch):
+    """Единственная ссылка на takeout-сессию стиралась и при обрыве связи.
+
+    Обработчик не различал «сервер отказал по существу» и «запрос не дошёл»,
+    а стирал `takeout_id` в обоих случаях: сессия оставалась висеть на сервере
+    до собственного истечения, и повторить `takeout clear` было уже нечем.
+    """
+    cfg_dir = tmp_path / "config"
+    mgr = AccountManager(config_dir=cfg_dir)
+    mgr.ensure_dirs()
+    mgr.save_credentials(1, "hash")
+    mgr.set_default_account("acc")
+    mgr.session_path("acc").write_bytes(b"")
+    monkeypatch.setattr(cli_common, "account_manager", lambda: AccountManager(config_dir=cfg_dir))
+
+    api = MagicMock()
+    api.connect = AsyncMock()
+    api.disconnect = AsyncMock()
+    api.client.session.takeout_id = 4242
+    api.client.end_takeout = AsyncMock(side_effect=TimeoutError("no answer"))
+    monkeypatch.setattr("tg_export.api.TgApi", lambda *a, **k: api)
+
+    result = CliRunner().invoke(main, ["takeout", "clear"])
+
+    assert result.exit_code == 1, result.output
+    assert api.client.session.takeout_id == 4242
+    api.client.session.save.assert_not_called()
+
+
+def test_takeout_clear_drops_the_id_when_the_server_refused_on_the_merits(tmp_path, monkeypatch):
+    """Отказ по существу означает, что сессии на сервере уже нет: id можно стереть."""
+    cfg_dir = tmp_path / "config"
+    mgr = AccountManager(config_dir=cfg_dir)
+    mgr.ensure_dirs()
+    mgr.save_credentials(1, "hash")
+    mgr.set_default_account("acc")
+    mgr.session_path("acc").write_bytes(b"")
+    monkeypatch.setattr(cli_common, "account_manager", lambda: AccountManager(config_dir=cfg_dir))
+
+    api = MagicMock()
+    api.connect = AsyncMock()
+    api.disconnect = AsyncMock()
+    api.client.session.takeout_id = 4242
+    api.client.end_takeout = AsyncMock(side_effect=ValueError("takeout not found"))
+    monkeypatch.setattr("tg_export.api.TgApi", lambda *a, **k: api)
+
+    result = CliRunner().invoke(main, ["takeout", "clear"])
+
+    assert result.exit_code == 0, result.output
+    assert api.client.session.takeout_id is None

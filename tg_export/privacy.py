@@ -50,8 +50,17 @@ def create_private_file(path: Path) -> None:
     An empty file created first takes the mode away from the umask, and the
     library then opens what is already there.
     """
-    with contextlib.suppress(FileExistsError, OSError):
+    try:
         os.close(os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, PRIVATE_FILE_MODE))
+    except FileExistsError:
+        # The file is already there; the caller tightens it afterwards.
+        pass
+    except OSError as e:
+        # The library will now create the file itself, with the process umask,
+        # and the caller tightens it after -- which leaves the window this
+        # function exists to close. Worth a line: without it the log gives no
+        # way to tell that the window was there.
+        logger.warning("%s could not be created private (%s); it will be tightened after", path, e)
 
 
 def write_private_text(path: Path, text: str) -> None:

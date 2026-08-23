@@ -1707,10 +1707,13 @@ class Exporter:
 
         try:
             pinned, archived = await self.api.get_stories()
-        except Exception as e:
-            logger.warning("Stories API not available: %s", e, exc_info=True)
+        except Exception:
+            # The page is written empty so the export is not left with a
+            # dangling link, and the failure goes on to `export_global_data`,
+            # which is what puts it into `stats.errors` -- the list the exit
+            # code and the "Errors:" block of the summary are counted from.
             await asyncio.to_thread(self.renderer.render_stories, [])
-            return
+            raise
 
         all_stories = {}
         for story_item in getattr(pinned, "stories", []):
@@ -1801,8 +1804,11 @@ class Exporter:
                             "size": size_str,
                         }
                     )
-        except Exception as e:
-            logger.warning("Failed to fetch ringtones: %s", e, exc_info=True)
+        except Exception:
+            # Same as stories above: the page is written with what was
+            # collected, and the failure is reported by the caller.
+            await asyncio.to_thread(self.renderer.render_other_data, {"ringtones": ringtones})
+            raise
 
         await asyncio.to_thread(self.renderer.render_other_data, {"ringtones": ringtones})
         if ringtones or failed:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import re
@@ -334,8 +335,13 @@ class AccountManager:
             me = await client.get_me()
         except BaseException:
             # Ctrl+C at a prompt arrives as KeyboardInterrupt, hence BaseException:
-            # the staging file must not survive it either.
-            await self._disconnect(client)
+            # the staging file must not survive it either. The disconnect goes
+            # over the network and can fail on its own; suppressed, because its
+            # failure would otherwise skip the removal below, replace the real
+            # cause with itself, and leave behind exactly the file this branch
+            # exists to delete.
+            with contextlib.suppress(Exception):
+                await self._disconnect(client)
             self._remove_session_files(staging)
             raise
         await self._disconnect(client)
