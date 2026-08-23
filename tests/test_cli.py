@@ -833,3 +833,71 @@ def test_naming_the_account_twice_in_two_ways_is_refused(account_env):
     assert result.exit_code == 2, result.output
     assert "usage" in result.output.lower(), result.output
     assert "twice" in result.output, result.output
+
+
+def test_purge_removes_the_chat_directory_and_names_the_rows_it_deleted(tmp_path, account_env):
+    """Единственная необратимая команда проверяется целиком: база, диск и отчёт о сделанном.
+
+    Прежде подтверждённое удаление не исполнял ни один тест: единственный тест,
+    доходивший до вопроса, отвечал «n», а `purge_chat` подменялся заглушкой,
+    возвращавшей число вместо словаря счётчиков.
+    """
+    import asyncio
+
+    from tg_export.cli.common import STATE_DB_NAME
+    from tg_export.state import ExportState
+
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    (account_env / "acc.yaml").write_text(f"output:\n  path: {out_dir}\n")
+
+    async def fill():
+        async with ExportState(out_dir / STATE_DB_NAME) as state:
+            for chat_id, name in ((42, "Chat"), (43, "Other")):
+                await state.register_file(
+                    file_id=chat_id,
+                    chat_id=chat_id,
+                    msg_id=1,
+                    expected_size=10,
+                    actual_size=10,
+                    local_path=f"/tmp/{chat_id}.jpg",
+                )
+                await state.set_last_msg_id(chat_id, 1)
+                await state.cache_catalog(
+                    chat_id=chat_id,
+                    name=name,
+                    chat_type="user",
+                    folder=None,
+                    members_count=None,
+                    messages_count=0,
+                    last_message_date=None,
+                    is_left=False,
+                    is_archived=False,
+                    is_forum=False,
+                    is_monoforum=False,
+                )
+
+    asyncio.run(fill())
+
+    doomed = out_dir / "unfiled" / "Chat_42"
+    neighbour = out_dir / "unfiled" / "Other_43"
+    for directory in (doomed, neighbour):
+        directory.mkdir(parents=True)
+        (directory / "photo.jpg").write_bytes(b"content")
+
+    result = CliRunner().invoke(main, ["purge", "42"], input="y\n")
+
+    assert result.exit_code == 0, result.output
+    assert not doomed.exists(), "каталог чата остался на диске"
+    assert (neighbour / "photo.jpg").exists(), "удалён каталог соседнего чата"
+    assert "Deleted from DB: messages=0, files=1, export_state=1, catalog_cache=1" in result.output, (
+        f"итог удаления выведен не так, как предпросмотр: {result.output!r}"
+    )
+
+    async def survivors():
+        async with ExportState(out_dir / STATE_DB_NAME) as state:
+            return await state.count_chat_rows(42), await state.count_chat_rows(43)
+
+    purged, kept = asyncio.run(survivors())
+    assert all(number == 0 for number in purged.values()), purged
+    assert kept["files"] == 1 and kept["catalog_cache"] == 1, kept

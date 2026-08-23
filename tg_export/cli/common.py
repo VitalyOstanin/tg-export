@@ -69,15 +69,19 @@ def _error(message: str, **kwargs) -> None:
 # re-exported here because commands read them by these names.
 
 
-def _db_rows_line(counts: dict[str, int]) -> str:
+def _db_rows_line(counts: dict[str, int], label: str = "DB") -> str:
     """The row counts a destructive command is about to remove, as one line.
 
     Printed by `purge` and by both branches of `state reset --delete-messages`,
     always as an essential line: a prompt whose subject --quiet hid is a prompt
     nobody can answer. The tables come from the count itself, so a table added
     to CHAT_TABLES shows up in the warning without a second edit here.
+
+    `label` names what the numbers are: `purge` prints the same set twice --
+    what it is about to delete and what it deleted -- and the reader compares
+    the two lines, which only works while they are shaped alike.
     """
-    return "  DB: " + ", ".join(f"{table}={number}" for table, number in counts.items())
+    return f"  {label}: " + ", ".join(f"{table}={number}" for table, number in counts.items())
 
 
 def _fail(message: str | None = None, code: int = EXIT_FAILURE) -> NoReturn:

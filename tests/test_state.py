@@ -364,6 +364,87 @@ async def test_chat_row_counts_cover_every_table_purge_deletes(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_purge_deletes_the_rows_of_its_chat_and_leaves_the_neighbour_alone(tmp_path):
+    """Единственная необратимая команда должна удалять ровно тот чат, о котором предупредила.
+
+    Проверялось только то, что предпросмотр и удаление смотрят на один список
+    таблиц; ни предикат `WHERE chat_id=?`, ни соответствие возвращённых
+    счётчиков удалённому ни один тест не исполнял.
+    """
+    from tg_export.state import ExportState
+
+    async with ExportState(db_path=tmp_path / "purge.db") as state:
+        for chat_id in (42, 43):
+            await state.store_messages_batch([_make_msg(msg_id=1, chat_id=chat_id)])
+            await state.register_file(
+                file_id=chat_id,
+                chat_id=chat_id,
+                msg_id=1,
+                expected_size=10,
+                actual_size=10,
+                local_path=f"/tmp/{chat_id}.jpg",
+            )
+            await state.set_last_msg_id(chat_id, 1)
+            await state.cache_catalog(
+                chat_id=chat_id,
+                name=f"chat-{chat_id}",
+                chat_type="user",
+                folder=None,
+                members_count=None,
+                messages_count=1,
+                last_message_date=None,
+                is_left=False,
+                is_archived=False,
+                is_forum=False,
+                is_monoforum=False,
+            )
+
+        before = await state.count_chat_rows(42)
+        assert all(number == 1 for number in before.values()), before
+
+        deleted = await state.purge_chat(42)
+
+        assert deleted == before, "счётчики удалённого не совпали с тем, что было показано"
+        assert all(number == 0 for number in (await state.count_chat_rows(42)).values())
+        assert await state.count_chat_rows(43) == before, "удалены строки соседнего чата"
+
+
+@pytest.mark.asyncio
+async def test_purge_finishes_every_table_even_if_the_caller_is_cancelled(tmp_path):
+    """Отмена в середине purge оставила бы часть таблиц очищенной, а часть -- нет.
+
+    Удаление идёт по четырём таблицам и завершается коммитом; докстрока
+    `purge_chat` обещает, что отмена этот блок не разрывает, но проверял это
+    только соседний случай -- регистрация файла.
+    """
+    import asyncio
+
+    from tg_export.state import ExportState
+
+    state = ExportState(tmp_path / "purge-cancel.db")
+    await state.open()
+    try:
+        await state.store_messages_batch([_make_msg(msg_id=1, chat_id=42)])
+        await state.register_file(
+            file_id=1, chat_id=42, msg_id=1, expected_size=10, actual_size=10, local_path="/tmp/x.jpg"
+        )
+        await state.set_last_msg_id(42, 1)
+
+        task = asyncio.create_task(state.purge_chat(42))
+        # Отмена приходит, когда удаление уже началось, но ещё не дошло до коммита.
+        await asyncio.sleep(0)
+        task.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        counts = await state.count_chat_rows(42)
+        assert all(number == 0 for number in counts.values()), f"purge оборван на середине: {counts}"
+    finally:
+        await state.close()
+
+
+@pytest.mark.asyncio
 async def test_list_chat_states_returns_progress_with_message_counts(tmp_path):
     """`state show` без chat_id читает сводку по всем чатам через слой состояния."""
     from tg_export.state import ExportState

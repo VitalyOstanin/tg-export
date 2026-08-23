@@ -32,6 +32,7 @@ from tg_export.errors import (
     EXIT_OK,
     TakeoutUnavailableError,
 )
+from tg_export.format import format_size
 from tg_export.privacy import ensure_private_dir, write_private_text
 from tg_export.verify import RedownloadResult, clean_staging, redownload_broken_files
 
@@ -158,7 +159,6 @@ def _credential_api_id(cred_path: Path):
 def _account_settings(config_path: Path) -> dict:
     """Output and media settings of one account, as the loader reads them."""
     from tg_export.config import load_config
-    from tg_export.format import format_size
 
     cfg = load_config(config_path)
     return {
@@ -178,7 +178,6 @@ def _min_free_space_caption(mgr, data: dict) -> str:
     while `run` refused with a ConfigError on the very same file.
     """
     from tg_export.config import ConfigError
-    from tg_export.format import format_size
 
     try:
         return format_size(mgr.load_min_free_space())
@@ -256,7 +255,6 @@ def _global_data_summary(cfg) -> str:
 def _show_account_config(config_path):
     """Show per-account config details (verbose mode)."""
     from tg_export.config import load_config
-    from tg_export.format import format_size
 
     cfg = load_config(config_path)
 
@@ -594,7 +592,6 @@ async def _print_export_summary(stats, state, output_base: Path, *, takeout_acti
     Goes to stderr and is marked essential, so --quiet keeps it: the export
     artifacts themselves are the files written to disk.
     """
-    from tg_export.format import format_size
 
     common._diag("\nExport complete:", essential=True)
     # Which API served the export decides how complete and how fast it was, so
@@ -1013,10 +1010,12 @@ async def _purge_chat(chat_arg, account, config_override, output_override, skip_
         common._diag(common._db_rows_line(counts), essential=True)
         if chat_dirs:
             for d in chat_dirs:
-                size = sum(f.stat().st_size for f in d.rglob("*") if f.is_file())
-                from tg_export.format import format_size
-
-                common._diag(f"  Dir: {d} ({format_size(size)})", essential=True)
+                # du rather than a stat() per file: a chat directory holds tens
+                # of thousands of them, and the wait falls right before an
+                # interactive question. When du is missing the size is dropped.
+                size = _get_dir_size(d)
+                measured = f" ({format_size(size)})" if size is not None else ""
+                common._diag(f"  Dir: {d}{measured}", essential=True)
         else:
             common._diag("  Dir: not found", essential=True)
 
@@ -1025,7 +1024,7 @@ async def _purge_chat(chat_arg, account, config_override, output_override, skip_
             return
 
         deleted = await state.purge_chat(chat_id)
-        common._diag(f"  Deleted from DB: {deleted}")
+        common._diag(common._db_rows_line(deleted, "Deleted from DB"))
 
         for d in chat_dirs:
             shutil.rmtree(d)

@@ -272,3 +272,58 @@ async def test_a_story_video_is_still_rendered_as_a_video(tmp_path):
 
     assert story["video_path"] == "stories/story_0.MP4"
     assert story["photo_path"] is None
+
+
+def test_orphan_cleanup_keeps_every_file_the_database_knows(tmp_path, monkeypatch):
+    """Удаляется только то, чего нет в базе, как бы путь в ней ни был записан.
+
+    Решение об удалении принимает нормализация путей: в базе они бывают
+    абсолютными, относительными от рабочего каталога и относительными от
+    каталога чата, а часть записей -- синтетические маркеры. Регрессия здесь
+    стирает скачанные медиа у пользователя, и тела этой функции не касался ни
+    один тест: оба прогона, доходившие до выгрузки чата, подменяли её заглушкой.
+    """
+    chat_dir = tmp_path / "chat"
+    photos = chat_dir / "photos"
+    videos = chat_dir / "videos"
+    photos.mkdir(parents=True)
+    videos.mkdir()
+
+    absolute = photos / "absolute.jpg"
+    from_chat_dir = photos / "relative-to-chat.jpg"
+    from_cwd = videos / "relative-to-cwd.mp4"
+    orphan = photos / "orphan.jpg"
+    for path in (absolute, from_chat_dir, from_cwd, orphan):
+        path.write_bytes(b"content")
+
+    # Путь, относительный от рабочего каталога, -- тот случай, который уже
+    # приводил к удалению нужных файлов.
+    monkeypatch.chdir(tmp_path)
+    known = {
+        str(absolute),
+        "photos/relative-to-chat.jpg",
+        "chat/videos/relative-to-cwd.mp4",
+        "<skipped_by_size>",
+    }
+
+    Exporter._cleanup_orphaned_files_sync(["photos", "videos"], chat_dir, known)
+
+    assert not orphan.exists(), "осиротевший файл остался на диске"
+    for path in (absolute, from_chat_dir, from_cwd):
+        assert path.exists(), f"удалён файл, известный базе: {path}"
+
+
+def test_orphan_cleanup_leaves_alone_what_lies_outside_the_chat_directory(tmp_path, monkeypatch):
+    """Символическая ссылка наружу не даёт удалить файл за пределами каталога чата."""
+    chat_dir = tmp_path / "chat"
+    photos = chat_dir / "photos"
+    photos.mkdir(parents=True)
+    outside = tmp_path / "outside.jpg"
+    outside.write_bytes(b"content")
+    (photos / "link.jpg").symlink_to(outside)
+
+    monkeypatch.chdir(tmp_path)
+    Exporter._cleanup_orphaned_files_sync(["photos"], chat_dir, set())
+
+    assert outside.exists(), "удалён файл за пределами каталога чата"
+    assert (photos / "link.jpg").is_symlink()
