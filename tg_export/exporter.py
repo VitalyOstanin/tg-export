@@ -395,7 +395,7 @@ class _MediaPipeline:
         self._chat_id = chat_id
         # A window of one is exactly the previous sequential behaviour.
         self._limit = max(1, limit)
-        self._pending: deque[tuple[asyncio.Task, Message]] = deque()
+        self._pending: deque[tuple[asyncio.Task | None, Message]] = deque()
 
     async def __aenter__(self) -> _MediaPipeline:
         return self
@@ -414,23 +414,45 @@ class _MediaPipeline:
         # file in the statistics and only raises when the run itself must end.
         # What a task group would give for free -- keeping references to
         # running tasks -- the deque already does.
-        for task, _ in self._pending:
+        tasks = [task for task, _ in self._pending if task is not None]
+        for task in tasks:
             task.cancel()
-        if self._pending:
-            await asyncio.gather(*(task for task, _ in self._pending), return_exceptions=True)
-            self._pending.clear()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._pending.clear()
         return False
 
     async def submit(self, msg: Message, tl_msg) -> list[Message]:
         """Start this message's download; return messages that are now ready."""
-        task = asyncio.create_task(
-            self._exporter._process_media(msg, tl_msg, self._chat_dir, self._stats, chat_id=self._chat_id)
-        )
+        task = None
+        if msg.media and self._exporter.downloader:
+            task = asyncio.create_task(
+                self._exporter._process_media(msg, tl_msg, self._chat_dir, self._stats, chat_id=self._chat_id)
+            )
         self._pending.append((task, msg))
         ready = []
-        while len(self._pending) >= self._limit:
+        # Whatever is at the head and needs no waiting leaves at once: a text
+        # message downloads nothing, and holding it back would let a stretch of
+        # them pile up in the deque until some download finally finished.
+        while self._pending and self._head_is_ready():
+            ready.append(await self._take_oldest())
+        # The window counts downloads, not queue entries. Counting entries meant
+        # a message without media took a slot, so with media rarer than one per
+        # `limit` messages the loop stood on the oldest task while nothing else
+        # was being downloaded -- exactly the sequential behaviour the pipeline
+        # replaced.
+        while self._in_flight() >= self._limit:
             ready.append(await self._take_oldest())
         return ready
+
+    def _head_is_ready(self) -> bool:
+        """True when the oldest entry can be handed over without waiting."""
+        task, _ = self._pending[0]
+        return task is None or task.done()
+
+    def _in_flight(self) -> int:
+        """How many downloads are actually running."""
+        return sum(1 for task, _ in self._pending if task is not None and not task.done())
 
     async def drain(self) -> list[Message]:
         """Wait for every download still in flight."""
@@ -443,8 +465,14 @@ class _MediaPipeline:
         task, msg = self._pending.popleft()
         # _process_media records the failure of a single file in stats; what
         # it does raise (DiskSpaceError) has to end the export, so it is not
-        # caught here.
-        await task
+        # caught here. A message with nothing to download has no task at all.
+        #
+        # Waiting for the oldest download specifically means one large file at
+        # the head holds up the handover, and the number of active downloads
+        # falls while it finishes. Lifting that would take separating the order
+        # of database writes from the order of downloads.
+        if task is not None:
+            await task
         return msg
 
 

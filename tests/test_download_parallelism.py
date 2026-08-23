@@ -69,6 +69,13 @@ def _message_with_media(msg_id: int, chat_id: int) -> Message:
     )
 
 
+def _message_without_media(msg_id: int, chat_id: int) -> Message:
+    """Обычное текстовое сообщение: скачивать нечего."""
+    msg = _message_with_media(msg_id, chat_id)
+    msg.media = None
+    return msg
+
+
 class _RecordingDownloader:
     """Загрузчик, замеряющий, сколько загрузок идёт одновременно."""
 
@@ -165,6 +172,7 @@ async def test_every_message_is_stored_despite_parallel_downloads(state, tmp_pat
     api.client.get_messages = AsyncMock(return_value=MagicMock(total=len(ids)))
 
     stored = []
+    paths = []
 
     class _Downloader(_RecordingDownloader):
         async def download(self, tl_msg, media, chat_dir, chat_id=0) -> tuple[Path | None, str]:
@@ -189,6 +197,11 @@ async def test_every_message_is_stored_despite_parallel_downloads(state, tmp_pat
 
     async def spy(batch):
         stored.extend(m.id for m in batch)
+        # Путь появляется только после завершения загрузки, поэтому его
+        # наличие в момент попадания в пачку -- и есть проверяемый инвариант.
+        # Один состав идентификаторов к нему нечувствителен: порядок задаёт
+        # очередь и он тот же, дождались загрузки или нет.
+        paths.extend(m.media.file.local_path for m in batch if m.media and m.media.file)
         return await original_store(batch)
 
     monkeypatch.setattr(state, "store_messages_batch", spy)
@@ -205,3 +218,67 @@ async def test_every_message_is_stored_despite_parallel_downloads(state, tmp_pat
     )
 
     assert stored == ids, stored
+    assert paths and all(paths), f"в базу ушли записи без пути к файлу: {paths}"
+
+
+@pytest.mark.asyncio
+async def test_downloads_still_overlap_when_media_is_sparse(state, tmp_path, monkeypatch):
+    """Окно конвейера обязано считать загрузки, а не сообщения.
+
+    Задача заводилась на каждое сообщение, включая текстовые, и занимала место
+    в окне. Как только очередь набирала `concurrent_downloads` элементов, цикл
+    вставал на ожидании самой старой задачи, а за ней в окне стояли уже
+    завершённые текстовые сообщения -- то есть в это время не шло ни одной
+    другой загрузки. При медиа реже, чем одно на `concurrent_downloads`
+    сообщений (обычный текстовый чат с редкими фотографиями), параллельность
+    вырождалась в единицу.
+    """
+    chat_id = 79
+    every = 8
+    ids = list(range(200, 100, -1))
+    await state.set_last_msg_id(chat_id, 100)
+
+    async def fake_iter(cid, **kwargs):
+        if "min_id" not in kwargs:
+            return
+        min_id = kwargs["min_id"]
+        for msg_id in ids:
+            if msg_id <= min_id:
+                continue
+            yield SimpleNamespace(id=msg_id, date=datetime(2026, 1, 1, 12, 0))
+
+    api = MagicMock()
+    api.iter_messages = fake_iter
+    api.client = MagicMock()
+    api.client.get_messages = AsyncMock(return_value=MagicMock(total=len(ids)))
+
+    downloader = _RecordingDownloader(limit=4)
+    monkeypatch.setattr(
+        "tg_export.exporter.convert_message",
+        lambda tl_msg, chat_id: (
+            _message_with_media(tl_msg.id, chat_id)
+            if tl_msg.id % every == 0
+            else _message_without_media(tl_msg.id, chat_id)
+        ),
+    )
+
+    exporter = Exporter(
+        api=api,
+        state=state,
+        config=MagicMock(),
+        renderer=MagicMock(),
+        downloader=cast(Any, downloader),
+        account="test",
+    )
+    chat_config = MagicMock()
+    chat_config.date_from = None
+    chat_config.date_to = None
+
+    await exporter.export_chat(
+        chat=_chat(chat_id),
+        chat_config=chat_config,
+        chat_dir=Path(tmp_path / "chat"),
+        stats=ExportStats(),
+    )
+
+    assert downloader.peak == 4, f"одновременных загрузок при разреженном медиа: {downloader.peak}"
