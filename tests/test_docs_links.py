@@ -401,3 +401,32 @@ def test_the_adr_index_lists_every_record():
 
     missing = [name for name in records if f"({name})" not in index]
     assert not missing, f"записи не названы в индексе ADR: {missing}"
+
+
+def test_the_private_route_for_a_vulnerability_is_reachable_from_the_readme():
+    """`SECURITY.md` не был назван в README ни разу.
+
+    Приватный маршрут описан в файле, ссылка на который стояла только в
+    CONTRIBUTING -- документе контрибьютора, а не пользователя, который нашёл
+    уязвимость. В шаблоне отчёта об ошибке файл упоминался текстом без ссылки.
+    """
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    template = (ROOT / ".github" / "ISSUE_TEMPLATE" / "bug_report.md").read_text(encoding="utf-8")
+
+    assert "(SECURITY.md)" in readme
+    assert "(../../SECURITY.md)" in template
+
+
+def test_the_reference_says_when_a_reset_asks_for_confirmation():
+    """Справочник обещал, что обратимый сброс вопросов не задаёт.
+
+    Верно это только для одного чата: ветка `--all` спрашивает независимо от
+    `--delete-messages`, и приведённый там же пример `state reset --all`
+    в скрипте останавливался на вопросе.
+    """
+    reference = (ROOT / "docs" / "cli.md").read_text(encoding="utf-8")
+    start = reference.index("### state reset")
+    section = reference[start : reference.index("### ", start + 5)]
+
+    assert "--all" in section and "подтверждение" in section
+    assert "вопросов\nне задаёт" not in section

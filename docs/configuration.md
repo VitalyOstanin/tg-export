@@ -66,11 +66,14 @@ TG_EXPORT_CONFIG_DIR=~/.config/tg-export-work tg-export run
 | 2 | Файл конфигурации     | `--config` > `<каталог конфигурации>/<alias>.yaml`                                        |
 | 3 | Аккаунт               | `--account` > аккаунт по умолчанию (`tg-export account default`)                          |
 | 4 | Каталог экспорта      | `--output` (путь целиком) > `output.path` с добавлением alias аккаунта                    |
-| 5 | Уровень логирования   | `--debug` > `--log-level` > `LOG_LEVEL` > `WARNING`                                       |
-| 6 | Логи библиотек        | `WARNING` всегда, кроме суффикса `:all` (`LOG_LEVEL=DEBUG:all`)                           |
+| 5 | Уровень логирования   | `--debug` > `--log-level` > `TG_EXPORT_LOG_LEVEL` > `LOG_LEVEL` > `WARNING`               |
+| 6 | Логи библиотек        | `WARNING` всегда, кроме суффикса `:all` (`TG_EXPORT_LOG_LEVEL=DEBUG:all`)                 |
 
-Переменные окружения проекта -- `TG_EXPORT_CONFIG_DIR` и `LOG_LEVEL`; `XDG_CONFIG_HOME`
-используется по стандарту XDG. Флаги `--config` и `--output` принимают команды `run`,
+Переменные окружения проекта -- `TG_EXPORT_CONFIG_DIR` и `TG_EXPORT_LOG_LEVEL`;
+`XDG_CONFIG_HOME` используется по стандарту XDG. Имя без префикса, `LOG_LEVEL`, тоже
+принимается ради совместимости, но стоит ниже: эта переменная не принадлежит ни одному
+инструменту, и значение, оставленное там другим, прежде валило любую команду. Сообщение
+об ошибке называет источник значения -- флаг или переменную. Флаги `--config` и `--output` принимают команды `run`,
 `state show`, `state reset`, `purge` и `verify`.
 
 Настройки экспорта (правила чатов, фильтры, типы медиа) задаются только в YAML: флагов

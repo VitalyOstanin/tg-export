@@ -1,3 +1,4 @@
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -408,7 +409,13 @@ def test_the_example_config_loads_and_names_every_section():
 
     root = Path(__file__).resolve().parent.parent
     example = root / "config.example.yaml"
-    cfg = load_config(example)
+    # Через копию: `load_config` защищает права файла с перечнем чатов, и на
+    # отслеживаемом образце эта защита меняла режим с 644 на 600 -- незаметно,
+    # потому что git хранит только бит исполнения.
+    with tempfile.TemporaryDirectory() as tmp:
+        copy = Path(tmp) / "config.yaml"
+        copy.write_text(example.read_text(encoding="utf-8"), encoding="utf-8")
+        cfg = load_config(copy)
     assert cfg.output.path.endswith("export_output")
 
     source = example.read_text(encoding="utf-8")
@@ -514,7 +521,13 @@ def test_the_template_and_the_example_carry_the_defaults_of_the_loader(tmp_path)
     defaults = Config()
     template = tmp_path / "template.yaml"
     template.write_text(generate_config_template([], account="acc"), encoding="utf-8")
-    example = Path(__file__).resolve().parent.parent / "config.example.yaml"
+    # Копия, а не сам образец: загрузчик ужесточает права поданного файла, и на
+    # отслеживаемом файле репозитория это меняло режим с 644 на 600.
+    example = tmp_path / "example.yaml"
+    example.write_text(
+        (Path(__file__).resolve().parent.parent / "config.example.yaml").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
 
     for path in (template, example):
         cfg = load_config(path)
@@ -667,3 +680,53 @@ def test_the_template_and_the_example_offer_the_same_media_types():
     example = yaml.safe_load((root / "config.example.yaml").read_text(encoding="utf-8"))
 
     assert example["defaults"]["media"]["types"] == TEMPLATE_MEDIA_TYPES
+
+
+def test_the_example_config_keeps_the_permissions_of_a_published_file():
+    """Прогон тестов менял права отслеживаемого файла с 644 на 600.
+
+    `load_config` защищает права файла с перечнем чатов аккаунта, и защита
+    срабатывала на образце из репозитория: в свежем клоне 644, после первого
+    прогона тестов -- 600. Правка незаметна, потому что git хранит только бит
+    исполнения. Образец секретов не содержит, поэтому подавать его в загрузчик
+    напрямую тесты не должны -- только копию.
+    """
+    import stat
+
+    root = Path(__file__).resolve().parent.parent
+    example = root / "config.example.yaml"
+
+    assert stat.S_IMODE(example.stat().st_mode) & 0o044, oct(stat.S_IMODE(example.stat().st_mode))
+
+
+def test_the_log_level_is_read_from_the_namespaced_variable_first(monkeypatch):
+    """`LOG_LEVEL` занята многими инструментами и часто стоит в профиле оболочки.
+
+    Значение из окружения проходит ту же проверку, что и флаг, поэтому одного
+    `LOG_LEVEL=verbose` хватало, чтобы ни одна команда не запускалась, а
+    сообщение называло `--log-level`, которого пользователь не передавал.
+    """
+    import logging
+
+    from tg_export.cli.common import resolve_log_level
+
+    monkeypatch.setenv("LOG_LEVEL", "verbose")
+    monkeypatch.setenv("TG_EXPORT_LOG_LEVEL", "DEBUG")
+
+    assert resolve_log_level(False, None) == (logging.DEBUG, False)
+
+
+def test_an_unusable_log_level_from_the_environment_names_the_environment(monkeypatch):
+    """Ошибка должна называть источник значения, иначе поиск причины уходит в argv."""
+    import click
+    import pytest as pytest_module
+
+    from tg_export.cli.common import resolve_log_level
+
+    monkeypatch.delenv("TG_EXPORT_LOG_LEVEL", raising=False)
+    monkeypatch.setenv("LOG_LEVEL", "verbose")
+
+    with pytest_module.raises(click.BadParameter) as excinfo:
+        resolve_log_level(False, None)
+
+    assert "LOG_LEVEL" in str(excinfo.value)

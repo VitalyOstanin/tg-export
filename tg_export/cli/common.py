@@ -267,13 +267,26 @@ _ALL_SUFFIX = ":ALL"
 def resolve_log_level(debug: bool, log_level: str | None) -> tuple[int, bool]:
     """Resolve the effective log level and whether libraries share it.
 
-    Priority (highest first): --debug flag, --log-level flag, LOG_LEVEL env var,
-    default WARNING. --debug always wins so it stays a quick "show me everything"
-    switch regardless of the environment. A trailing ``:all`` (``DEBUG:all``)
-    additionally lifts the libraries off their WARNING floor.
+    Priority (highest first): --debug flag, --log-level flag,
+    TG_EXPORT_LOG_LEVEL, LOG_LEVEL, default WARNING. --debug always wins so it
+    stays a quick "show me everything" switch regardless of the environment. A
+    trailing ``:all`` (``DEBUG:all``) additionally lifts the libraries off
+    their WARNING floor.
+
+    Why the namespaced variable comes first: LOG_LEVEL belongs to no one, and
+    a value another tool put there (``verbose``, which many accept) failed
+    every command of this one -- naming ``--log-level``, which the user never
+    passed.
     """
 
-    raw = log_level or os.environ.get("LOG_LEVEL") or ""
+    source = "--log-level"
+    raw = log_level or ""
+    if not raw:
+        for variable in ("TG_EXPORT_LOG_LEVEL", "LOG_LEVEL"):
+            value = os.environ.get(variable)
+            if value:
+                raw, source = value, variable
+                break
     include_libraries = raw.strip().upper().endswith(_ALL_SUFFIX)
     if debug:
         return logging.DEBUG, include_libraries
@@ -284,9 +297,9 @@ def resolve_log_level(debug: bool, log_level: str | None) -> tuple[int, bool]:
         name = name[: -len(_ALL_SUFFIX)]
     if name not in _LOG_LEVELS:
         raise click.BadParameter(
-            f"unknown log level {raw!r}; expected one of {', '.join(_LOG_LEVELS)}"
+            f"unknown log level {raw!r} (from {source}); expected one of {', '.join(_LOG_LEVELS)}"
             f" (append '{_ALL_SUFFIX.lower()}' to include the libraries)",
-            param_hint="--log-level",
+            param_hint=source,
         )
     return getattr(logging, name), include_libraries
 
