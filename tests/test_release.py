@@ -403,3 +403,53 @@ def test_a_missing_bump_names_the_section_that_asks_for_it(tmp_path):
     message = result.stdout + result.stderr
     assert "Добавлено" in message
     assert "1.3.0" in message
+
+
+def test_the_coverage_gate_says_what_to_do_without_coverage_data(tmp_path):
+    """На свежем клоне гейт падал трассировкой из библиотеки покрытия.
+
+    Он предложен отдельной командой в CONTRIBUTING, то есть первый запуск без
+    предшествующего `pytest` -- обычное дело; подсказка в скрипте была
+    написана, но до самого частого случая не доходила.
+    """
+    # Скрипт ищет корень от собственного пути, поэтому копия кладётся в
+    # `scripts/` временного дерева -- иначе он читает данные репозитория.
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    gate = scripts / "coverage_gate.py"
+    gate.write_text((SCRIPT.parent / "coverage_gate.py").read_text(encoding="utf-8"), encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.tg-export.coverage-floor]\n"tg_export/x.py" = 50\n', encoding="utf-8"
+    )
+
+    result = subprocess.run([sys.executable, str(gate)], capture_output=True, text=True, cwd=tmp_path)
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "run pytest --cov=tg_export first" in result.stderr
+    assert "Traceback" not in result.stderr, result.stderr
+
+
+def test_the_coverage_gate_names_where_a_floor_is_declared(tmp_path):
+    """Отказ называл модуль без границы, но не файл и не секцию, где её объявить.
+
+    Первое же добавление файла в пакет роняет весь набор проверок на последнем
+    шаге -- после линтера, типов и тестов.
+    """
+    gate = (SCRIPT.parent / "coverage_gate.py").read_text(encoding="utf-8")
+
+    assert "[tool.tg-export.coverage-floor] in pyproject.toml" in gate
+    assert "minus 5" in gate
+
+
+def test_the_repository_ignores_the_agent_and_explore_output_on_its_own():
+    """Дерево было чистым только благодаря личному глобальному ignore владельца.
+
+    У любого другого участника `.claude/settings.local.json` и вывод explore
+    видны в `git status`, попадают в `git add -A` и уезжают в коммит вместе с
+    локальными настройками.
+    """
+    root = SCRIPT.parent.parent
+    ignored = (root / ".gitignore").read_text(encoding="utf-8")
+
+    assert ".claude/" in ignored
+    assert "docs/__explore/" in ignored

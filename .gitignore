@@ -47,3 +47,7 @@ release_notes.md
 docs/reviews/
 docs/superpowers/
 docs/__check/
+docs/__explore/
+
+# Local settings of the agent this repository is worked on through
+.claude/

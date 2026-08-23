@@ -38,7 +38,14 @@ def _measured() -> dict[str, float]:
     cov.load()
     with tempfile.TemporaryDirectory() as tmp:
         report_path = Path(tmp) / "coverage.json"
-        cov.json_report(outfile=str(report_path))
+        try:
+            cov.json_report(outfile=str(report_path))
+        except coverage.exceptions.NoDataError:
+            # The usual way to get here is a fresh clone where pytest has not
+            # run yet: the gate is offered as a command of its own, and a stack
+            # trace from the library says nothing about what to do.
+            print("FAIL: no coverage data; run pytest --cov=tg_export first", file=sys.stderr)
+            raise SystemExit(1) from None
         report = json.loads(report_path.read_text(encoding="utf-8"))
     return {
         path.replace("\\", "/"): data["summary"]["percent_covered"] for path, data in report["files"].items()
@@ -56,7 +63,12 @@ def main() -> int:
 
     undeclared = sorted(p for p in measured if p not in floors)
     if undeclared:
-        print(f"FAIL: modules without a declared floor: {undeclared}", file=sys.stderr)
+        print(
+            f"FAIL: modules without a declared floor: {undeclared}; "
+            f"add them to [tool.tg-export.coverage-floor] in pyproject.toml "
+            f"(floor = current coverage minus 5)",
+            file=sys.stderr,
+        )
         return 1
 
     failures = []

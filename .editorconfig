@@ -12,7 +12,10 @@ indent_size = 4
 [*.py]
 max_line_length = 110
 
-[*.{yml,yaml,json,toml}]
+# TOML is left to the root rule of four spaces: the one TOML file of the
+# repository -- pyproject.toml -- is written that way, and no formatter of the
+# check set touches TOML to keep the two in step.
+[*.{yml,yaml,json}]
 indent_size = 2
 
 [*.md]

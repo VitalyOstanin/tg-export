@@ -1,8 +1,11 @@
 """Check that an installed tg-export can actually render, not just start.
 
-Run against a wheel installed into a throwaway environment:
+Run against a wheel installed into a throwaway environment, from outside the
+project directory -- inside it the editable install of the working tree wins,
+the templates are always in place, and the check passes on a broken wheel:
 
-    uv run --no-project --with dist/tg_export-*.whl python scripts/smoke_installed_package.py
+    cd "$(mktemp -d)" && uv run --no-project --with "$OLDPWD"/dist/*.whl \
+        python "$OLDPWD"/scripts/smoke_installed_package.py
 
 `--version` and `--help` pass even when the wheel carries nothing but *.py,
 which is how a packaging regression once shipped: every export died on
