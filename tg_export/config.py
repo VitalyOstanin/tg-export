@@ -277,6 +277,19 @@ MIN_CONCURRENT_DOWNLOADS = 1
 MAX_CONCURRENT_DOWNLOADS = 5
 
 
+# Known keys of every section, for the same reason the top level has them:
+# a name the loader does not know is a typo, and reading through a default
+# hides it. `action` sections carry exactly one key.
+_OUTPUT_KEYS = {"path", "format"}
+_DEFAULTS_KEYS = {"media", "date_from", "date_to", "export_service_messages"}
+_MEDIA_KEYS = {"types", "max_file_size", "concurrent_downloads"}
+_ACTION_SECTION_KEYS = {"action"}
+_CHAT_RULE_KEYS = {"id", "name", "media", "date_from", "date_to", "skip"}
+_TYPE_RULE_KEYS_INNER = {"media", "date_from", "date_to", "skip"}
+_FOLDER_RULE_KEYS = {"media", "skip", "chats"}
+_IMPORT_ENTRY_KEYS = {"path", "type"}
+
+
 def _parse_media_types(value: Any) -> list[str]:
     """Validate `media.types`, which must be a list of known media kinds.
 
@@ -431,18 +444,6 @@ _UNMATCHED_ACTIONS = {"skip", "export_with_defaults"}
 # Only HTML is rendered. "json"/"both" used to pass validation and show up in
 # `tg-export config -v` as an active setting while changing nothing.
 _OUTPUT_FORMATS = {"html"}
-
-# Known keys of every section, for the same reason the top level has them:
-# a name the loader does not know is a typo, and reading through a default
-# hides it. `action` sections carry exactly one key.
-_OUTPUT_KEYS = {"path", "format"}
-_DEFAULTS_KEYS = {"media", "date_from", "date_to", "export_service_messages"}
-_MEDIA_KEYS = {"types", "max_file_size", "concurrent_downloads"}
-_ACTION_SECTION_KEYS = {"action"}
-_CHAT_RULE_KEYS = {"id", "name", "media", "date_from", "date_to", "skip"}
-_TYPE_RULE_KEYS_INNER = {"media", "date_from", "date_to", "skip"}
-_FOLDER_RULE_KEYS = {"media", "skip", "chats"}
-_IMPORT_ENTRY_KEYS = {"path", "type"}
 
 # Known top-level config keys. An unknown key is most likely a typo in a
 # section name (e.g. `default` instead of `defaults`); without this check such

@@ -75,6 +75,28 @@ class ReactionType(StrEnum):
     paid = "paid"
 
 
+class FileStatus(StrEnum):
+    """What the `files.status` column of the state database records.
+
+    `done` -- the file is on disk and its size matches; `partial` -- it is on
+    disk but shorter than announced; the two skipped values mean no file was
+    fetched at all, by decision of the config. The column carries no CHECK
+    (adding one to existing databases would mean rebuilding the table), so this
+    is the only place the vocabulary is written down. Two of the values are also
+    outcomes of a download attempt and are spelled the same in
+    :class:`tg_export.media.DownloadStatus`.
+    """
+
+    done = "done"
+    partial = "partial"
+    skipped_by_size = "skipped_by_size"
+    skipped_by_type = "skipped_by_type"
+
+
+# Statuses that mean the file was never fetched: the config decided against it.
+SKIPPED_FILE_STATUSES = (FileStatus.skipped_by_size, FileStatus.skipped_by_type)
+
+
 class InlineButtonType(StrEnum):
     default = "default"
     url = "url"

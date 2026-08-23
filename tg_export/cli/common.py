@@ -204,6 +204,14 @@ DEFAULT_MESSAGE_TEXT_LENGTH = 200
 ACCOUNT_HELP = "Account alias (default: the one set by 'account default')"
 
 
+# Libraries whose own debug stream would bury ours: telethon logs every MTProto
+# packet, aiosqlite every statement. --debug means "show me everything tg-export
+# knows", so their level is set independently of ours; LOG_LEVEL=DEBUG:all (or
+# --log-level DEBUG:all) is what turns the libraries on as well.
+_THIRD_PARTY_LOGGERS = ("telethon", "aiosqlite")
+_ALL_SUFFIX = ":ALL"
+
+
 def _resolve_log_level(debug: bool, log_level: str | None) -> tuple[int, bool]:
     """Resolve the effective log level and whether libraries share it.
 
@@ -229,14 +237,6 @@ def _resolve_log_level(debug: bool, log_level: str | None) -> tuple[int, bool]:
             param_hint="--log-level",
         )
     return getattr(logging, name), include_libraries
-
-
-# Libraries whose own debug stream would bury ours: telethon logs every MTProto
-# packet, aiosqlite every statement. --debug means "show me everything tg-export
-# knows", so their level is set independently of ours; LOG_LEVEL=DEBUG:all (or
-# --log-level DEBUG:all) is what turns the libraries on as well.
-_THIRD_PARTY_LOGGERS = ("telethon", "aiosqlite")
-_ALL_SUFFIX = ":ALL"
 
 
 def _quiet_third_party_loggers(level: int, *, include_libraries: bool = False) -> None:

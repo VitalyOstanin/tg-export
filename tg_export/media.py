@@ -23,7 +23,7 @@ from telethon.errors import FloodWaitError, ServerError, TimedOutError
 from tg_export.config import MediaConfig
 from tg_export.errors import TgExportError
 from tg_export.importer import TdesktopIndex
-from tg_export.models import Media, MediaType
+from tg_export.models import FileStatus, Media, MediaType
 from tg_export.state import DB_TIMEOUT_SECONDS, READER_PRAGMAS
 
 logger = logging.getLogger(__name__)
@@ -438,7 +438,7 @@ class MediaDownloader:
         # Already downloaded?
         if media.file:
             existing = await self.state.get_file(media.file.id, chat_id)
-            if existing and existing["status"] == "done":
+            if existing and existing["status"] == FileStatus.done:
                 return Path(existing["local_path"]), DownloadStatus.existing
 
         # Try to hardlink from another chat within this account
@@ -538,7 +538,7 @@ class MediaDownloader:
             os.replace(downloaded, final_path)
             return final_path
 
-    async def _register_skip(self, tl_message, media: Media, chat_id: int, status: str):
+    async def _register_skip(self, tl_message, media: Media, chat_id: int, status: FileStatus | str):
         """Record a skipped file in DB (no actual file on disk)."""
         if media.file is None or not media.file.id:
             return
@@ -556,7 +556,7 @@ class MediaDownloader:
         """Register downloaded/imported file in state DB."""
         actual_size = local_path.stat().st_size if local_path.exists() else 0
         expected_size = media.file.size if media.file else 0
-        status = "done" if actual_size == expected_size or expected_size == 0 else "partial"
+        status = FileStatus.done if actual_size == expected_size or expected_size == 0 else FileStatus.partial
         await self.state.register_file(
             file_id=media.file.id if media.file else 0,
             chat_id=chat_id,

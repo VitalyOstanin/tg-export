@@ -141,7 +141,10 @@ def test_every_telegram_client_is_built_on_the_fixed_session():
     import ast
 
     offenders = []
-    for path in sorted(PROJECT.rglob("*.py")):
+    # Скрипты обслуживания -- такой же код проекта: конвенция обходила их
+    # только потому, что проверка начиналась с каталога пакета.
+    sources = [*PROJECT.rglob("*.py"), *(PROJECT.parent / "scripts").rglob("*.py")]
+    for path in sorted(sources):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
@@ -296,7 +299,10 @@ def test_standard_library_is_imported_at_module_level():
     import sys
 
     offenders = []
-    for path in sorted(PROJECT.rglob("*.py")):
+    # Скрипты обслуживания -- такой же код проекта: конвенция обходила их
+    # только потому, что проверка начиналась с каталога пакета.
+    sources = [*PROJECT.rglob("*.py"), *(PROJECT.parent / "scripts").rglob("*.py")]
+    for path in sorted(sources):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
@@ -531,7 +537,10 @@ def test_every_text_file_is_read_as_utf8():
         return getattr(args[0], "value", "") if args else ""
 
     offenders = []
-    for path in sorted(PROJECT.rglob("*.py")):
+    # Скрипты обслуживания -- такой же код проекта: конвенция обходила их
+    # только потому, что проверка начиналась с каталога пакета.
+    sources = [*PROJECT.rglob("*.py"), *(PROJECT.parent / "scripts").rglob("*.py")]
+    for path in sorted(sources):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
@@ -787,3 +796,78 @@ def test_no_module_ends_with_a_divider_banner():
         if tail and tail[-1].lstrip().startswith("#"):
             offenders.append(str(path.relative_to(PROJECT)))
     assert not offenders, f"файл заканчивается комментарием, а не кодом: {offenders}"
+
+
+def test_file_statuses_are_spelled_by_the_enum_not_as_free_strings():
+    """Статус файла живёт в одном словаре, иначе enum ничего не даёт.
+
+    `DownloadStatus` заведён ради того, чтобы новый исход нельзя было добавить
+    в одном месте и молча пропустить в другом, а статусы колонки `files.status`
+    при этом сверялись как свободные строки: `"done"` встречалось литералом в
+    четырёх местах, а список значений колонки был выписан ещё раз.
+    """
+    from tg_export.models import FileStatus
+
+    values = {status.value for status in FileStatus}
+    offenders = []
+    for path in sorted(PROJECT.glob("**/*.py")):
+        if path.name == "models.py":
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        enum_bodies = {
+            id(child)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ClassDef)
+            and any(getattr(base, "id", "") == "StrEnum" for base in node.bases)
+            for child in ast.walk(node)
+        }
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Constant) or node.value not in values:
+                continue
+            if id(node) in enum_bodies:
+                continue
+            offenders.append(f"{path.relative_to(PROJECT)}:{node.lineno} {node.value!r}")
+    assert not offenders, f"статус файла записан строкой мимо FileStatus: {offenders}"
+
+
+def test_the_two_status_vocabularies_agree_where_they_overlap():
+    """Пропуск по размеру и по типу -- и исход загрузки, и значение в базе."""
+    from tg_export.media import DownloadStatus
+    from tg_export.models import FileStatus
+
+    shared = {status.name for status in FileStatus} & {status.name for status in DownloadStatus}
+    assert shared == {"skipped_by_size", "skipped_by_type"}, shared
+    for name in shared:
+        assert FileStatus[name].value == DownloadStatus[name].value, name
+
+
+def test_no_module_constant_is_read_above_its_declaration():
+    """Константа, объявленная ниже читающей её функции, не видна при чтении сверху.
+
+    `_ALL_SUFFIX` задавал разбор `--log-level DEBUG:all` за тридцать строк до
+    того, как становилось известно его значение; в `config.py` так же жили
+    списки известных ключей секций.
+    """
+    offenders = []
+    for path in sorted(PROJECT.glob("**/*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        declared: dict[str, int] = {}
+        for node in tree.body:
+            targets = node.targets if isinstance(node, ast.Assign) else []
+            if isinstance(node, ast.AnnAssign):
+                targets = [node.target]
+            for target in targets:
+                if isinstance(target, ast.Name):
+                    declared.setdefault(target.id, node.lineno)
+        for node in tree.body:
+            if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+                continue
+            read = {
+                inner.id
+                for inner in ast.walk(node)
+                if isinstance(inner, ast.Name) and isinstance(inner.ctx, ast.Load)
+            }
+            late = sorted(name for name in read if declared.get(name, 0) > node.lineno)
+            if late:
+                offenders.append(f"{path.relative_to(PROJECT)}:{node.lineno} {node.name} -> {late}")
+    assert not offenders, f"константа объявлена ниже места чтения: {offenders}"

@@ -17,6 +17,8 @@ import aiosqlite
 from tg_export.errors import ProcessLockError
 from tg_export.locking import ProcessLock
 from tg_export.models import (
+    SKIPPED_FILE_STATUSES,
+    FileStatus,
     ForwardInfo,
     InlineButton,
     InlineButtonType,
@@ -309,13 +311,10 @@ CHAT_TABLES = ("messages", "files", "export_state", "catalog_cache")
 # additions are reconciled from the DDL and need no bump.
 SCHEMA_VERSION = 1
 
-# Values the `files.status` column takes. 'done' -- the file is on disk and its
-# size matches; 'partial' -- it is on disk but shorter than announced; the two
-# skipped statuses mean no file was fetched at all, by decision of the config.
-# The set is declared here because the column carries no CHECK: it cannot be
-# added to databases that already exist without rebuilding the table.
-SKIPPED_FILE_STATUSES = ("skipped_by_size", "skipped_by_type")
-FILE_STATUSES = ("done", "partial", *SKIPPED_FILE_STATUSES)
+# Values the `files.status` column takes; the vocabulary itself lives in
+# models.py next to the other enums, so the state layer and the download layer
+# read the same names instead of repeating them as free strings.
+FILE_STATUSES = tuple(FileStatus)
 
 SCHEMA_SQL = """
             CREATE TABLE IF NOT EXISTS export_state (
@@ -700,7 +699,7 @@ class ExportState:
         expected_size: int,
         actual_size: int | None,
         local_path: str,
-        status: str = "done",
+        status: FileStatus | str = FileStatus.done,
     ):
         now = _now()
         await self.db.execute(
@@ -770,7 +769,7 @@ class ExportState:
             "  OR (expected_size > 0 AND actual_size IS NULL)"
             "  OR (expected_size > 0 AND actual_size != expected_size)"
             ")",
-            tuple(SKIPPED_FILE_STATUSES),
+            tuple(str(status) for status in SKIPPED_FILE_STATUSES),
         ) as cur:
             rows = await cur.fetchall()
             return [dict(r) for r in rows]

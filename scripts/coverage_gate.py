@@ -39,7 +39,7 @@ def _measured() -> dict[str, float]:
     with tempfile.TemporaryDirectory() as tmp:
         report_path = Path(tmp) / "coverage.json"
         cov.json_report(outfile=str(report_path))
-        report = json.loads(report_path.read_text())
+        report = json.loads(report_path.read_text(encoding="utf-8"))
     return {
         path.replace("\\", "/"): data["summary"]["percent_covered"] for path, data in report["files"].items()
     }

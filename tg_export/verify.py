@@ -21,6 +21,8 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from tg_export.models import FileStatus
+
 logger = logging.getLogger(__name__)
 
 # Staging directories are created next to the media they replace, so they need
@@ -107,7 +109,7 @@ async def redownload_broken_file(
         expected_size=entry["expected_size"],
         actual_size=final_path.stat().st_size,
         local_path=str(final_path),
-        status="done",
+        status=FileStatus.done,
     )
     await state.commit()
     logger.debug("re-downloaded: %s", final_path)
