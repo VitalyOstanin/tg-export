@@ -251,3 +251,32 @@ def test_a_long_list_of_errors_is_cut_with_a_count_of_the_rest(run_env):
     assert "error 0" in result.output
     assert "error 24" not in result.output
     assert "15 more" in result.output, result.output
+
+
+def test_no_takeout_skips_the_request_entirely(monkeypatch, run_env):
+    """`--no-takeout` не должен даже спрашивать Takeout.
+
+    Запрос стоит обращения, на которое Telegram отвечает кулдауном до суток, и
+    экспорт всё равно переходит на обычный API. Флаг существует ровно для того,
+    чтобы этого обращения не было.
+    """
+    asked = []
+
+    async def _never(api, cfg, *, require):
+        asked.append(require)
+        return True
+
+    monkeypatch.setattr(cli_export, "_start_takeout", _never)
+
+    result = CliRunner().invoke(main, ["run", "--no-takeout", "--dry-run"])
+
+    assert asked == [], "Takeout запрошен вопреки --no-takeout"
+    assert result.exit_code == 0, result.output
+
+
+def test_require_takeout_and_no_takeout_together_are_refused(run_env):
+    """Два флага просят противоположного: молча предпочесть один из них нельзя."""
+    result = CliRunner().invoke(main, ["run", "--no-takeout", "--require-takeout"])
+
+    assert result.exit_code == 1
+    assert "--no-takeout" in result.output

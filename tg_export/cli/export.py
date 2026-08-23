@@ -295,8 +295,15 @@ def _get_dir_size(path: Path) -> int | None:
     is_flag=True,
     help="Fail instead of falling back to the regular API when Takeout cannot be started.",
 )
-def run_export(account, config, output, verify, dry_run, require_takeout):
+@click.option(
+    "--no-takeout",
+    is_flag=True,
+    help="Do not ask for Takeout at all; export through the regular API.",
+)
+def run_export(account, config, output, verify, dry_run, require_takeout, no_takeout):
     """Run export according to config. Config resolved by account name convention."""
+    if require_takeout and no_takeout:
+        _fail("--require-takeout and --no-takeout ask for opposite things; pass one of them.")
     exit_code = asyncio.run(
         _run_export(
             account,
@@ -306,6 +313,7 @@ def run_export(account, config, output, verify, dry_run, require_takeout):
             dry_run,
             quiet=common._QUIET,
             require_takeout=require_takeout,
+            no_takeout=no_takeout,
         )
     )
     if exit_code:
@@ -476,6 +484,7 @@ async def _run_export(
     dry_run,
     quiet=False,
     require_takeout=False,
+    no_takeout=False,
 ):
     from tg_export.catalog import fetch_catalog
     from tg_export.exporter import Exporter
@@ -511,7 +520,15 @@ async def _run_export(
         state = await resources.enter_async_context(ExportState(state_path))
         api, _ = await resources.enter_async_context(common._connected_api(account))
 
-        takeout_active = await _start_takeout(api, cfg, require=require_takeout)
+        if no_takeout:
+            # Asking for Takeout costs a request that may answer with a
+            # cooldown of up to 24 hours, and the export then falls back
+            # anyway. --no-takeout skips the question when the caller already
+            # knows they do not want to wait for it.
+            common._diag("Takeout not requested (--no-takeout); using the regular API.")
+            takeout_active = False
+        else:
+            takeout_active = await _start_takeout(api, cfg, require=require_takeout)
 
         # Setup renderer
         renderer = HtmlRenderer(output_dir=output_base, config=cfg.output)

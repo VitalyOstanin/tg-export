@@ -183,6 +183,7 @@ tg-export init --account myaccount --from-catalog catalog.yaml
 tg-export run
 tg-export run --dry-run
 tg-export run --require-takeout --verify
+tg-export run --no-takeout
 ```
 
 | № | Опция               | Назначение                                                                     |
@@ -193,6 +194,7 @@ tg-export run --require-takeout --verify
 | 4 | `--verify`          | После экспорта проверить целостность скачанных файлов.                          |
 | 5 | `--dry-run`         | Показать, что было бы выгружено, ничего не скачивая.                            |
 | 6 | `--require-takeout` | Считать недоступность Takeout ошибкой, а не переходить на обычный API.          |
+| 7 | `--no-takeout`      | Не запрашивать Takeout вовсе; экспорт идёт через обычный API.                    |
 
 Ctrl+C сохраняет состояние и завершает процесс кодом `130`; повторный Ctrl+C
 прерывает немедленно.

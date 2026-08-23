@@ -443,6 +443,9 @@ unmatched:
 
 ### Полный конфиг
 
+Тот же пример лежит в корне репозитория файлом [config.example.yaml](../config.example.yaml)
+и загружается как есть.
+
 ```yaml
 output:
   path: ./export_output

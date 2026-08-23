@@ -393,3 +393,48 @@ def test_rule_sections_must_be_mappings(tmp_path):
         with pytest.raises(ConfigError) as e:
             load_config(path)
         assert section in str(e.value), (section, str(e.value))
+
+
+def test_the_example_config_loads_and_names_every_section():
+    """`config.example.yaml` -- рабочая отправная точка, а не иллюстрация.
+
+    Пример, который не загружается, хуже отсутствующего: он выглядит проверенным.
+    Заодно сверяется состав разделов -- пример обязан называть каждый, который
+    разбирает загрузчик, иначе о настройке узнают только из документации.
+    """
+    import re
+
+    from tg_export.config import load_config
+
+    root = Path(__file__).resolve().parent.parent
+    example = root / "config.example.yaml"
+    cfg = load_config(example)
+    assert cfg.output.path.endswith("export_output")
+
+    source = example.read_text(encoding="utf-8")
+    named = set(re.findall(r"^#?\s*([a-z_]+):", source, re.M))
+    loader = (root / "tg_export" / "config.py").read_text(encoding="utf-8")
+    # Именно `raw.get`, а не `def_raw.get`/`out_raw.get`: нужны разделы
+    # верхнего уровня, а не поля внутри них.
+    supported = set(re.findall(r'(?<![\w])raw\.get\("([a-z_]+)"', loader))
+    assert supported <= named, f"в примере не названы разделы: {sorted(supported - named)}"
+
+
+def test_the_generated_template_names_every_section():
+    """Шаблон `tg-export init` -- основной способ узнать состав настроек.
+
+    Раздела, которого в нём нет, для пользователя не существует: `archived` и
+    `import_existing` разбирались кодом и были описаны в документации, но в
+    шаблоне не упоминались.
+    """
+    import re
+
+    from tg_export.catalog import generate_config_template
+
+    template = generate_config_template([], account="acc")
+    named = set(re.findall(r"^#?\s*([a-z_]+):", template, re.M))
+    loader = (Path(__file__).resolve().parent.parent / "tg_export" / "config.py").read_text(encoding="utf-8")
+    # Именно `raw.get`, а не `def_raw.get`/`out_raw.get`: нужны разделы
+    # верхнего уровня, а не поля внутри них.
+    supported = set(re.findall(r'(?<![\w])raw\.get\("([a-z_]+)"', loader))
+    assert supported <= named, f"в шаблоне не названы разделы: {sorted(supported - named)}"
