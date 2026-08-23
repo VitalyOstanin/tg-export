@@ -415,9 +415,6 @@ class ExportState:
         except ProcessLockError as e:
             raise StateLockError(str(e)) from e
 
-    def _release_lock(self):
-        self._lock.release()
-
     async def __aenter__(self) -> ExportState:
         """Open the database and hand it over; leaving the block always closes it."""
         await self.open()
@@ -454,7 +451,7 @@ class ExportState:
                 with contextlib.suppress(Exception):
                     await self._db.close()
                 self._db = None
-            self._release_lock()
+            self._lock.release()
             raise
 
     async def _apply_pragmas(self):
@@ -486,7 +483,7 @@ class ExportState:
         except Exception as e:
             logger.warning("state database did not close cleanly: %s", e)
         finally:
-            self._release_lock()
+            self._lock.release()
 
     async def commit(self):
         # Why: a second SIGINT cancels the export task, including the one

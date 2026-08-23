@@ -36,7 +36,7 @@ def validate_account_name(name: str) -> str:
     with a separator or a parent reference would place -- or delete -- files
     outside the configuration directory.
     """
-    if not isinstance(name, str) or not _ACCOUNT_NAME_RE.match(name) or name in {".", ".."}:
+    if not _ACCOUNT_NAME_RE.match(name):
         raise AccountNameError(
             f"Invalid account name {name!r}: use letters, digits, dot, dash and underscore, "
             f"starting with a letter or a digit."

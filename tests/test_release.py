@@ -273,3 +273,16 @@ def test_the_publishing_workflow_pins_the_version_of_uv():
     assert versions, "в publish.yml не найден шаг setup-uv"
     for value in versions:
         assert value and re.fullmatch(r"\d+\.\d+\.\d+", value), f"версия uv не закреплена: {value!r}"
+
+
+def test_bad_arguments_keep_the_exit_code_of_argparse(tmp_path):
+    """Обёртка над SystemExit переписывала любой код отказа в 1.
+
+    Запуск без тега -- отказ argparse с кодом 2 и строкой usage; обёртка
+    печатала его как `Error: 2` и завершала скрипт кодом 1, то есть код
+    «неверные аргументы» было не отличить от «гейт не пропустил релиз».
+    """
+    result = subprocess.run([sys.executable, str(SCRIPT)], capture_output=True, text=True)
+
+    assert result.returncode == 2, result.stderr
+    assert "usage" in result.stderr.lower(), result.stderr

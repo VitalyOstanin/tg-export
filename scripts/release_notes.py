@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import argparse
 import re
-import sys
 import tomllib
 from pathlib import Path
 
@@ -130,10 +129,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except SystemExit as e:
-        if e.code not in (0, None):
-            print(f"Error: {e}", file=sys.stderr)
-            raise SystemExit(1) from None
-        raise
+    raise SystemExit(main())

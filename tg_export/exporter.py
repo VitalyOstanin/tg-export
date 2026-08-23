@@ -45,7 +45,6 @@ from tg_export.html.renderer import HtmlRenderer
 from tg_export.media import (
     STORY_VIDEO_EXTENSIONS,
     DiskSpaceError,
-    DownloadProgress,
     DownloadStatus,
     MediaDownloader,
 )
@@ -634,10 +633,6 @@ class Exporter:
             return
         console.print(*args, **kwargs)
 
-    def _snapshot_active_downloads(self) -> dict[int, DownloadProgress]:
-        """Read a consistent copy of the downloader's active downloads."""
-        return self.downloader.snapshot_active_downloads()
-
     def _build_status_table(
         self,
         progress: Progress,
@@ -660,7 +655,7 @@ class Exporter:
         else:
             progress.update(main_task, completed=view.messages_done, total=None)
 
-        active = self._snapshot_active_downloads()
+        active = self.downloader.snapshot_active_downloads()
         for msg_id in list(file_tasks):
             if msg_id not in active:
                 file_progress.remove_task(file_tasks.pop(msg_id))
