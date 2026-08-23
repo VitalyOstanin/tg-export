@@ -348,3 +348,28 @@ def test_reaction_label_is_escaped(renderer, tmp_path):
 
     assert "<img src=x" not in html, html
     assert "&lt;img" in html, html
+
+
+def test_partially_rendered_chat_is_not_taken_for_a_current_one(tmp_path):
+    """Прерванный рендер обязан достраиваться на следующем прогоне.
+
+    Рендерер намеренно не пишет messages.html, когда его остановили между
+    месяцами -- это и есть признак незавершённости. Проверка «страницы
+    актуальны» смотрела на маску messages*.html, под которую подпадают уже
+    записанные помесячные страницы, поэтому чат без новых сообщений больше
+    никогда не дорисовывался: часть месяцев отсутствует, а ссылка с индекса
+    ведёт на несуществующий messages.html.
+    """
+    from tg_export.exporter import Exporter, ExportStats
+
+    chat_dir = tmp_path / "chat"
+    chat_dir.mkdir()
+    (chat_dir / "messages_2024-01.html").write_text("<html>", encoding="utf-8")
+
+    stats = ExportStats()
+    stats.begin_chat(messages_in_db=10, messages_total=10)
+
+    assert Exporter._pages_are_current(chat_dir, stats) is False
+
+    (chat_dir / "messages.html").write_text("<html>", encoding="utf-8")
+    assert Exporter._pages_are_current(chat_dir, stats) is True

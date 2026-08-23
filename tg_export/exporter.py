@@ -1014,7 +1014,14 @@ class Exporter:
         )
         if written:
             return False
-        return any(chat_dir.glob("messages*.html")) if chat_dir.is_dir() else False
+        # messages.html is written last, and only when every month was
+        # rendered: the renderer leaves it out when it is stopped between
+        # months. Testing the mask messages*.html instead accepted the monthly
+        # pages a stopped render had already written, so a chat with nothing
+        # new was never finished -- the months past the interruption stayed
+        # missing and the link from the index pointed at a file that was never
+        # created.
+        return (chat_dir / "messages.html").is_file()
 
     @staticmethod
     def _keep_message(msg: Message, *, export_service_messages: bool) -> bool:

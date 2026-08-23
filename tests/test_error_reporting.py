@@ -153,6 +153,9 @@ async def test_pages_are_not_rebuilt_when_the_chat_did_not_change(tmp_path):
     chat_dir = tmp_path / "chat"
     chat_dir.mkdir()
     (chat_dir / "messages_2024-01.html").write_text("<html>", encoding="utf-8")
+    # messages.html пишется последним и только при полностью отрисованном
+    # чате -- это и есть признак законченного рендера.
+    (chat_dir / "messages.html").write_text("<html>", encoding="utf-8")
 
     stats = ExportStats()
     stats.begin_chat(messages_in_db=10, messages_total=10)
