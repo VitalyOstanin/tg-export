@@ -273,6 +273,11 @@ _MEDIA_TYPE_NAMES = {t.value for t in MediaType} | {"all"}
 
 # Range documented for `concurrent_downloads`. Beyond it the value would reach
 # asyncio.Semaphore unchecked: zero produces an acquire nobody ever satisfies.
+# The ceiling is caution, not a limit Telegram states: the export has not been
+# run above five parallel downloads per chat, and more of them share one
+# connection, so past some point they only compete for it -- and each holds a
+# file buffer of its own. Raising it is a decision to make with a measurement,
+# not by editing the constant.
 MIN_CONCURRENT_DOWNLOADS = 1
 MAX_CONCURRENT_DOWNLOADS = 5
 

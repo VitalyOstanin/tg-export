@@ -479,12 +479,10 @@ class MediaDownloader:
             await self._register(tl_message, media, linked, chat_id)
             return linked, DownloadStatus.reused_sibling
 
-        # Disk space check
         chat_dir.mkdir(parents=True, exist_ok=True)
         if not self._has_free_space(chat_dir):
             raise DiskSpaceError(f"Free space less than {self.min_free_bytes // 1024**3} GB")
 
-        # Download with semaphore
         subdir = media_subdir(media.type)
         target_dir = chat_dir / subdir
         target_dir.mkdir(parents=True, exist_ok=True)

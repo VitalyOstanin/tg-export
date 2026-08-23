@@ -116,7 +116,6 @@ class TdesktopIndex:
         files = self._current_index.get(msg_id)
         if not files:
             return None
-        # Return first existing file
         for f in files:
             if f.exists():
                 return f
@@ -167,12 +166,10 @@ def _parse_chat_media(chat_dir: Path) -> dict[int, list[Path]]:
         try:
             with open(html_file, encoding="utf-8") as f:
                 for line in f:
-                    # Check for message id
                     m = _MSG_ID_RE.search(line)
                     if m:
                         current_msg_id = int(m.group(1))
 
-                    # Check for media href
                     if current_msg_id is not None:
                         m = _HREF_RE.search(line)
                         if m:
