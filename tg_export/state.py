@@ -766,6 +766,25 @@ class ExportState:
         local_path: str,
         status: FileStatus | str = FileStatus.done,
     ):
+        # The file is already in its place on disk by the time this runs, and
+        # the media pipeline cancels the downloads still in flight when it
+        # shuts down. Only the commit used to be shielded, so a cancellation
+        # landing in the INSERT left the file on disk with no row in `files`:
+        # the next run removed it as orphaned and downloaded it again.
+        await _shielded(
+            self._write_file_row(file_id, chat_id, msg_id, expected_size, actual_size, local_path, status)
+        )
+
+    async def _write_file_row(
+        self,
+        file_id: int,
+        chat_id: int,
+        msg_id: int,
+        expected_size: int,
+        actual_size: int | None,
+        local_path: str,
+        status: FileStatus | str,
+    ):
         now = _now()
         await self.db.execute(
             """INSERT INTO files (file_id, chat_id, msg_id, expected_size, actual_size, local_path, status, downloaded_at)
@@ -789,8 +808,9 @@ class ExportState:
         )
         # Why: kill -9 between download and the next batch-commit otherwise leaves
         # the file on disk but unregistered in DB; _cleanup_orphaned_files removes
-        # it on next run, forcing a re-download.
-        await self.commit()
+        # it on next run, forcing a re-download. The commit is part of the same
+        # shielded step as the INSERT above, so it needs no shield of its own.
+        await self.db.commit()
 
     async def get_file(self, file_id: int, chat_id: int) -> dict[str, Any] | None:
         # Named columns, not *: this runs once per media file, and the callers

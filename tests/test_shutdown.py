@@ -212,3 +212,47 @@ async def test_commit_completes_even_when_the_caller_is_cancelled_twice(tmp_path
         assert finished == [True], "вызывающий ушёл раньше, чем завершился commit"
     finally:
         await state.close()
+
+
+@pytest.mark.asyncio
+async def test_a_registered_file_reaches_the_database_even_if_the_caller_is_cancelled(tmp_path):
+    """Файл уже лежит на диске, когда регистрируется, -- отмена между этим и коммитом теряет запись.
+
+    `_MediaPipeline.__aexit__` штатно снимает задачи загрузки, оставшиеся в
+    полёте. Коммит был защищён `_shielded`, а сам INSERT -- нет: отмена,
+    пришедшая в него, оставляла файл на диске без строки в `files`, и
+    следующий прогон удалял его как осиротевший, чтобы скачать заново.
+    """
+    from tg_export.state import ExportState
+
+    state = ExportState(tmp_path / "state.db")
+    await state.open()
+    try:
+        original = state._db.execute
+
+        async def slow_execute(*args, **kwargs):
+            await asyncio.sleep(0.05)
+            return await original(*args, **kwargs)
+
+        state._db.execute = slow_execute  # pyright: ignore[reportAttributeAccessIssue]
+
+        task = asyncio.create_task(
+            state.register_file(
+                file_id=7,
+                chat_id=1,
+                msg_id=2,
+                expected_size=10,
+                actual_size=10,
+                local_path=str(tmp_path / "photo.jpg"),
+            )
+        )
+        await asyncio.sleep(0)
+        task.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        state._db.execute = original  # pyright: ignore[reportAttributeAccessIssue]
+        assert await state.get_file(7, 1), "запись о файле не дошла до базы"
+    finally:
+        await state.close()
