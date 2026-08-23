@@ -304,3 +304,31 @@ async def test_a_failure_of_the_global_phase_itself_is_recorded_too():
     assert stats.errors and "RuntimeError" in stats.errors[0], (
         f"отказ фазы не отражён ни в сводке, ни в коде возврата: {stats.errors}"
     )
+
+
+@pytest.mark.asyncio
+async def test_rerender_rebuilds_pages_that_no_new_message_would_touch(tmp_path):
+    """После обновления шаблонов страницы чата без новых сообщений не пересобирались.
+
+    Пропуск рендера неизменившегося чата означает, что выгрузка остаётся
+    разнородной: часть чатов собрана прежней версией шаблона. Пересборку
+    запрашивает `run --rerender`.
+    """
+    from tg_export.exporter import ExportStats
+
+    state = MagicMock()
+    state.list_message_months = AsyncMock(return_value=[])
+    exporter = _exporter(state=state)
+    exporter._rerender = True
+
+    chat_dir = tmp_path / "chat"
+    chat_dir.mkdir()
+    (chat_dir / "messages_2024-01.html").write_text("<html>", encoding="utf-8")
+    (chat_dir / "messages.html").write_text("<html>", encoding="utf-8")
+
+    stats = ExportStats()
+    stats.begin_chat(messages_in_db=10, messages_total=10)
+
+    await exporter._render_chat_html(MagicMock(id=1, name="Chat"), chat_dir, stats)
+
+    state.list_message_months.assert_awaited_once(), "рендер пропущен вопреки --rerender"

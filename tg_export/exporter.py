@@ -545,6 +545,9 @@ class Exporter:
         self.quiet = quiet
         self._shutdown = False
         self._force_shutdown = False
+        # Set by run(): rebuild the pages of every chat, including those the
+        # run brought nothing new for. See _pages_are_current.
+        self._rerender = False
         self._first_signal_time: float = 0
         self._use_live: bool = False
         # Signal number that triggered shutdown (SIGINT / SIGTERM), or None.
@@ -807,9 +810,11 @@ class Exporter:
         dry_run: bool = False,
         verify: bool = False,
         chat_list: list[Chat] | None = None,
+        rerender: bool = False,
     ) -> ExportStats:
         """Main export loop."""
         stats = ExportStats()
+        self._rerender = rerender
 
         self._install_signal_handlers()
 
@@ -1003,6 +1008,11 @@ class Exporter:
         deserialising the JSON columns of every message -- even when the run
         brought neither a message nor a file. Anything written during this chat
         changes what a page shows, so any non-zero counter forces the rebuild.
+
+        Consequence of skipping: pages built by an earlier version of the
+        templates are not rebuilt for a chat nothing was written to, so an
+        export stays mixed after an upgrade. `run --rerender` asks for the
+        rebuild.
         """
         chat = stats.per_chat
         written = (
@@ -1202,7 +1212,7 @@ class Exporter:
 
     async def _render_chat_html(self, chat: Chat, chat_dir: Path, stats: ExportStats) -> None:
         """Render the chat pages, one month at a time, off the event loop."""
-        if self._pages_are_current(chat_dir, stats):
+        if not self._rerender and self._pages_are_current(chat_dir, stats):
             logger.debug("  %s: nothing new, keeping the rendered pages", chat.name)
             return
         # Streaming month-by-month from SQLite avoids loading the full message

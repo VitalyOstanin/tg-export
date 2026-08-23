@@ -310,7 +310,12 @@ def _get_dir_size(path: Path) -> int | None:
     is_flag=True,
     help="Do not ask for Takeout at all; export through the regular API.",
 )
-def run_export(account, config, output, verify, dry_run, require_takeout, no_takeout):
+@click.option(
+    "--rerender",
+    is_flag=True,
+    help="Rebuild the HTML pages of every chat, including those with nothing new.",
+)
+def run_export(account, config, output, verify, dry_run, require_takeout, no_takeout, rerender):
     """Run export according to config. Config resolved by account name convention."""
     if require_takeout and no_takeout:
         _fail("--require-takeout and --no-takeout ask for opposite things; pass one of them.")
@@ -324,6 +329,7 @@ def run_export(account, config, output, verify, dry_run, require_takeout, no_tak
             quiet=common._QUIET,
             require_takeout=require_takeout,
             no_takeout=no_takeout,
+            rerender=rerender,
         )
     )
     if exit_code:
@@ -495,6 +501,7 @@ async def _run_export(
     quiet=False,
     require_takeout=False,
     no_takeout=False,
+    rerender=False,
 ):
     from tg_export.catalog import fetch_catalog
     from tg_export.exporter import Exporter
@@ -530,15 +537,9 @@ async def _run_export(
         state = await resources.enter_async_context(ExportState(state_path))
         api, _ = await resources.enter_async_context(common._connected_api(account))
 
-        if no_takeout:
-            # Asking for Takeout costs a request that may answer with a
-            # cooldown of up to 24 hours, and the export then falls back
-            # anyway. --no-takeout skips the question when the caller already
-            # knows they do not want to wait for it.
-            common._diag("Takeout not requested (--no-takeout); using the regular API.")
-            takeout_active = False
-        else:
-            takeout_active = await _start_takeout(api, cfg, require=require_takeout)
+        takeout_active = await _takeout_for_run(
+            api, cfg, require_takeout=require_takeout, no_takeout=no_takeout
+        )
 
         # Setup renderer
         renderer = HtmlRenderer(output_dir=output_base, config=cfg.output)
@@ -559,18 +560,19 @@ async def _run_export(
             account=account,
             quiet=quiet,
         )
-        stats = await exporter.run(dry_run=dry_run, verify=verify, chat_list=chats)
+        stats = await exporter.run(dry_run=dry_run, verify=verify, chat_list=chats, rerender=rerender)
 
-        if exporter.force_shutdown:
-            common._diag("\nForce shutdown — state saved.", essential=True)
-        else:
-            # Render index
-            if not dry_run:
-                await _render_index(
-                    renderer, chats, cfg, state, should_stop=lambda: exporter.shutdown_requested
-                )
-
-            await _print_export_summary(stats, state, output_base, takeout_active=takeout_active)
+        await _report_export_result(
+            exporter,
+            stats,
+            chats,
+            cfg,
+            state,
+            renderer,
+            output_base,
+            dry_run=dry_run,
+            takeout_active=takeout_active,
+        )
 
     except asyncio.CancelledError:
         common._diag("\nForce shutdown — saving state...", essential=True)
@@ -586,6 +588,35 @@ async def _run_export(
         signum=exporter.shutdown_signal if exporter else None,
         error_count=len(stats.errors) if stats else 0,
     )
+
+
+async def _takeout_for_run(api, cfg, *, require_takeout: bool, no_takeout: bool) -> bool:
+    """Whether the export runs through a Takeout session.
+
+    Asking for Takeout costs a request that may answer with a cooldown of up to
+    24 hours, and the export then falls back anyway. --no-takeout skips the
+    question when the caller already knows they do not want to wait for it.
+    """
+    if no_takeout:
+        common._diag("Takeout not requested (--no-takeout); using the regular API.")
+        return False
+    return await _start_takeout(api, cfg, require=require_takeout)
+
+
+async def _report_export_result(
+    exporter, stats, chats, cfg, state, renderer, output_base, *, dry_run, takeout_active
+):
+    """Render the index and print the summary of an export that has finished.
+
+    A forced shutdown skips both: the index would describe a tree the run did
+    not finish writing.
+    """
+    if exporter.force_shutdown:
+        common._diag("\nForce shutdown — state saved.", essential=True)
+        return
+    if not dry_run:
+        await _render_index(renderer, chats, cfg, state, should_stop=lambda: exporter.shutdown_requested)
+    await _print_export_summary(stats, state, output_base, takeout_active=takeout_active)
 
 
 async def _group_chats_for_index(chats, cfg, state, should_stop):
