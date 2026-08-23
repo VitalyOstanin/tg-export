@@ -59,12 +59,26 @@ from pathlib import Path
 from telethon.crypto import AuthKey
 from telethon.sessions import SQLiteSession
 
+from tg_export.errors import ProcessLockError
 from tg_export.privacy import restrict_file
 from tg_export.state import DB_TIMEOUT_SECONDS
 
 logger = logging.getLogger(__name__)
 
 BACKUP_TABLE = "tg_export_session_backup"
+
+# Both mean "someone else holds the file": SQLITE_BUSY for a lock held by
+# another connection, SQLITE_LOCKED for one held within the same one. Matched
+# by prefix because SQLite appends a reason to the extended names
+# (SQLITE_BUSY_SNAPSHOT, SQLITE_LOCKED_SHAREDCACHE).
+_BUSY_ERROR_PREFIXES = ("SQLITE_BUSY", "SQLITE_LOCKED")
+
+
+def _is_busy(error: sqlite3.OperationalError) -> bool:
+    """True when the operation failed because another writer holds the file."""
+    name = getattr(error, "sqlite_errorname", "")
+    return name.startswith(_BUSY_ERROR_PREFIXES)
+
 
 # Telethon writes exactly these six values, in this order, ignoring column
 # names. Positions 4 and 5 (0-based) are the two we have to rescue.
@@ -197,6 +211,88 @@ class FixedSQLiteSession(SQLiteSession):
         return FixedSQLiteSession._normalize(row[0], row[1], f"table {BACKUP_TABLE} of {path}")
 
     @staticmethod
+    def _rescue_within_transaction(conn: sqlite3.Connection, path: Path) -> tuple[int | None, bytes | None]:
+        """Read positions 5 and 6, stage a copy of them and clear them on disk."""
+        # IMMEDIATE takes the write lock up front: the read below decides
+        # what the clearing UPDATE destroys, so a second process must not
+        # slip between them.
+        conn.execute("BEGIN IMMEDIATE")
+        info = conn.execute("PRAGMA table_info(sessions)").fetchall()
+        names = [row[1] for row in info]
+        has_tmp_column = (
+            len(names) == _SESSION_COLUMN_COUNT and set(names[_TAKEOUT_ID_POS:]) == _SWAPPABLE_COLUMNS
+        )
+        is_v7 = len(names) == _V7_COLUMN_COUNT and names[_TAKEOUT_ID_POS] == "takeout_id"
+        if not has_tmp_column and not is_v7:
+            # Either a pre-v5 file with no takeout_id at all, or a shape
+            # Telethon itself could not have written positionally.
+            conn.rollback()
+            return None, None
+
+        row = conn.execute("SELECT * FROM sessions").fetchone()
+        takeout_id_raw = row[_TAKEOUT_ID_POS] if row else None
+        tmp_auth_key_raw = row[_TMP_AUTH_KEY_POS] if row and has_tmp_column else None
+        # Why `is not None` rather than bool(): Telethon writes b'' into
+        # position 6 when store_tmp_auth_key_on_disk is False. That is
+        # falsy, but on the next read the swap bug turns it into
+        # session._takeout_id = b'', which breaks struct.pack in
+        # InvokeWithTakeoutRequest. Treat b'' as "has data" and clear it
+        # so Telethon reads NULL/NULL.
+        has_row_data = takeout_id_raw is not None or tmp_auth_key_raw is not None
+
+        takeout_id, tmp_auth_key = FixedSQLiteSession._normalize(
+            takeout_id_raw, tmp_auth_key_raw, f"table sessions of {path}"
+        )
+        backup_takeout_id, backup_tmp_auth_key = FixedSQLiteSession._read_backup(conn, path)
+        # Live columns win over the backup: a start that restored the
+        # value but died before dropping the table leaves a stale copy
+        # behind, and it must not overwrite what is on disk now.
+        if takeout_id is None:
+            takeout_id = backup_takeout_id
+        if not tmp_auth_key:
+            tmp_auth_key = backup_tmp_auth_key
+
+        has_backup = backup_takeout_id is not None or backup_tmp_auth_key is not None
+        if not has_row_data and not has_backup:
+            conn.rollback()
+            return None, None
+
+        # Three states reach this point and they are not the same event:
+        # a value worth carrying over, the routine empty placeholder, and
+        # a damaged value already reported by _normalize. Only the first
+        # one is news, and staging a backup of nothing is pure noise.
+        if takeout_id is not None or tmp_auth_key:
+            logger.info(
+                "Carrying takeout state in %s across Telethon's column-order bug: "
+                "takeout_id=%s, tmp_auth_key=%d bytes.",
+                path,
+                takeout_id if takeout_id is not None else "none",
+                len(tmp_auth_key) if tmp_auth_key else 0,
+            )
+            conn.execute(f"CREATE TABLE IF NOT EXISTS {BACKUP_TABLE} (takeout_id integer, tmp_auth_key blob)")
+            conn.execute(f"DELETE FROM {BACKUP_TABLE}")
+            conn.execute(
+                f"INSERT INTO {BACKUP_TABLE} (takeout_id, tmp_auth_key) VALUES (?, ?)",
+                (takeout_id, tmp_auth_key),
+            )
+        else:
+            logger.debug(
+                "Nothing to carry over in %s; clearing the placeholder so the swapped unpack reads NULL.",
+                path,
+            )
+        # Clear even if every value turned out anomalous: on the next
+        # super().__init__() Telethon, with the same swap bug, would read
+        # them back into the wrong slots again. Naming the columns here is
+        # unambiguous -- both v8 layouts hold exactly these two at positions
+        # 5 and 6, and a v7 file has only the first of them.
+        if has_tmp_column:
+            conn.execute("UPDATE sessions SET takeout_id = NULL, tmp_auth_key = NULL")
+        else:
+            conn.execute("UPDATE sessions SET takeout_id = NULL")
+        conn.commit()
+        return takeout_id, tmp_auth_key
+
+    @staticmethod
     def _extract_and_clear(session_id) -> tuple[int | None, bytes | None]:
         path = FixedSQLiteSession._session_path(session_id)
         if path is None or not path.exists():
@@ -204,92 +300,25 @@ class FixedSQLiteSession(SQLiteSession):
         try:
             conn = sqlite3.connect(str(path), timeout=DB_TIMEOUT_SECONDS)
             try:
-                # IMMEDIATE takes the write lock up front: the read below decides
-                # what the clearing UPDATE destroys, so a second process must not
-                # slip between them.
-                conn.execute("BEGIN IMMEDIATE")
-                info = conn.execute("PRAGMA table_info(sessions)").fetchall()
-                names = [row[1] for row in info]
-                has_tmp_column = (
-                    len(names) == _SESSION_COLUMN_COUNT and set(names[_TAKEOUT_ID_POS:]) == _SWAPPABLE_COLUMNS
-                )
-                is_v7 = len(names) == _V7_COLUMN_COUNT and names[_TAKEOUT_ID_POS] == "takeout_id"
-                if not has_tmp_column and not is_v7:
-                    # Either a pre-v5 file with no takeout_id at all, or a shape
-                    # Telethon itself could not have written positionally.
-                    conn.rollback()
-                    return None, None
-
-                row = conn.execute("SELECT * FROM sessions").fetchone()
-                takeout_id_raw = row[_TAKEOUT_ID_POS] if row else None
-                tmp_auth_key_raw = row[_TMP_AUTH_KEY_POS] if row and has_tmp_column else None
-                # Why `is not None` rather than bool(): Telethon writes b'' into
-                # position 6 when store_tmp_auth_key_on_disk is False. That is
-                # falsy, but on the next read the swap bug turns it into
-                # session._takeout_id = b'', which breaks struct.pack in
-                # InvokeWithTakeoutRequest. Treat b'' as "has data" and clear it
-                # so Telethon reads NULL/NULL.
-                has_row_data = takeout_id_raw is not None or tmp_auth_key_raw is not None
-
-                takeout_id, tmp_auth_key = FixedSQLiteSession._normalize(
-                    takeout_id_raw, tmp_auth_key_raw, f"table sessions of {path}"
-                )
-                backup_takeout_id, backup_tmp_auth_key = FixedSQLiteSession._read_backup(conn, path)
-                # Live columns win over the backup: a start that restored the
-                # value but died before dropping the table leaves a stale copy
-                # behind, and it must not overwrite what is on disk now.
-                if takeout_id is None:
-                    takeout_id = backup_takeout_id
-                if not tmp_auth_key:
-                    tmp_auth_key = backup_tmp_auth_key
-
-                has_backup = backup_takeout_id is not None or backup_tmp_auth_key is not None
-                if not has_row_data and not has_backup:
-                    conn.rollback()
-                    return None, None
-
-                # Three states reach this point and they are not the same event:
-                # a value worth carrying over, the routine empty placeholder, and
-                # a damaged value already reported by _normalize. Only the first
-                # one is news, and staging a backup of nothing is pure noise.
-                if takeout_id is not None or tmp_auth_key:
-                    logger.info(
-                        "Carrying takeout state in %s across Telethon's column-order bug: "
-                        "takeout_id=%s, tmp_auth_key=%d bytes.",
-                        path,
-                        takeout_id if takeout_id is not None else "none",
-                        len(tmp_auth_key) if tmp_auth_key else 0,
-                    )
-                    conn.execute(
-                        f"CREATE TABLE IF NOT EXISTS {BACKUP_TABLE} (takeout_id integer, tmp_auth_key blob)"
-                    )
-                    conn.execute(f"DELETE FROM {BACKUP_TABLE}")
-                    conn.execute(
-                        f"INSERT INTO {BACKUP_TABLE} (takeout_id, tmp_auth_key) VALUES (?, ?)",
-                        (takeout_id, tmp_auth_key),
-                    )
-                else:
-                    logger.debug(
-                        "Nothing to carry over in %s; clearing the placeholder so the "
-                        "swapped unpack reads NULL.",
-                        path,
-                    )
-                # Clear even if every value turned out anomalous: on the next
-                # super().__init__() Telethon, with the same swap bug, would read
-                # them back into the wrong slots again. Naming the columns here is
-                # unambiguous -- both v8 layouts hold exactly these two at positions
-                # 5 and 6, and a v7 file has only the first of them.
-                if has_tmp_column:
-                    conn.execute("UPDATE sessions SET takeout_id = NULL, tmp_auth_key = NULL")
-                else:
-                    conn.execute("UPDATE sessions SET takeout_id = NULL")
-                conn.commit()
-                return takeout_id, tmp_auth_key
+                return FixedSQLiteSession._rescue_within_transaction(conn, path)
             except BaseException:
                 conn.rollback()
                 raise
             finally:
                 conn.close()
+        except sqlite3.OperationalError as e:
+            if _is_busy(e):
+                # Contention is not "nothing to rescue": the values are still in
+                # the columns, and returning here would hand the file straight to
+                # Telethon's swapped unpack -- the very failure this module
+                # exists to prevent. The lock in TgApi keeps other tg-export
+                # processes away, so reaching this point means a foreign writer.
+                raise ProcessLockError(
+                    f"Telegram session {path} is in use by another program: "
+                    f"the takeout state could not be read. Close it and try again."
+                ) from e
+            logger.warning("session pre-init read skipped (%s): %s", path, e)
+            return None, None
         except sqlite3.Error as e:
-            logger.debug("session pre-init read skipped (%s): %s", path, e)
+            logger.warning("session pre-init read skipped (%s): %s", path, e)
             return None, None

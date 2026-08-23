@@ -7,7 +7,9 @@ import pytest
 from telethon.errors import TakeoutInitDelayError
 from telethon.errors.rpcerrorlist import TakeoutInvalidError
 
+from tg_export import session as session_module
 from tg_export.api import TgApi
+from tg_export.errors import ProcessLockError
 from tg_export.session import FixedSQLiteSession
 
 
@@ -747,3 +749,32 @@ def test_a_busy_session_file_is_refused_before_it_is_written_to(tmp_path):
     with sqlite3.connect(sp) as conn:
         after = conn.execute("SELECT * FROM sessions").fetchall()
     assert after == before, "файл сессии изменён процессом, которому она не принадлежит"
+
+
+def test_a_locked_session_file_is_reported_instead_of_being_silently_skipped(tmp_path, monkeypatch):
+    """Занятая база не должна выглядеть как «спасать нечего».
+
+    Пока «database is locked» обрабатывалась вместе с прочими sqlite3.Error,
+    гонка была неотличима от неприменимой формы таблицы: значение оставалось в
+    колонках, и дальше выполнение уходило в ту самую позиционную распаковку
+    Telethon, ради обхода которой существует модуль.
+    """
+    sp = tmp_path / "busy.session"
+    _make_session_v8(sp, takeout_id=777, tmp_auth_value=b"")
+
+    monkeypatch.setattr(session_module, "DB_TIMEOUT_SECONDS", 0.1)
+    holder = sqlite3.connect(str(sp))
+    holder.execute("BEGIN EXCLUSIVE")
+    try:
+        with pytest.raises(ProcessLockError, match="in use"):
+            FixedSQLiteSession._extract_and_clear(str(sp))
+    finally:
+        holder.rollback()
+        holder.close()
+
+    # Значение осталось нетронутым: очистка не выполнялась.
+    conn = sqlite3.connect(str(sp))
+    try:
+        assert conn.execute("SELECT takeout_id FROM sessions").fetchone()[0] == 777
+    finally:
+        conn.close()
