@@ -65,9 +65,9 @@ jobs:
         run: uv run python scripts/coverage_gate.py
 
       - name: Upload coverage to Codecov
-        # Run on a single matrix entry — uploading the same report three
-        # times under different Python versions just creates noise on the
-        # Codecov side without changing what we measure.
+        # Run on a single matrix entry — uploading the same report on every
+        # Python version of the matrix just creates noise on the Codecov side
+        # without changing what we measure.
         if: matrix.python-version == '3.12'
         # codecov/codecov-action pinned to v6.0.1
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f  # v7.0.0

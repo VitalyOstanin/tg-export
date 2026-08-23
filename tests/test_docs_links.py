@@ -128,3 +128,52 @@ def test_a_vulnerability_has_a_private_route() -> None:
     urls = " ".join(str(link.get("url", "")) for link in links)
 
     assert "security" in urls.lower(), f"форма заведения issue не предлагает канал для уязвимостей: {links}"
+
+
+def test_the_checks_that_ci_runs_on_every_matrix_entry_are_described_as_such() -> None:
+    """CONTRIBUTING обещал линтер, типы и покрытие «на 3.12», а они идут на всех версиях.
+
+    Контрибьютор видит сообщение линтера четырежды, а падение на 3.14 не
+    объясняется обещанием проверять только на одной версии. Тест сверяет
+    утверждение с фактическим набором шагов, ограниченных условием по версии.
+    """
+    import yaml
+
+    workflow = yaml.safe_load((ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8"))
+    steps = [step for job in workflow["jobs"].values() for step in job.get("steps", [])]
+    pinned = {step.get("name", "") for step in steps if "matrix.python-version ==" in str(step.get("if", ""))}
+
+    # Переносы строк в markdown расставлены по ширине, а утверждение читается
+    # как одна фраза, поэтому пробельные последовательности сводятся к пробелу.
+    contributing = " ".join((ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8").split())
+
+    for name in ("Lint (ruff)", "Type check (pyright)", "Check per-module coverage floors"):
+        if name in pinned:
+            continue
+        assert "на каждой версии матрицы" in contributing, (
+            f"шаг {name!r} идёт на всех версиях матрицы, а CONTRIBUTING обещает одну"
+        )
+
+
+def test_the_bug_report_shows_where_the_debug_flag_goes() -> None:
+    """`--debug` объявлен опцией корневой группы, а не подкоманд.
+
+    Дописанный к своей команде флаг даёт «Error: No such option '--debug'»:
+    автор обращения получает отказ вместо журнала, и сопровождающему придётся
+    отдельным кругом просить журнал заново.
+    """
+    template = (ROOT / ".github" / "ISSUE_TEMPLATE" / "bug_report.md").read_text(encoding="utf-8")
+
+    assert "`tg-export --debug " in template, "в шаблоне нет готовой формы команды с флагом до подкоманды"
+
+
+def test_contributing_tells_how_to_run_a_single_test_file() -> None:
+    """Порог покрытия применяется к любому запуску, а осмыслен только для полного.
+
+    `pytest tests/test_models.py` заканчивается кодом 1 при всех зелёных
+    тестах: покрытие одного файла ниже порога. Способ обойти это записан там
+    же, где описан запуск тестов.
+    """
+    contributing = (ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
+
+    assert "--no-cov" in contributing, "в разделе о запуске тестов не сказано про частичный прогон"
