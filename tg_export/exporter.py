@@ -1272,8 +1272,13 @@ class Exporter:
     @classmethod
     def _count_download(cls, status: str, local_path: Path | None, stats: ExportStats) -> None:
         """Add one finished download to the statistics of the run."""
-        entry = cls._DOWNLOAD_COUNTERS.get(DownloadStatus(status)) if status in DownloadStatus else None
-        if entry is None:
+        # Membership is decided by conversion rather than by `status in
+        # DownloadStatus`: testing a value against an enum class only returns a
+        # bool from Python 3.12 on and raises TypeError on 3.11, which the
+        # project still supports.
+        try:
+            entry = cls._DOWNLOAD_COUNTERS[DownloadStatus(status)]
+        except (ValueError, KeyError):
             logger.warning("unknown download status %r: the file is not counted in the summary", status)
             return
         counter, counts_towards_volume = entry
