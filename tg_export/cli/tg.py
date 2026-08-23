@@ -130,11 +130,27 @@ def tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_file, as_
 
     Accepts one or more CHAT_IDS, or use --from-catalog with --type to batch query.
     """
+    if not chat_ids and not catalog_file:
+        # A call there is nothing to build from is a refusal to parse it, not
+        # a successful run: the branch used to print a hint and return None,
+        # which the caller read as exit code 0 -- under --quiet the command
+        # said nothing and still reported success.
+        raise click.UsageError("No chat IDs specified. Use arguments or --from-catalog --type.")
     exit_code = asyncio.run(
         _tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_file, as_json)
     )
     if exit_code:
         _fail(code=exit_code)
+
+
+def _write_info_results(results: list[dict], output_file, as_json: bool) -> None:
+    """Hand the results over the way the flags asked for."""
+    if as_json:
+        click.echo(json.dumps(results, ensure_ascii=False, indent=2))
+    if output_file:
+        with open(output_file, "w", encoding="utf-8") as f:
+            json.dump(results, f, ensure_ascii=False, indent=2)
+        common._diag(f"Saved {len(results)} entries to {output_file}")
 
 
 async def _tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_file, as_json=False):
@@ -152,8 +168,11 @@ async def _tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_fi
             ids.append(entry["id"])
 
     if not ids:
-        common._diag("No chat IDs specified. Use arguments or --from-catalog --type.")
-        return
+        # A filter that matched no chat is a legitimate empty result, and the
+        # contract of --json is "stdout holds a JSON document" -- an empty
+        # stdout is not one, and jq fails to parse it.
+        _write_info_results([], output_file, as_json)
+        return EXIT_OK
 
     results = []
     async with common._connected_api(account) as (api, account):
@@ -218,12 +237,7 @@ async def _tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_fi
                 if not output_file:
                     common._diag(f"[{idx}/{total}] id={cid}: ERROR {e}", essential=True)
 
-        if as_json:
-            click.echo(json.dumps(results, ensure_ascii=False, indent=2))
-        if output_file:
-            with open(output_file, "w", encoding="utf-8") as f:
-                json.dump(results, f, ensure_ascii=False, indent=2)
-            common._diag(f"Saved {len(results)} entries to {output_file}")
+        _write_info_results(results, output_file, as_json)
         # A chat that could not be queried is a failure even when the rest
         # succeeded: the JSON carries an "error" key the caller may miss.
         return EXIT_FAILURE if any("error" in r for r in results) else EXIT_OK

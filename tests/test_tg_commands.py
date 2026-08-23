@@ -589,6 +589,38 @@ def test_tg_info_keeps_the_counter_out_of_the_data_stream():
     assert "[1/2]" in result.stderr
 
 
+def test_tg_info_without_any_chat_id_refuses_to_run():
+    """Вызов, который не из чего собрать, -- отказ разобрать команду, а не успех.
+
+    Ветка печатала подсказку и возвращала None, что вызывающий трактовал как
+    нулевой код: под `--quiet` команда молчала и завершалась нулём, то есть
+    скрипт не отличал её от успешной работы. Соседняя `tg send` на такую же
+    ситуацию отвечает отказом.
+    """
+    result = _invoke_tg_info([], chat_ids=())
+
+    assert result.exit_code == 2, f"код возврата {result.exit_code}, вывод: {result.stderr}"
+    assert "Usage:" in result.stderr
+
+
+def test_tg_info_prints_an_empty_document_when_the_filter_matched_nothing(tmp_path):
+    """Фильтр, не подобравший ни одного чата, -- законный пустой результат.
+
+    Под `--json` stdout оставался пустым: это не JSON-документ, и `jq` на нём
+    падает с ошибкой разбора, хотя контракт `--json` обещает в stdout только
+    документ.
+    """
+    import json
+
+    catalog = tmp_path / "catalog.json"
+    catalog.write_text(json.dumps([{"id": 1, "type": "personal"}]), encoding="utf-8")
+
+    result = _invoke_tg_info(["--from-catalog", str(catalog), "--type", "channel", "--json"], chat_ids=())
+
+    assert result.exit_code == 0, result.stderr
+    assert json.loads(result.stdout) == []
+
+
 def test_tg_info_reports_a_failed_chat_on_stderr():
     """Строка ERROR в stdout ломала машинную обработку вывода."""
     result = _invoke_tg_info([], chat_ids=("123", "456"), fail_on=(456,))
