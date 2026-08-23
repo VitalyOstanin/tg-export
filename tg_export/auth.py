@@ -12,6 +12,7 @@ import click
 import yaml
 
 from tg_export.errors import TgExportError
+from tg_export.locking import ProcessLock
 from tg_export.privacy import restrict_file, tighten_if_loose
 
 logger = logging.getLogger(__name__)
@@ -257,13 +258,31 @@ class AccountManager:
 
     async def add_account(self, name: str):
         """Interactive Telethon login. Requires terminal interaction."""
+        api_id, api_hash = self.load_credentials()
+        target = self.session_path(name)
+        # The same lock TgApi holds on a session file. The login ends by
+        # deleting the target together with its -wal/-shm sidecars and moving
+        # the staging file into its place; done under a running export that
+        # discards committed data the live connection has not checkpointed yet,
+        # and every later save() of that export goes to an unlinked inode.
+        lock = ProcessLock(
+            target,
+            f"Telegram session {target} is in use by another tg-export process. "
+            f"Wait for it to finish before logging in again.",
+        )
+        lock.acquire()
+        try:
+            await self._login_into(target, api_id, api_hash)
+        finally:
+            lock.release()
+
+    async def _login_into(self, target: Path, api_id: int, api_hash: str) -> None:
+        """Log in through a staging file and put it in place of ``target``."""
         from telethon import TelegramClient
         from telethon.errors import SessionPasswordNeededError
 
         from tg_export.session import FixedSQLiteSession
 
-        api_id, api_hash = self.load_credentials()
-        target = self.session_path(name)
         # The login writes to a file of its own and takes the place of the
         # working session only once it succeeded. Deleting the old file first --
         # as this did -- meant a wrong code, a dropped connection or Ctrl+C at

@@ -304,7 +304,12 @@ async def test_a_failed_login_keeps_the_previous_session(tmp_path, monkeypatch):
 
     assert session.read_bytes() == b"working session", "прежняя сессия уничтожена неудачным входом"
     assert client.disconnect.called, "соединение осталось открытым после сбоя"
-    leftovers = [p.name for p in mgr.sessions_dir.iterdir() if p.name != session.name]
+    # Лок-файл сессии живёт отдельно от неё и намеренно не удаляется:
+    # flock привязан к inode, и удаление файла отдало бы блокировку двум
+    # процессам сразу.
+    leftovers = [
+        p.name for p in mgr.sessions_dir.iterdir() if p.name not in (session.name, f"{session.name}.lock")
+    ]
     assert not leftovers, f"после сбоя остались файлы неудачного входа: {leftovers}"
 
 
@@ -334,5 +339,35 @@ async def test_a_successful_login_replaces_the_session_file(tmp_path, monkeypatc
     await mgr.add_account("acc")
 
     assert session.read_bytes() == b"new session"
-    assert sorted(p.name for p in mgr.sessions_dir.iterdir()) == [session.name]
+    # Лок-файл сессии остаётся намеренно, см. tg_export.locking.
+    assert sorted(p.name for p in mgr.sessions_dir.iterdir()) == [session.name, f"{session.name}.lock"]
     assert session.stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.asyncio
+async def test_login_refuses_to_replace_a_session_another_process_is_using(tmp_path):
+    """`auth add` завершался подменой файла сессии в обход блокировки.
+
+    Финальная пара «удалить файл вместе с -wal/-shm, переместить новый на его
+    место» выполнялась без всякой проверки: у идущего экспорта пропадали
+    зафиксированные, но ещё не перенесённые в основной файл данные, а все его
+    последующие записи уходили в отвязанный inode.
+    """
+    from tg_export.errors import ProcessLockError
+    from tg_export.locking import ProcessLock
+
+    mgr = AccountManager(config_dir=tmp_path / "tg-export")
+    mgr.ensure_dirs()
+    mgr.save_credentials(12345, "hash")
+    target = mgr.session_path("acc")
+    target.write_bytes(b"working session")
+
+    held = ProcessLock(target, "busy")
+    held.acquire()
+    try:
+        with pytest.raises(ProcessLockError):
+            await mgr.add_account("acc")
+    finally:
+        held.release()
+
+    assert target.read_bytes() == b"working session"
