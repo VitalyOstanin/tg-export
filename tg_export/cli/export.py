@@ -11,13 +11,10 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-import os
 import shutil
 import subprocess
-import tempfile
 from collections import defaultdict
 from pathlib import Path
-from typing import Any
 
 import aiosqlite
 import click
@@ -35,6 +32,7 @@ from tg_export.errors import (
     TakeoutUnavailableError,
 )
 from tg_export.privacy import ensure_private_dir
+from tg_export.verify import RedownloadResult, clean_staging, redownload_broken_file
 
 logger = logging.getLogger(__name__)
 
@@ -840,75 +838,6 @@ def verify_files(account, config, output):
         _fail(code=exit_code)
 
 
-VERIFY_STAGING_PREFIX = ".tg-export-verify-"
-
-
-def _clean_verify_staging(root: Path) -> None:
-    """Remove staging directories left behind by a killed verify run.
-
-    A SIGKILL/SIGTERM in the middle of a download skips TemporaryDirectory
-    cleanup. The leftovers are harmless but accumulate next to the media, so
-    sweep them at the start of the next run.
-    """
-
-    for path in root.rglob(f"{VERIFY_STAGING_PREFIX}*"):
-        if path.is_dir():
-            shutil.rmtree(path, ignore_errors=True)
-
-
-async def _redownload_broken_file(api, state, entry: dict[str, Any]) -> bool:
-    """Re-download one broken file, replacing it only after the download succeeded.
-
-    Returns True when the file was replaced, False when the message no longer
-    carries media or the download produced nothing. Download failures propagate.
-
-    The old file stays untouched until the new one is fully on disk: deleting
-    first meant that an interruption -- a dropped connection, Ctrl+C -- left
-    nothing behind while the database still pointed at the vanished path.
-    """
-    chat_id = entry["chat_id"]
-    msg_id = entry["msg_id"]
-    local_path = Path(entry["local_path"])
-
-    tl_messages = await api.client.get_messages(chat_id, ids=msg_id)
-    tl_msg = tl_messages if not isinstance(tl_messages, list) else (tl_messages[0] if tl_messages else None)
-    if tl_msg is None or tl_msg.media is None:
-        common._error(f"  [skip] msg {msg_id}: not found or no media")
-        return False
-
-    target_dir = local_path.parent
-    target_dir.mkdir(parents=True, exist_ok=True)
-    # dir=target_dir keeps the staging area on the same filesystem, so the final
-    # move is an atomic rename rather than a copy.
-    with tempfile.TemporaryDirectory(dir=target_dir, prefix=VERIFY_STAGING_PREFIX) as staging:
-        downloaded = await api.download_media(tl_msg, Path(staging))
-        if not downloaded:
-            common._error(f"  [fail] {local_path}")
-            return False
-
-        downloaded = Path(str(downloaded))
-        final_path = target_dir / downloaded.name
-        os.replace(downloaded, final_path)
-
-    # Telethon may pick a different name than the one recorded earlier; drop the
-    # stale file only now, once its replacement is in place.
-    if local_path != final_path and local_path.exists():
-        local_path.unlink()
-
-    await state.register_file(
-        file_id=entry["file_id"],
-        chat_id=chat_id,
-        msg_id=msg_id,
-        expected_size=entry["expected_size"],
-        actual_size=final_path.stat().st_size,
-        local_path=str(final_path),
-        status="done",
-    )
-    await state.commit()
-    common._diag(f"  [ok] {final_path}")
-    return True
-
-
 async def _verify_files(account, config_override, output_override):
     async with common._opened_state(account, config_override, output_override, required=False) as (
         state,
@@ -932,14 +861,21 @@ async def _verify_files(account, config_override, output_override):
             )
 
         async with common._connected_api(account) as (api, account):
-            _clean_verify_staging(output_base)
+            clean_staging(output_base)
             redownloaded = 0
             for f in broken:
                 try:
-                    if await _redownload_broken_file(api, state, f):
-                        redownloaded += 1
+                    result, final_path = await redownload_broken_file(api, state, f)
                 except Exception as e:
                     common._diag(f"  [error] {f['local_path']}: {e}", essential=True)
+                    continue
+                if result is RedownloadResult.no_media:
+                    common._error(f"  [skip] msg {f['msg_id']}: not found or no media")
+                elif result is RedownloadResult.nothing_downloaded:
+                    common._error(f"  [fail] {f['local_path']}")
+                else:
+                    redownloaded += 1
+                    common._diag(f"  [ok] {final_path}")
 
             common._diag(f"\nRe-downloaded: {redownloaded}/{len(broken)}", essential=True)
             if redownloaded < len(broken):

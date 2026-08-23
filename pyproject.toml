@@ -132,6 +132,7 @@ fail_under = 50
 "tg_export/models.py" = 85
 "tg_export/session.py" = 80
 "tg_export/state.py" = 65
+"tg_export/verify.py" = 90
 
 [tool.ruff]
 target-version = "py311"

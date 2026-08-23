@@ -25,7 +25,7 @@ def _entry(path: Path) -> dict:
 
 @pytest.mark.asyncio
 async def test_failed_redownload_keeps_the_existing_file(tmp_path):
-    from tg_export.cli.export import _redownload_broken_file
+    from tg_export.verify import redownload_broken_file
 
     existing = tmp_path / "photo.jpg"
     existing.write_bytes(b"partial")
@@ -36,7 +36,7 @@ async def test_failed_redownload_keeps_the_existing_file(tmp_path):
     state = AsyncMock()
 
     with pytest.raises(RuntimeError):
-        await _redownload_broken_file(api, state, _entry(existing))
+        await redownload_broken_file(api, state, _entry(existing))
 
     assert existing.read_bytes() == b"partial"
     state.register_file.assert_not_called()
@@ -44,7 +44,7 @@ async def test_failed_redownload_keeps_the_existing_file(tmp_path):
 
 @pytest.mark.asyncio
 async def test_empty_download_keeps_the_existing_file(tmp_path):
-    from tg_export.cli.export import _redownload_broken_file
+    from tg_export.verify import RedownloadResult, redownload_broken_file
 
     existing = tmp_path / "photo.jpg"
     existing.write_bytes(b"partial")
@@ -54,14 +54,15 @@ async def test_empty_download_keeps_the_existing_file(tmp_path):
     api.download_media = AsyncMock(return_value=None)
     state = AsyncMock()
 
-    assert await _redownload_broken_file(api, state, _entry(existing)) is False
+    result, _ = await redownload_broken_file(api, state, _entry(existing))
+    assert result is RedownloadResult.nothing_downloaded
     assert existing.read_bytes() == b"partial"
     state.register_file.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_successful_redownload_replaces_the_file(tmp_path):
-    from tg_export.cli.export import _redownload_broken_file
+    from tg_export.verify import RedownloadResult, redownload_broken_file
 
     existing = tmp_path / "photo.jpg"
     existing.write_bytes(b"partial")
@@ -76,7 +77,8 @@ async def test_successful_redownload_replaces_the_file(tmp_path):
     api.download_media = AsyncMock(side_effect=fake_download)
     state = AsyncMock()
 
-    assert await _redownload_broken_file(api, state, _entry(existing)) is True
+    result, final_path = await redownload_broken_file(api, state, _entry(existing))
+    assert result is RedownloadResult.replaced and final_path == existing
     assert existing.read_bytes() == b"complete-content"
     assert state.register_file.await_count == 1
     kwargs = state.register_file.await_args.kwargs
@@ -88,7 +90,7 @@ async def test_successful_redownload_replaces_the_file(tmp_path):
 
 @pytest.mark.asyncio
 async def test_missing_message_is_skipped_without_touching_the_file(tmp_path):
-    from tg_export.cli.export import _redownload_broken_file
+    from tg_export.verify import RedownloadResult, redownload_broken_file
 
     existing = tmp_path / "photo.jpg"
     existing.write_bytes(b"partial")
@@ -98,13 +100,14 @@ async def test_missing_message_is_skipped_without_touching_the_file(tmp_path):
     api.download_media = AsyncMock()
     state = AsyncMock()
 
-    assert await _redownload_broken_file(api, state, _entry(existing)) is False
+    result, _ = await redownload_broken_file(api, state, _entry(existing))
+    assert result is RedownloadResult.no_media
     assert existing.read_bytes() == b"partial"
     api.download_media.assert_not_called()
 
 
 def test_stale_staging_dirs_are_cleaned(tmp_path):
-    from tg_export.cli.export import _clean_verify_staging
+    from tg_export.verify import clean_staging
 
     stale = tmp_path / "chat" / ".tg-export-verify-abc"
     stale.mkdir(parents=True)
@@ -112,7 +115,41 @@ def test_stale_staging_dirs_are_cleaned(tmp_path):
     keep = tmp_path / "chat" / "photo.jpg"
     keep.write_bytes(b"y")
 
-    _clean_verify_staging(tmp_path)
+    clean_staging(tmp_path)
 
     assert not stale.exists()
     assert keep.exists()
+
+
+@pytest.mark.asyncio
+async def test_the_run_verify_pass_keeps_the_file_when_the_download_fails(tmp_path):
+    """`run --verify` шёл своим путём, где файл удалялся до скачивания замены."""
+    from tg_export.exporter import Exporter, ExportStats
+
+    existing = tmp_path / "photo.jpg"
+    existing.write_bytes(b"partial")
+
+    api = MagicMock()
+    api.client.get_messages = AsyncMock(return_value=MagicMock(media=object()))
+    api.download_media = AsyncMock(side_effect=RuntimeError("connection lost"))
+    state = MagicMock()
+    state.get_files_to_verify = AsyncMock(return_value=[_entry(existing)])
+    state.register_file = AsyncMock()
+    state.commit = AsyncMock()
+
+    exporter = Exporter(  # pyright: ignore[reportArgumentType]
+        api=api,
+        state=state,
+        config=MagicMock(),
+        renderer=MagicMock(),
+        downloader=MagicMock(),
+        account="acc",
+        quiet=True,
+    )
+    stats = ExportStats()
+
+    await exporter._verify_files(stats)
+
+    assert existing.read_bytes() == b"partial", "битый файл удалён, замена не скачалась"
+    assert stats.errors, "неудачное перекачивание не попало в сводку"
+    state.register_file.assert_not_called()

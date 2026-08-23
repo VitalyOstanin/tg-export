@@ -45,6 +45,7 @@ from tg_export.html.renderer import HtmlRenderer
 from tg_export.media import DiskSpaceError, DownloadProgress, DownloadStatus, MediaDownloader
 from tg_export.models import Chat, ForumTopic, Message
 from tg_export.state import ExportState
+from tg_export.verify import RedownloadResult, clean_staging, redownload_broken_file
 
 logger = logging.getLogger(__name__)
 
@@ -1632,52 +1633,27 @@ class Exporter:
             return
 
         self._status_print(f"[yellow]Found {len(broken)} files to re-download[/]")
+        # A run killed mid-download leaves its staging directory next to the
+        # media; sweep them before adding more.
+        clean_staging(Path(self.config.output.path))
         errors_before = len(stats.errors)
         redownloaded = 0
         for f in broken:
             if self._shutdown:
                 break
-            chat_id = f["chat_id"]
-            msg_id = f["msg_id"]
             local_path = Path(f["local_path"])
             try:
-                # Get original message from Telegram
-                tl_messages = await self.api.client.get_messages(chat_id, ids=msg_id)
-                tl_msg = (
-                    tl_messages
-                    if not isinstance(tl_messages, list)
-                    else (tl_messages[0] if tl_messages else None)
-                )
-                if tl_msg is None or tl_msg.media is None:
-                    stats.errors.append(f"Cannot re-download: msg {msg_id} not found or no media")
-                    continue
-
-                # Remove broken file
-                if local_path.exists():
-                    local_path.unlink()
-
-                # Re-download to same directory
-                target_dir = local_path.parent
-                target_dir.mkdir(parents=True, exist_ok=True)
-                path = await self.api.download_media(tl_msg, target_dir)
-                if path:
-                    actual_size = Path(str(path)).stat().st_size
-                    await self.state.register_file(
-                        file_id=f["file_id"],
-                        chat_id=chat_id,
-                        msg_id=msg_id,
-                        expected_size=f["expected_size"],
-                        actual_size=actual_size,
-                        local_path=str(path),
-                        status="done",
-                    )
-                    redownloaded += 1
-                    logger.debug("re-downloaded: %s", path)
-                else:
-                    stats.errors.append(f"Re-download failed: {local_path}")
+                result, _final_path = await redownload_broken_file(self.api, self.state, f)
             except Exception as e:
                 stats.errors.append(f"Re-download error for {local_path}: {e}")
                 logger.debug("verify re-download error: %s", e)
+                continue
+            if result is RedownloadResult.no_media:
+                stats.errors.append(f"Cannot re-download: msg {f['msg_id']} not found or no media")
+            elif result is RedownloadResult.nothing_downloaded:
+                stats.errors.append(f"Re-download failed: {local_path}")
+            else:
+                redownloaded += 1
 
         if redownloaded:
             self._status_print(f"[green]Re-downloaded {redownloaded}/{len(broken)} files[/]")
