@@ -1621,7 +1621,7 @@ class Exporter:
         try:
             pinned, archived = await self.api.get_stories()
         except Exception as e:
-            logger.warning("Stories API not available: %s", e)
+            logger.warning("Stories API not available: %s", e, exc_info=True)
             await asyncio.to_thread(self.renderer.render_stories, [])
             return
 
@@ -1715,7 +1715,7 @@ class Exporter:
                         }
                     )
         except Exception as e:
-            logger.warning("Failed to fetch ringtones: %s", e)
+            logger.warning("Failed to fetch ringtones: %s", e, exc_info=True)
 
         await asyncio.to_thread(self.renderer.render_other_data, {"ringtones": ringtones})
         if ringtones or failed:

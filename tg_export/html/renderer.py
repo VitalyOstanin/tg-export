@@ -17,7 +17,7 @@ from markupsafe import Markup
 
 from tg_export.config import OutputConfig
 from tg_export.format import MOMENT_WITH_SECONDS_FORMAT, format_moment, format_size
-from tg_export.media import MEDIA_SUBDIRS
+from tg_export.media import MEDIA_SUBDIR_NAMES
 from tg_export.models import (
     Chat,
     Message,
@@ -579,9 +579,8 @@ def _fix_media_path(msg: Message, chat_dir: Path, anchors: _PathAnchors):
             file_obj.local_path = str(resolved.relative_to(anchors.chat_root))
         except ValueError:
             # Last resort: just keep the filename parts after the media subdir
-            media_subdirs = set(MEDIA_SUBDIRS.values())
             parts = p.parts
             for i, part in enumerate(parts):
-                if part in media_subdirs:
+                if part in MEDIA_SUBDIR_NAMES:
                     file_obj.local_path = str(Path(*parts[i:]))
                     return

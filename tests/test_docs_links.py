@@ -29,6 +29,15 @@ def _tracked_markdown() -> list[Path]:
     return [ROOT / name for name in out]
 
 
+def _tracked_paths() -> set[Path]:
+    """Файлы репозитория и их каталоги -- по этому набору проверяются цели ссылок."""
+    out = subprocess.run(
+        ["git", "ls-files"], cwd=ROOT, capture_output=True, text=True, check=True
+    ).stdout.split()
+    files = {ROOT / name for name in out}
+    return files | {parent for path in files for parent in path.parents}
+
+
 def _slug(title: str) -> str:
     """Якорь GitHub: разметка снята, регистр опущен, пробелы -- дефисы.
 
@@ -43,9 +52,14 @@ def _slug(title: str) -> str:
 
 
 def _anchors(source: str) -> set[str]:
-    """Якоря файла, включая суффиксы -1, -2 у повторяющихся заголовков."""
+    """Якоря файла, включая суффиксы -1, -2 у повторяющихся заголовков.
+
+    Блоки кода отбрасываются: строка вида `# Заголовок` внутри примера
+    добавляла в набор допустимых якорь, которого на странице нет, -- ссылка на
+    него считалась рабочей.
+    """
     counts: dict[str, int] = {}
-    for title in HEADING_RE.findall(source):
+    for title in HEADING_RE.findall(FENCE_RE.sub("", source)):
         key = _slug(title)
         counts[key] = counts.get(key, 0) + 1
     anchors = set()
@@ -56,12 +70,20 @@ def _anchors(source: str) -> set[str]:
 
 
 def test_every_documentation_link_resolves():
+    """Ссылка ведёт на файл репозитория, а не на что-то, что есть только здесь.
+
+    Существование на диске цель проверку проходила и тогда, когда файл в
+    репозиторий не входит: каталоги рабочих заметок (`docs/superpowers/`,
+    `docs/reviews/`) игнорируются, и ссылка на черновик из них давала 404 уже
+    после публикации.
+    """
+    tracked = _tracked_paths()
     broken: list[str] = []
     for path in _tracked_markdown():
         source = path.read_text(encoding="utf-8")
         # Ссылки внутри блоков кода -- примеры, а не навигация.
         source_without_code = FENCE_RE.sub("", source)
-        anchors = _anchors(source)
+        anchors = _anchors(source)  # _anchors сам отбрасывает блоки кода
         rel = path.relative_to(ROOT)
         for _, target in LINK_RE.findall(source_without_code):
             if target.startswith(("http://", "https://", "mailto:")):
@@ -71,9 +93,9 @@ def test_every_documentation_link_resolves():
                     broken.append(f"{rel}: якорь {target} не соответствует ни одному заголовку")
                 continue
             file_part, _, fragment = target.partition("#")
-            destination = path.parent / file_part
-            if not destination.exists():
-                broken.append(f"{rel}: {target} -- такого файла нет")
+            destination = (path.parent / file_part).resolve()
+            if destination not in tracked:
+                broken.append(f"{rel}: {target} -- такого файла нет в репозитории")
                 continue
             if (
                 fragment
@@ -95,6 +117,9 @@ def test_every_adr_is_listed_in_the_index():
     index = (adr_dir / "README.md").read_text(encoding="utf-8")
     records = sorted(p.name for p in adr_dir.glob("[0-9][0-9][0-9][0-9]-*.md"))
 
+    # Пустой список -- отказ, а не тихий пропуск: при смене схемы имён обе
+    # проверки ADR прошли бы, не проверив ничего.
+    assert records, "записи ADR не найдены по схеме имён NNNN-*.md"
     missing = [name for name in records if f"({name})" not in index]
     assert not missing, f"нет в оглавлении docs/adr/README.md: {missing}"
 
@@ -102,8 +127,10 @@ def test_every_adr_is_listed_in_the_index():
 def test_every_adr_declares_its_status_and_sections():
     """Тело ADR неизменяемо, поэтому его состав проверяется при добавлении."""
     required = ("## Контекст", "## Рассмотренные варианты", "## Решение", "## Последствия")
+    records = sorted((ROOT / "docs" / "adr").glob("[0-9][0-9][0-9][0-9]-*.md"))
+    assert records, "записи ADR не найдены по схеме имён NNNN-*.md"
     incomplete = []
-    for path in sorted((ROOT / "docs" / "adr").glob("[0-9][0-9][0-9][0-9]-*.md")):
+    for path in records:
         source = path.read_text(encoding="utf-8")
         if "- Статус:" not in source or any(section not in source for section in required):
             incomplete.append(path.name)
@@ -319,3 +346,18 @@ def test_every_style_rule_is_named_in_contributing():
 
     missing = [name for name in rules if f"`{name}`" not in guide]
     assert not missing, f"правила не названы в CONTRIBUTING: {missing}"
+
+
+def test_the_example_config_names_every_chat_type():
+    """Пример объявлен рабочей отправной точкой и читается вместо справочника.
+
+    Перечень точных типов в комментарии отставал от `ChatType` на два значения
+    (`replies`, `verify_codes`), а ключами `type_rules` могут быть все.
+    """
+    from tg_export.models import ChatType
+
+    example = (ROOT / "config.example.yaml").read_text(encoding="utf-8")
+    header = example.split("type_rules:")[0]
+
+    missing = [chat_type.value for chat_type in ChatType if chat_type.value not in header]
+    assert not missing, f"типы чатов не названы в config.example.yaml: {missing}"

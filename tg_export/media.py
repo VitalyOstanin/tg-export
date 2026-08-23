@@ -101,6 +101,11 @@ MEDIA_SUBDIRS = {
     MediaType.gif: "gifs",
 }
 
+# The same names as a set, for the callers that ask "is this path component a
+# media subdirectory": the renderer used to build this set again for every
+# message it repaired a path for.
+MEDIA_SUBDIR_NAMES = frozenset(MEDIA_SUBDIRS.values())
+
 
 class DownloadStatus(StrEnum):
     """What happened to one media file.

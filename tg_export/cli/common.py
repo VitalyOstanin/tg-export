@@ -12,7 +12,7 @@ import contextlib
 import logging
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 import click
 
@@ -80,7 +80,7 @@ def _db_rows_line(counts: dict[str, int]) -> str:
     return "  DB: " + ", ".join(f"{table}={number}" for table, number in counts.items())
 
 
-def _fail(message: str | None = None, code: int = EXIT_FAILURE):
+def _fail(message: str | None = None, code: int = EXIT_FAILURE) -> NoReturn:
     """Report a refusal and end the command with ``code``.
 
     One place decides how a command stops, instead of each site pairing its own
@@ -90,6 +90,16 @@ def _fail(message: str | None = None, code: int = EXIT_FAILURE):
 
     Outside a Click invocation (a helper called straight from a test) there is
     no context to exit, and SystemExit carries the same code.
+
+    Never call this from code running under a broad ``except Exception``: the
+    class ``ctx.exit`` raises inherits from RuntimeError, so such a handler
+    would turn the exit into an ordinary error and swallow the code. That is
+    why refusals live in the command layer, not inside the export loop, where
+    broad handlers are the rule.
+
+    NoReturn is part of the contract: both branches raise, and without the
+    annotation the code after a call reads as reachable -- `_resolve_output`
+    went on to load a config file it had just refused over.
     """
     if message:
         _error(message)

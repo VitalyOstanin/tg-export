@@ -950,6 +950,15 @@ class ExportState:
         messages is reported as zero rather than left out: the caller has no
         number of its own to fall back on but the top_message id Telegram
         offers, which is an approximation in the thousands, not a count.
+
+        The GROUP BY runs first and unconditionally, even though the recorded
+        numbers overwrite most of its result. Reading `export_state` first and
+        counting only the chats it leaves out would be exact only with a second
+        scan anyway: a run interrupted in phase 1 stores messages of a chat that
+        has no row there yet, and dropping those chats would put the top_message
+        approximation back on the index page. Measured on a base of a million
+        messages (126 MB, warm cache): the scan of the covering index costs
+        about 30 ms, once per run, against an export measured in minutes.
         """
         counts: dict[int, int] = {}
         async with self.db.execute("SELECT chat_id, COUNT(*) FROM messages GROUP BY chat_id") as cur:

@@ -484,8 +484,8 @@ other_data: true
 
 # Правила по типу чата. Точный тип важнее категории.
 # Категории: private, public, groups, channels, bots.
-# Точные типы: personal, bot, self, private_group, private_supergroup,
-#   public_supergroup, private_channel, public_channel.
+# Точные типы: personal, bot, self, replies, verify_codes, private_group,
+#   private_supergroup, public_supergroup, private_channel, public_channel.
 type_rules:
   bots:
     skip: true
