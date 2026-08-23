@@ -314,7 +314,8 @@ def _parse_concurrent_downloads(value: Any) -> int:
     return value
 
 
-def _parse_media_config(d: dict[str, Any]) -> MediaConfig:
+def _parse_media_config(d: dict[str, Any], section: str = "media") -> MediaConfig:
+    _check_keys(_require_mapping(d, section), _MEDIA_KEYS, section)
     return MediaConfig(
         types=_parse_media_types(d.get("types", ["photo"])),
         max_file_size_bytes=parse_size(d.get("max_file_size", "100MB")),
@@ -355,36 +356,59 @@ def _require_mapping(value: Any, field_name: str) -> dict[str, Any]:
     return value
 
 
-def _parse_chat_rule(d: dict[str, Any]) -> ChatRule:
-    media = _parse_media_config(d["media"]) if "media" in d else None
+def _check_keys(d: dict[str, Any], known: set[str], section: str) -> dict[str, Any]:
+    """Reject a key a section does not have.
+
+    The same reasoning as for the top level: an unknown key is a typo, and
+    reading a section through `.get(name, default)` turns that typo into a
+    silent change of behaviour -- `max_size` instead of `max_file_size` kept
+    the 100 MB default over the 10 MB that was asked for.
+    """
+    unknown = set(d) - known
+    if unknown:
+        unknown_str = ", ".join(sorted(str(k) for k in unknown))
+        known_str = ", ".join(sorted(known))
+        raise ConfigError(f"Unknown key(s) in {section}: {unknown_str}. Known keys: {known_str}")
+    return d
+
+
+def _parse_chat_rule(d: dict[str, Any], section: str = "chats[]") -> ChatRule:
+    _check_keys(d, _CHAT_RULE_KEYS, section)
+    if d.get("id") is None and d.get("name") is None:
+        # Neither branch of resolve_chat_config can match such a rule, so it
+        # would never apply while `tg-export config -v` still listed it.
+        raise ConfigError(f"{section} must name a chat by id or name: {d!r}")
+    media = _parse_media_config(d["media"], f"{section}.media") if "media" in d else None
     return ChatRule(
         id=d.get("id"),
         name=d.get("name"),
         media=media,
-        date_from=_parse_date(d.get("date_from"), "chats[].date_from"),
-        date_to=_parse_date(d.get("date_to"), "chats[].date_to"),
+        date_from=_parse_date(d.get("date_from"), f"{section}.date_from"),
+        date_to=_parse_date(d.get("date_to"), f"{section}.date_to"),
         skip=d.get("skip", False),
     )
 
 
-def _parse_type_rule(d: dict[str, Any]) -> TypeRule:
+def _parse_type_rule(d: dict[str, Any], section: str = "type_rules.*") -> TypeRule:
+    _check_keys(d, _TYPE_RULE_KEYS_INNER, section)
     if d.get("skip"):
         return TypeRule(skip=True)
-    media = _parse_media_config(d["media"]) if "media" in d else None
+    media = _parse_media_config(d["media"], f"{section}.media") if "media" in d else None
     return TypeRule(
         media=media,
-        date_from=_parse_date(d.get("date_from"), "type_rules.*.date_from"),
-        date_to=_parse_date(d.get("date_to"), "type_rules.*.date_to"),
+        date_from=_parse_date(d.get("date_from"), f"{section}.date_from"),
+        date_to=_parse_date(d.get("date_to"), f"{section}.date_to"),
         skip=False,
     )
 
 
-def _parse_folder_rule(d: dict[str, Any]) -> FolderRule:
+def _parse_folder_rule(d: dict[str, Any], section: str = "folders.*") -> FolderRule:
+    _check_keys(d, _FOLDER_RULE_KEYS, section)
     if d.get("skip"):
         return FolderRule(skip=True)
-    media = _parse_media_config(d["media"]) if "media" in d else None
+    media = _parse_media_config(d["media"], f"{section}.media") if "media" in d else None
     chats = [
-        _parse_chat_rule(_require_mapping(c, f"folders.*.chats[{i}]"))
+        _parse_chat_rule(_require_mapping(c, f"{section}.chats[{i}]"), f"{section}.chats[{i}]")
         for i, c in enumerate(d.get("chats", []))
     ]
     return FolderRule(media=media, skip=False, chats=chats)
@@ -406,6 +430,18 @@ _UNMATCHED_ACTIONS = {"skip", "export_with_defaults"}
 # Only HTML is rendered. "json"/"both" used to pass validation and show up in
 # `tg-export config -v` as an active setting while changing nothing.
 _OUTPUT_FORMATS = {"html"}
+
+# Known keys of every section, for the same reason the top level has them:
+# a name the loader does not know is a typo, and reading through a default
+# hides it. `action` sections carry exactly one key.
+_OUTPUT_KEYS = {"path", "format"}
+_DEFAULTS_KEYS = {"media", "date_from", "date_to", "export_service_messages"}
+_MEDIA_KEYS = {"types", "max_file_size", "concurrent_downloads"}
+_ACTION_SECTION_KEYS = {"action"}
+_CHAT_RULE_KEYS = {"id", "name", "media", "date_from", "date_to", "skip"}
+_TYPE_RULE_KEYS_INNER = {"media", "date_from", "date_to", "skip"}
+_FOLDER_RULE_KEYS = {"media", "skip", "chats"}
+_IMPORT_ENTRY_KEYS = {"path", "type"}
 
 # Known top-level config keys. An unknown key is most likely a typo in a
 # section name (e.g. `default` instead of `defaults`); without this check such
@@ -451,6 +487,7 @@ def _parse_import_entry(entry: Any) -> ImportExistingEntry:
     for key in ("path", "type"):
         if key not in entry:
             raise ConfigError(f"import_existing entry is missing the {key!r} key: {entry!r}")
+    _check_keys(entry, _IMPORT_ENTRY_KEYS, "import_existing[]")
     allowed = ", ".join(sorted(_IMPORT_TYPES))
     if entry["type"] not in _IMPORT_TYPES:
         raise ConfigError(f"Unknown import_existing type {entry['type']!r}; supported values: {allowed}")
@@ -462,6 +499,12 @@ def _validate_choice(value: str, allowed: set[str], field_name: str) -> str:
         allowed_str = ", ".join(sorted(allowed))
         raise ConfigError(f"Invalid value {value!r} for {field_name}; allowed values: {allowed_str}")
     return value
+
+
+def _parse_action_section(raw: dict[str, Any], section: str, allowed: set[str]) -> str:
+    """Read the single `action` key of a section that has only that key."""
+    data = _check_keys(_require_mapping(raw.get(section, {}), section), _ACTION_SECTION_KEYS, section)
+    return _validate_choice(data.get("action", "skip"), allowed, f"{section}.action")
 
 
 def load_config(path: Path) -> Config:
@@ -481,7 +524,7 @@ def load_config(path: Path) -> Config:
         raise ConfigError(f"Unknown config key(s): {unknown_str}. Known keys: {known_str}")
 
     # Output
-    out_raw = raw.get("output", {})
+    out_raw = _check_keys(_require_mapping(raw.get("output", {}), "output"), _OUTPUT_KEYS, "output")
     output = OutputConfig(
         # The shell expands ~ only for unquoted arguments, so a path written in
         # YAML reaches us verbatim: without this a directory literally named ~
@@ -491,10 +534,9 @@ def load_config(path: Path) -> Config:
     )
 
     # Defaults
-    def_raw = raw.get("defaults", {})
-    media_raw = def_raw.get("media", {})
+    def_raw = _check_keys(_require_mapping(raw.get("defaults", {}), "defaults"), _DEFAULTS_KEYS, "defaults")
     defaults = DefaultsConfig(
-        media=_parse_media_config(media_raw),
+        media=_parse_media_config(def_raw.get("media", {}), "defaults.media"),
         date_from=_parse_date(def_raw.get("date_from"), "defaults.date_from"),
         date_to=_parse_date(def_raw.get("date_to"), "defaults.date_to"),
         export_service_messages=def_raw.get("export_service_messages", True),
@@ -506,7 +548,9 @@ def load_config(path: Path) -> Config:
     # Folders
     folders = {}
     for name, folder_data in raw.get("folders", {}).items():
-        folders[name] = _parse_folder_rule(_require_mapping(folder_data, f"folders.{name}"))
+        folders[name] = _parse_folder_rule(
+            _require_mapping(folder_data, f"folders.{name}"), f"folders.{name}"
+        )
 
     # Type rules
     type_rules = {}
@@ -514,27 +558,22 @@ def load_config(path: Path) -> Config:
         if type_key not in _TYPE_RULE_KEYS:
             allowed = ", ".join(sorted(_TYPE_RULE_KEYS))
             raise ConfigError(f"Unknown key {type_key!r} in type_rules; allowed values: {allowed}")
-        type_rules[type_key] = _parse_type_rule(_require_mapping(type_data, f"type_rules.{type_key}"))
+        type_rules[type_key] = _parse_type_rule(
+            _require_mapping(type_data, f"type_rules.{type_key}"), f"type_rules.{type_key}"
+        )
 
     # Chats
-    chats = [_parse_chat_rule(_require_mapping(c, f"chats[{i}]")) for i, c in enumerate(raw.get("chats", []))]
+    chats = [
+        _parse_chat_rule(_require_mapping(c, f"chats[{i}]"), f"chats[{i}]")
+        for i, c in enumerate(raw.get("chats", []))
+    ]
 
-    # Left channels
-    lc_raw = raw.get("left_channels", {})
-    left_channels_action = lc_raw.get("action", "skip") if isinstance(lc_raw, dict) else "skip"
-    left_channels_action = _validate_choice(
-        left_channels_action, _LEFT_CHANNELS_ACTIONS, "left_channels.action"
-    )
-
-    # Archived
-    ar_raw = raw.get("archived", {})
-    archived_action = ar_raw.get("action", "skip") if isinstance(ar_raw, dict) else "skip"
-    archived_action = _validate_choice(archived_action, _ARCHIVED_ACTIONS, "archived.action")
-
-    # Unmatched
-    um_raw = raw.get("unmatched", {})
-    unmatched_action = um_raw.get("action", "skip") if isinstance(um_raw, dict) else "skip"
-    unmatched_action = _validate_choice(unmatched_action, _UNMATCHED_ACTIONS, "unmatched.action")
+    # Left channels, archived, unmatched: one `action` key each. A scalar used
+    # to fall back to "skip", turning `unmatched: export_with_defaults` into
+    # the opposite of what it says.
+    left_channels_action = _parse_action_section(raw, "left_channels", _LEFT_CHANNELS_ACTIONS)
+    archived_action = _parse_action_section(raw, "archived", _ARCHIVED_ACTIONS)
+    unmatched_action = _parse_action_section(raw, "unmatched", _UNMATCHED_ACTIONS)
 
     return Config(
         output=output,

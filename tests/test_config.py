@@ -438,3 +438,64 @@ def test_the_generated_template_names_every_section():
     # верхнего уровня, а не поля внутри них.
     supported = set(re.findall(r'(?<![\w])raw\.get\("([a-z_]+)"', loader))
     assert supported <= named, f"в шаблоне не названы разделы: {sorted(supported - named)}"
+
+
+def _write(tmp_path: Path, text: str) -> Path:
+    path = tmp_path / "config.yaml"
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def test_a_typo_inside_a_section_is_reported_not_replaced_by_a_default(tmp_path):
+    """Опечатка в имени ключа секции меняла поведение молча.
+
+    Проверка состава ключей действовала только на верхнем уровне, а внутри
+    секций всё читалось через .get с умолчанием: `max_size` вместо
+    `max_file_size` давал предел 100 MB вместо заданных 10 MB, `date_form`
+    вместо `date_from` -- выгрузку всей истории вместо среза, `paht` вместо
+    `path` -- выгрузку не в тот каталог.
+    """
+    cases = {
+        "output": "output:\n  paht: ./somewhere\n",
+        "defaults.media": "defaults:\n  media:\n    max_size: 10MB\n",
+        "defaults": "defaults:\n  date_form: 2024-01-01\n",
+        "left_channels": "left_channels:\n  actoin: export_with_defaults\n",
+        "chats": 'chats:\n  - nmae: "X"\n',
+    }
+    for section, text in cases.items():
+        with pytest.raises(ConfigError) as excinfo:
+            load_config(_write(tmp_path, text))
+        assert section.split(".")[0] in str(excinfo.value), (
+            f"сообщение не называет секцию {section}: {excinfo.value}"
+        )
+
+
+def test_an_action_section_written_as_a_scalar_is_an_error(tmp_path):
+    """`unmatched: export_with_defaults` означало ровно противоположное.
+
+    Не-отображение сводилось к "skip" тернарником, поэтому просьба выгружать
+    оборачивалась пропуском всех неохваченных чатов и кодом возврата 0.
+    """
+    for section in ("unmatched", "left_channels", "archived"):
+        with pytest.raises(ConfigError) as excinfo:
+            load_config(_write(tmp_path, f"{section}: export_with_defaults\n"))
+        assert section in str(excinfo.value)
+
+
+def test_a_chat_rule_that_names_no_chat_is_an_error(tmp_path):
+    """Правило без id и без name не совпадёт ни с одним чатом и молча мертво."""
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(_write(tmp_path, "chats:\n  - media:\n      types: [document]\n"))
+    assert "chats[0]" in str(excinfo.value)
+
+
+def test_a_section_written_as_a_scalar_names_the_section(tmp_path):
+    """`output: ./dir` падал AttributeError без имени файла и секции."""
+    for text, section in (
+        ("output: ./dir\n", "output"),
+        ("defaults: true\n", "defaults"),
+        ("defaults:\n  media: photo\n", "defaults.media"),
+    ):
+        with pytest.raises(ConfigError) as excinfo:
+            load_config(_write(tmp_path, text))
+        assert section in str(excinfo.value), f"сообщение не называет {section}: {excinfo.value}"
