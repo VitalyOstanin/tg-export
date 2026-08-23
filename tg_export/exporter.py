@@ -11,6 +11,7 @@ import signal
 import time
 import unicodedata
 from collections import deque
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, fields
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -888,13 +889,8 @@ class Exporter:
         except asyncio.CancelledError:
             self._force_shutdown = True
 
-        # Export global data (personal info, contacts, sessions, etc.)
         if not dry_run and not self._force_shutdown and not self._shutdown:
-            try:
-                self._status_print("\n[cyan]Exporting global data...[/]")
-                await self.export_global_data()
-            except Exception as e:
-                logger.warning("Failed to export global data: %s", e, exc_info=True)
+            await self._run_global_data_phase(stats)
 
         if verify and not self._force_shutdown:
             await self._verify_files(stats)
@@ -1296,46 +1292,55 @@ class Exporter:
         if counts_towards_volume and local_path and local_path.exists():
             stats.data_size += local_path.stat().st_size
 
-    async def export_global_data(self):
-        """Export personal_info, userpics, stories, contacts, sessions, etc."""
-        if self.config.personal_info:
-            try:
-                await self._export_personal_info()
-            except Exception as e:
-                logger.warning("Failed to export personal info: %s", e, exc_info=True)
+    async def _run_global_data_phase(self, stats: ExportStats) -> None:
+        """Run the global-data phase, recording a failure of the phase itself.
 
-        if self.config.contacts:
-            try:
-                await self._export_contacts()
-            except Exception as e:
-                logger.warning("Failed to export contacts: %s", e, exc_info=True)
+        A failing section is handled inside export_global_data; this catch is
+        for what happens around them, and it records the failure for the same
+        reason -- the exit code is counted from stats.errors.
+        """
+        try:
+            self._status_print("\n[cyan]Exporting global data...[/]")
+            await self.export_global_data(stats)
+        except Exception as e:
+            logger.warning("Failed to export global data: %s", e, exc_info=True)
+            stats.errors.append(f"global data: {describe_error(e)}")
 
-        if self.config.sessions:
-            try:
-                await self._export_sessions()
-            except Exception as e:
-                logger.warning("Failed to export sessions: %s", e, exc_info=True)
+    def _global_data_sections(self) -> tuple[tuple[bool, Callable[[], Awaitable[None]], str], ...]:
+        """The global-data phase: what is enabled, what exports it, how it is named.
 
-        if self.config.userpics:
-            try:
-                await self._export_userpics()
-            except Exception as e:
-                logger.warning("Failed to export userpics: %s", e, exc_info=True)
+        A table rather than six copies of the same try/except: the copies had
+        already drifted apart -- a change to one section's condition left the
+        other five as they were.
+        """
+        return (
+            (self.config.personal_info, self._export_personal_info, "personal info"),
+            (self.config.contacts, self._export_contacts, "contacts"),
+            (self.config.sessions, self._export_sessions, "sessions"),
+            (self.config.userpics, self._export_userpics, "userpics"),
+            (self.config.stories, self._export_stories, "stories"),
+            # The page holds the saved ringtones, which is what profile_music
+            # names; the flags used to be joined by "or", so profile_music:
+            # false changed nothing while other_data kept its default of true.
+            (self.config.profile_music, self._export_other_data, "other data"),
+        )
 
-        if self.config.stories:
-            try:
-                await self._export_stories()
-            except Exception as e:
-                logger.warning("Failed to export stories: %s", e, exc_info=True)
+    async def export_global_data(self, stats: ExportStats) -> None:
+        """Export personal_info, userpics, stories, contacts, sessions, etc.
 
-        # The page holds the saved ringtones, which is what profile_music names;
-        # the flags used to be joined by "or", so profile_music: false changed
-        # nothing while other_data kept its default of true.
-        if self.config.profile_music:
+        A section that fails does not stop the rest, but it is recorded in
+        ``stats.errors``: the exit code and the "Errors:" block of the summary
+        are counted from that list, so a phase that only logged its failures
+        left the run reporting success with nothing exported.
+        """
+        for enabled, export_section, label in self._global_data_sections():
+            if not enabled:
+                continue
             try:
-                await self._export_other_data()
+                await export_section()
             except Exception as e:
-                logger.warning("Failed to export other data: %s", e, exc_info=True)
+                logger.warning("Failed to export %s: %s", label, e, exc_info=True)
+                stats.errors.append(f"{label}: {describe_error(e)}")
 
     async def _export_personal_info(self):
         """Fetch and render personal info."""

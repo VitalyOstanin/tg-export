@@ -254,3 +254,50 @@ async def test_the_chat_loop_is_told_to_stop_when_the_disk_is_full(tmp_path):
 
     assert keep_going is False, "цикл по чатам продолжился при заполненном диске"
     assert stats.errors and "Free space" in stats.errors[0], f"причина остановки не записана: {stats.errors}"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_global_section_is_recorded_and_the_rest_go_on():
+    """Отказ подвыгрузки обязан попасть в сводку и в код возврата.
+
+    Код возврата и блок «Errors:» считаются по stats.errors, а шесть блоков
+    фазы глобальных данных только писали в журнал: прогон, где не выгрузились
+    ни контакты, ни сессии, ни аватары, завершался нулём и печатал
+    «Export complete».
+    """
+    from tg_export.config import Config
+
+    config = Config(
+        personal_info=False,
+        contacts=True,
+        sessions=True,
+        userpics=False,
+        stories=False,
+        profile_music=False,
+    )
+    exporter = _exporter(config=config)
+    exporter._export_contacts = AsyncMock(side_effect=RuntimeError("no connection"))
+    exporter._export_sessions = AsyncMock()
+    stats = ExportStats()
+
+    await exporter.export_global_data(stats)
+
+    exporter._export_sessions.assert_awaited_once(), "отказ одной секции прервал остальные"
+    assert stats.errors, "отказ подвыгрузки не попал в сводку и не изменит код возврата"
+    assert "contacts" in stats.errors[0] and "RuntimeError" in stats.errors[0], (
+        f"по записи не видно, что именно не выгрузилось: {stats.errors}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_failure_of_the_global_phase_itself_is_recorded_too():
+    """Перехват вокруг всей фазы считался по тому же списку, но в него не писал."""
+    exporter = _exporter()
+    exporter.export_global_data = AsyncMock(side_effect=RuntimeError("takeout expired"))
+    stats = ExportStats()
+
+    await exporter._run_global_data_phase(stats)
+
+    assert stats.errors and "RuntimeError" in stats.errors[0], (
+        f"отказ фазы не отражён ни в сводке, ни в коде возврата: {stats.errors}"
+    )
