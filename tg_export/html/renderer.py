@@ -16,7 +16,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from markupsafe import Markup
 
 from tg_export.config import OutputConfig
-from tg_export.format import format_size
+from tg_export.format import MOMENT_WITH_SECONDS_FORMAT, format_moment, format_size
 from tg_export.media import MEDIA_SUBDIRS
 from tg_export.models import (
     Chat,
@@ -24,6 +24,7 @@ from tg_export.models import (
     TextPart,
     TextType,
 )
+from tg_export.state import UNKNOWN_MONTH_KEY
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 STATIC_DIR = Path(__file__).parent / "static"
@@ -64,7 +65,7 @@ class HtmlRenderer:
         pages_info = []
         for key in month_keys:
             filename = f"messages_{key}.html"
-            if key == "0000-00":
+            if key == UNKNOWN_MONTH_KEY:
                 label = "Unknown date"
             else:
                 try:
@@ -99,7 +100,7 @@ class HtmlRenderer:
                         "author": first.from_name or "Unknown",
                         "author_initial": (first.from_name or "?")[0].upper(),
                         "time": first.date.strftime("%H:%M") if first.date else "",
-                        "full_date": first.date.strftime("%Y-%m-%d %H:%M:%S") if first.date else "",
+                        "full_date": format_moment(first.date, fmt=MOMENT_WITH_SECONDS_FORMAT),
                     }
                 )
                 prev_msg = entry[-1]
@@ -127,7 +128,7 @@ class HtmlRenderer:
                             "author": msg.from_name or "Unknown",
                             "author_initial": (msg.from_name or "?")[0].upper(),
                             "time": msg.date.strftime("%H:%M") if msg.date else "",
-                            "full_date": msg.date.strftime("%Y-%m-%d %H:%M:%S") if msg.date else "",
+                            "full_date": format_moment(msg.date, fmt=MOMENT_WITH_SECONDS_FORMAT),
                         }
                     )
                 prev_msg = msg
@@ -184,11 +185,11 @@ class HtmlRenderer:
         monthly: dict[str, list] = {}
         for entry in processed:
             first_msg = entry[0] if isinstance(entry, list) else entry
-            key = first_msg.date.strftime("%Y-%m") if first_msg.date else "0000-00"
+            key = first_msg.date.strftime("%Y-%m") if first_msg.date else UNKNOWN_MONTH_KEY
             monthly.setdefault(key, []).append(entry)
 
         if not monthly:
-            monthly = {"0000-00": []}
+            monthly = {UNKNOWN_MONTH_KEY: []}
 
         month_keys = sorted(monthly.keys())
         pages_info = self._build_pages_info(month_keys)
@@ -242,7 +243,7 @@ class HtmlRenderer:
             old.unlink()
 
         if not month_keys:
-            month_keys = ["0000-00"]
+            month_keys = [UNKNOWN_MONTH_KEY]
         pages_info = self._build_pages_info(sorted(month_keys))
         rel = _relative_path(chat_dir, self.output_dir)
         template = self.env.get_template("chat.html.j2")
@@ -287,7 +288,7 @@ class HtmlRenderer:
             title="Telegram Export - tg-export",
             css_path="css/style.css",
             js_path="js/script.js",
-            generated=datetime.now().strftime("%Y-%m-%d %H:%M"),
+            generated=format_moment(datetime.now()),
             folders_list=folders_list,
             unfiled=unfiled,
             sections=sections,
@@ -494,9 +495,8 @@ def render_text_parts(parts: list[TextPart]) -> Markup:
                 result.append(f'<a href="{href}">{text}</a>')
             else:
                 result.append(text)
-        elif tp.type == TextType.custom_emoji:
-            result.append(text)
         else:
+            # custom_emoji included: types without markup of their own go out as text.
             result.append(text)
     return Markup("".join(result))
 

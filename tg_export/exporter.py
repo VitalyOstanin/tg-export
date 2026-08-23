@@ -40,7 +40,7 @@ from tg_export.config import ChatExportConfig, Config
 # tg_export.console.
 from tg_export.console import console
 from tg_export.converter import convert_message
-from tg_export.format import format_size, format_speed
+from tg_export.format import format_moment, format_size, format_speed
 from tg_export.html.renderer import HtmlRenderer
 from tg_export.media import DiskSpaceError, DownloadProgress, DownloadStatus, MediaDownloader
 from tg_export.models import Chat, ForumTopic, Message
@@ -1507,12 +1507,7 @@ class Exporter:
         app_sessions = []
         for auth in getattr(sessions_result, "authorizations", []):
             date_active = getattr(auth, "date_active", None)
-            if isinstance(date_active, datetime):
-                date_str = date_active.strftime("%Y-%m-%d %H:%M")
-            elif date_active:
-                date_str = datetime.fromtimestamp(date_active).strftime("%Y-%m-%d %H:%M")
-            else:
-                date_str = ""
+            date_str = format_moment(date_active)
             app_sessions.append(
                 {
                     "app_name": getattr(auth, "app_name", ""),
@@ -1530,12 +1525,7 @@ class Exporter:
         web_sessions = []
         for web_auth in getattr(web_result, "authorizations", []):
             date_active = getattr(web_auth, "date_active", None)
-            if isinstance(date_active, datetime):
-                date_str = date_active.strftime("%Y-%m-%d %H:%M")
-            elif date_active:
-                date_str = datetime.fromtimestamp(date_active).strftime("%Y-%m-%d %H:%M")
-            else:
-                date_str = ""
+            date_str = format_moment(date_active)
             web_sessions.append(
                 {
                     "domain": getattr(web_auth, "domain", ""),
@@ -1570,9 +1560,7 @@ class Exporter:
                     file=str(photos_dir / f"photo_{seq}"),
                 )
                 if path:
-                    date_str = ""
-                    if hasattr(photo, "date") and photo.date:
-                        date_str = photo.date.strftime("%Y-%m-%d %H:%M")
+                    date_str = format_moment(getattr(photo, "date", None))
                     photos.append(
                         {
                             "path": f"profile_photos/{Path(str(path)).name}",
@@ -1635,9 +1623,7 @@ class Exporter:
                     failed += 1
                     logger.debug("Failed to download story %d: %s", story_id, e)
 
-            date_str = ""
-            if hasattr(item, "date") and item.date:
-                date_str = item.date.strftime("%Y-%m-%d %H:%M")
+            date_str = format_moment(getattr(item, "date", None))
 
             stories.append(
                 {

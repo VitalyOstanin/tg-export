@@ -1,4 +1,5 @@
 from datetime import datetime
+from pathlib import Path
 
 import pytest
 
@@ -373,3 +374,41 @@ def test_partially_rendered_chat_is_not_taken_for_a_current_one(tmp_path):
 
     (chat_dir / "messages.html").write_text("<html>", encoding="utf-8")
     assert Exporter._pages_are_current(chat_dir, stats) is True
+
+
+def test_custom_emoji_is_rendered_like_any_unhandled_type():
+    """Ветка `custom_emoji` дословно повторяла финальный `else` и была удалена.
+
+    `SIM114` такое не ловит: правило сравнивает соседние `elif`, но не `elif` с
+    финальным `else`. Тест закрепляет, что специального вывода у этого типа нет,
+    -- если он появится, ветку вернут вместе с проверкой.
+    """
+    emoji = render_text_parts([TextPart(type=TextType.custom_emoji, text="<b>x</b>")])
+    plain = render_text_parts([TextPart(type=TextType.text, text="<b>x</b>")])
+
+    assert emoji == plain == "&lt;b&gt;x&lt;/b&gt;"
+
+
+def test_the_bucket_for_dateless_messages_is_one_constant():
+    """Ключ-заглушка выписывался литералом в шести местах двух модулей.
+
+    Записывает его SQL в `state.py`, а подпись страницы строит рендерер: смена
+    значения в одном месте оставила бы «Unknown date» попыткой разобрать ключ
+    как `%Y-%m`. Проверяются обе стороны связи -- значение и отсутствие копий.
+    """
+    from tg_export.html.renderer import HtmlRenderer
+    from tg_export.state import UNKNOWN_MONTH_KEY
+
+    pages = HtmlRenderer._build_pages_info([UNKNOWN_MONTH_KEY, "2024-01"])
+
+    assert [p["label"] for p in pages] == ["Unknown date", "January 2024"]
+
+    package = Path(__file__).resolve().parent.parent / "tg_export"
+    copies = [
+        f"{path.relative_to(package)}:{i}"
+        for path in package.glob("**/*.py")
+        for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+        if "0000-00" in line and "UNKNOWN_MONTH_KEY =" not in line
+    ]
+
+    assert not copies, f"ключ выписан литералом мимо UNKNOWN_MONTH_KEY: {copies}"

@@ -2,6 +2,32 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
+# One wall-clock format for everything a person reads: message lists, session
+# tables, the "generated at" line. The seconds variant is what the chat pages
+# put into the title attribute of a timestamp.
+MOMENT_FORMAT = "%Y-%m-%d %H:%M"
+MOMENT_WITH_SECONDS_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+
+def format_moment(
+    value: datetime | int | float | None,
+    *,
+    fmt: str = MOMENT_FORMAT,
+    missing: str = "",
+) -> str:
+    """Format a moment given as a datetime, a unix timestamp or nothing.
+
+    Telegram hands the same field over in both shapes depending on the call,
+    and the branch telling them apart was copied per call site.
+    """
+    if isinstance(value, datetime):
+        return value.strftime(fmt)
+    if value:
+        return datetime.fromtimestamp(value).strftime(fmt)
+    return missing
+
 
 def format_size(size_bytes: float) -> str:
     """Format a byte count as a human-readable size (B / KB / MB / GB)."""

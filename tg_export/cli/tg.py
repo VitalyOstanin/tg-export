@@ -25,6 +25,7 @@ from tg_export.errors import (
     EXIT_FAILURE,
     EXIT_OK,
 )
+from tg_export.format import format_moment
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +64,30 @@ def tg_messages(chat_id, account, limit, truncate, no_truncate):
     asyncio.run(_tg_messages(chat_id, account, limit, truncate))
 
 
+def _sender_name(sender) -> str:
+    """Имя одной строкой: `first last`, пустая строка -- если имени нет."""
+    first = getattr(sender, "first_name", "") or ""
+    last = getattr(sender, "last_name", "") or ""
+    return f"{first} {last}".strip()
+
+
+def _message_preview(msg, *, truncate: int = DEFAULT_MESSAGE_TEXT_LENGTH) -> tuple[str, str]:
+    """Пара (отправитель, текст) для строки списка сообщений.
+
+    Медиа показывается типом в квадратных скобках, служебное сообщение -- своим
+    действием в круглых. Сборка была скопирована в `tg messages` и в `tg info`,
+    и копии успели разойтись: одна резала текст по настройке, другая литералом.
+    """
+    sender = _sender_name(msg.sender) if msg.sender else ""
+    text = msg.message or ""
+    if msg.media:
+        media_type = msg.media.__class__.__name__.replace("MessageMedia", "")
+        text = f"[{media_type}] {text}" if text else f"[{media_type}]"
+    if msg.action:
+        text = f"({msg.action.__class__.__name__.replace('MessageAction', '')})"
+    return sender, text[:truncate] if truncate else text
+
+
 async def _tg_messages(chat_id, account, limit, truncate=DEFAULT_MESSAGE_TEXT_LENGTH):
 
     async with common._connected_api(account) as (api, account):
@@ -71,30 +96,13 @@ async def _tg_messages(chat_id, account, limit, truncate=DEFAULT_MESSAGE_TEXT_LE
         click.echo(f"# {title} (id={chat_id})\n")
 
         async for msg in api.client.iter_messages(entity, limit=limit):  # pyright: ignore[reportArgumentType]
-            date_str = msg.date.strftime("%Y-%m-%d %H:%M") if msg.date else "?"
-            sender = ""
-            if msg.sender:
-                sender = getattr(msg.sender, "first_name", "") or ""
-                last = getattr(msg.sender, "last_name", "") or ""
-                if last:
-                    sender = f"{sender} {last}"
-            text = msg.message or ""
-            if msg.media:
-                media_type = msg.media.__class__.__name__.replace("MessageMedia", "")
-                text = f"[{media_type}] {text}" if text else f"[{media_type}]"
-            if msg.action:
-                action_type = msg.action.__class__.__name__.replace("MessageAction", "")
-                text = f"({action_type})"
-
-            if truncate:
-                text = text[:truncate]
+            date_str = format_moment(msg.date, missing="?")
+            sender, text = _message_preview(msg, truncate=truncate)
             click.echo(f"  {date_str}  [{msg.id}]  {sender}: {text}")
 
 
 def _entity_name(entity) -> str:
-    first = getattr(entity, "first_name", "") or ""
-    last = getattr(entity, "last_name", "") or ""
-    return f"{first} {last}".strip() or "Unknown"
+    return _sender_name(entity) or "Unknown"
 
 
 @tg.command("info")
@@ -198,21 +206,12 @@ async def _tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_fi
                 last_date = None
                 messages = []
                 for msg in result.messages:
-                    date_str = msg.date.strftime("%Y-%m-%d %H:%M") if msg.date else "?"
+                    date_str = format_moment(msg.date, missing="?")
                     if last_date is None:
                         last_date = date_str
                     if last_n > 0:
-                        sender = ""
-                        if msg.sender:
-                            sender = getattr(msg.sender, "first_name", "") or ""
-                            last = getattr(msg.sender, "last_name", "") or ""
-                            if last:
-                                sender = f"{sender} {last}"
-                        text = msg.message or ""
-                        if msg.media:
-                            media_type = msg.media.__class__.__name__.replace("MessageMedia", "")
-                            text = f"[{media_type}] {text}" if text else f"[{media_type}]"
-                        messages.append({"date": date_str, "sender": sender, "text": text[:200]})
+                        sender, text = _message_preview(msg)
+                        messages.append({"date": date_str, "sender": sender, "text": text})
 
                 entry = {
                     "id": cid,

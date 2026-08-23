@@ -654,3 +654,44 @@ def test_upload_progress_yields_nothing_under_a_running_live(monkeypatch):
         cli_tg._upload_progress(by_bytes=True) as progress,
     ):
         assert progress is None
+
+
+def _preview_message(text=None, media=None, action=None, first="Ann", last="Lee"):
+    msg = MagicMock()
+    msg.message = text
+    msg.media = media
+    msg.action = action
+    msg.sender = MagicMock(first_name=first, last_name=last)
+    return msg
+
+
+def test_the_preview_of_a_message_is_built_in_one_place():
+    """Сборка пары (отправитель, текст) была скопирована в `messages` и в `info`.
+
+    Копии разошлись: одна резала текст по `DEFAULT_MESSAGE_TEXT_LENGTH`, другая
+    литералом 200, и правка настройки меняла вывод только одной команды.
+    """
+    from tg_export.cli.tg import _message_preview
+
+    assert _message_preview(_preview_message("hello")) == ("Ann Lee", "hello")
+    assert _message_preview(_preview_message(None, first="", last="")) == ("", "")
+
+    photo = MagicMock()
+    photo.__class__.__name__ = "MessageMediaPhoto"
+    assert _message_preview(_preview_message("cat", media=photo))[1] == "[Photo] cat"
+    assert _message_preview(_preview_message(None, media=photo))[1] == "[Photo]"
+
+    created = MagicMock()
+    created.__class__.__name__ = "MessageActionChatCreate"
+    assert _message_preview(_preview_message("ignored", action=created))[1] == "(ChatCreate)"
+
+
+def test_the_preview_is_cut_at_the_configured_length():
+    """Длину задаёт настройка модуля, а не литерал в одной из команд."""
+    from tg_export.cli.tg import _message_preview
+
+    long_text = "x" * (cli_common.DEFAULT_MESSAGE_TEXT_LENGTH + 50)
+    _, cut = _message_preview(_preview_message(long_text))
+
+    assert len(cut) == cli_common.DEFAULT_MESSAGE_TEXT_LENGTH
+    assert _message_preview(_preview_message(long_text), truncate=0)[1] == long_text

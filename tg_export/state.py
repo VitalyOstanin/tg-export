@@ -44,6 +44,11 @@ logger = logging.getLogger(__name__)
 # seconds on a large batch. One constant so every connection waits the same.
 DB_TIMEOUT_SECONDS = 30.0
 
+# Bucket key for messages that carry no date. Written by the SQL below and
+# read by the renderer, which turns it into the page title -- one constant so
+# that changing it cannot leave one of the two behind.
+UNKNOWN_MONTH_KEY = "0000-00"
+
 # Pragmas that make sense for any connection to this database, reading or
 # writing: they size the cache and keep temporaries in memory. Declared once so
 # that the read-only connection of the renderer gets the same treatment as the
@@ -221,7 +226,7 @@ def _row_to_message(row: dict[str, Any]) -> Message:
 
 def _load_month(db: sqlite3.Connection, chat_id: int, month_key: str) -> list[Message]:
     """Read one month of a chat from an already open connection."""
-    if month_key == "0000-00":
+    if month_key == UNKNOWN_MONTH_KEY:
         cur = db.execute(
             "SELECT * FROM messages WHERE chat_id=? AND date IS NULL ORDER BY msg_id",
             (chat_id,),
@@ -798,10 +803,10 @@ class ExportState:
     async def list_message_months(self, chat_id: int) -> list[str]:
         """Return sorted list of "YYYY-MM" keys present for the chat.
 
-        Messages with NULL date are bucketed into "0000-00".
+        Messages with NULL date are bucketed into ``UNKNOWN_MONTH_KEY``.
         """
         sql = (
-            "SELECT DISTINCT COALESCE(strftime('%Y-%m', date), '0000-00') AS m "
+            f"SELECT DISTINCT COALESCE(strftime('%Y-%m', date), '{UNKNOWN_MONTH_KEY}') AS m "
             "FROM messages WHERE chat_id=? ORDER BY m"
         )
         async with self.db.execute(sql, (chat_id,)) as cur:
