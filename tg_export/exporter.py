@@ -394,9 +394,10 @@ class _MediaPipeline:
         # message be handed back only after its own download finished, and it
         # is what keeps the window at `limit` instead of the whole chat. The
         # group's other property, cancelling the siblings when one task fails,
-        # buys nothing here: _process_media records its failures in the
-        # statistics and does not raise. What a task group would give for free
-        # -- keeping references to running tasks -- the deque already does.
+        # buys nothing here: _process_media records the failure of a single
+        # file in the statistics and only raises when the run itself must end.
+        # What a task group would give for free -- keeping references to
+        # running tasks -- the deque already does.
         for task, _ in self._pending:
             task.cancel()
         if self._pending:
@@ -424,7 +425,9 @@ class _MediaPipeline:
 
     async def _take_oldest(self) -> Message:
         task, msg = self._pending.popleft()
-        # _process_media records its own failures in stats and does not raise.
+        # _process_media records the failure of a single file in stats; what
+        # it does raise (DiskSpaceError) has to end the export, so it is not
+        # caught here.
         await task
         return msg
 
@@ -1246,6 +1249,12 @@ class Exporter:
             if local_path and msg.media.file:
                 msg.media.file.local_path = str(local_path)
             self._count_download(status, local_path, stats)
+        except DiskSpaceError:
+            # The one failure that is not about this file: with no free space
+            # every remaining message fails the same way. Let it through to
+            # _export_chat_entry, which ends the run instead of filling the
+            # summary with one line per message.
+            raise
         except Exception as e:
             # Without this line the count in the summary was all that survived:
             # the exception never reached logging, so no log level could

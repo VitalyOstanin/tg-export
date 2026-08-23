@@ -201,3 +201,56 @@ async def test_pages_are_built_when_they_are_missing(tmp_path):
     await exporter._render_chat_html(MagicMock(id=1, name="Chat"), tmp_path / "absent", stats)
 
     state.list_message_months.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_full_disk_stops_the_run_instead_of_being_counted_per_file(tmp_path):
+    """Кончившееся место -- причина остановить прогон, а не отказ одного файла.
+
+    Пока DiskSpaceError забирал общий `except Exception`, ветка остановки в
+    _export_chat_entry была недостижима: прогон шёл по всем оставшимся
+    сообщениям, ничего не скачивая, и складывал в сводку десятки тысяч
+    одинаковых строк «Media error ...».
+    """
+    from tg_export.media import DiskSpaceError
+
+    downloader = MagicMock()
+    downloader.download = AsyncMock(side_effect=DiskSpaceError("Free space less than 5 GB"))
+    exporter = _exporter(downloader=downloader)
+
+    msg = MagicMock()
+    msg.id = 42
+    msg.media = MagicMock()
+    stats = ExportStats()
+
+    with pytest.raises(DiskSpaceError):
+        await exporter._process_media(msg, MagicMock(), tmp_path, stats, chat_id=555)
+
+    assert not stats.errors, f"нехватка места учтена как отказ одного файла: {stats.errors}"
+
+
+@pytest.mark.asyncio
+async def test_the_chat_loop_is_told_to_stop_when_the_disk_is_full(tmp_path):
+    """Возврат False из _export_chat_entry -- то, чем прерывается цикл по чатам."""
+    from tg_export.media import DiskSpaceError
+
+    state = MagicMock()
+    state.cache_catalog = AsyncMock()
+    exporter = _exporter(state=state)
+    exporter.export_chat = AsyncMock(side_effect=DiskSpaceError("Free space less than 5 GB"))
+    exporter._cleanup_orphaned_files = AsyncMock()
+    exporter.downloader.tdesktop_indexes = []
+
+    chat = MagicMock(id=1, folder=None, is_left=False, is_archived=False)
+    # `name` -- служебный аргумент конструктора MagicMock, задаётся отдельно.
+    chat.name = "Chat"
+    chat.type.value = "private"
+    chat.messages_count = 1
+    stats = ExportStats()
+
+    keep_going = await exporter._export_chat_entry(
+        chat, MagicMock(), tmp_path, stats, MagicMock(), MagicMock()
+    )
+
+    assert keep_going is False, "цикл по чатам продолжился при заполненном диске"
+    assert stats.errors and "Free space" in stats.errors[0], f"причина остановки не записана: {stats.errors}"
