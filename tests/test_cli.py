@@ -930,3 +930,34 @@ def test_the_confirmation_question_goes_to_stderr(tmp_path, account_env):
     assert result.exit_code == 0, result.output
     assert result.stdout == "", f"stdout принадлежит машиночитаемому выводу: {result.stdout!r}"
     assert "Delete all data for this chat?" in result.stderr
+
+
+def test_the_state_table_rule_matches_its_header(tmp_path, account_env):
+    """Линейка под шапкой была несвязанным числом 80 при шапке в 62 знака.
+
+    Ширины колонок выписаны в двух форматных строках, а длина разделителя -- в
+    третьем месте, поэтому правка любой ширины требовала синхронной правки
+    трёх мест, а совпадения не было и до неё.
+    """
+    import asyncio
+
+    from tg_export.cli.common import STATE_DB_NAME
+    from tg_export.state import ExportState
+
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    (account_env / "acc.yaml").write_text(f"output:\n  path: {out_dir}\n")
+
+    async def fill():
+        async with ExportState(out_dir / STATE_DB_NAME) as state:
+            await state.set_last_msg_id(42, 7)
+
+    asyncio.run(fill())
+
+    result = CliRunner().invoke(main, ["state", "show"])
+
+    assert result.exit_code == 0, result.output
+    header, rule, *data = result.stdout.splitlines()
+    assert set(rule) == {"-"}, rule
+    assert len(rule) == len(header), f"шапка {len(header)}, линейка {len(rule)}"
+    assert all(len(line) <= len(rule) or line.startswith(header[:7]) for line in data)

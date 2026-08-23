@@ -10,6 +10,21 @@ from datetime import datetime
 MOMENT_FORMAT = "%Y-%m-%d %H:%M"
 MOMENT_WITH_SECONDS_FORMAT = "%Y-%m-%d %H:%M:%S"
 
+# The chat pages read as a conversation, so they date a message the way a
+# person would say it and give the clock alone under each hour.
+DAY_FORMAT = "%B %d, %Y"
+TIME_FORMAT = "%H:%M"
+
+# What a machine reads: the catalog date of the last message, the moment a
+# catalog was generated, and the key a month page is named by.
+DATE_FORMAT = "%Y-%m-%d"
+ISO_MOMENT_FORMAT = "%Y-%m-%dT%H:%M:%S"
+MONTH_KEY_FORMAT = "%Y-%m"
+MONTH_LABEL_FORMAT = "%B %Y"
+
+# Clock alone, for the line that says when a run started.
+CLOCK_FORMAT = "%H:%M:%S"
+
 
 def format_moment(
     value: datetime | int | float | None,

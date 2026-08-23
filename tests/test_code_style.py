@@ -1005,3 +1005,25 @@ def test_types_written_with_vars_stay_flat():
             if nested:
                 offenders.append(f"{cls.__name__}.{field.name}: {nested}")
     assert not offenders, f"через vars() пишутся типы с вложенными dataclass: {offenders}"
+
+
+def test_no_time_format_is_spelled_as_a_literal():
+    """Формат времени, выписанный литералом, расходится с соседним таким же.
+
+    `format.py` заведён ровно для этого: разбор «datetime / unix / ничего» и
+    сами форматы объявлены там. В рендерере при этом оставались `"%B %d, %Y"`
+    и `"%H:%M"` по два раза каждый, а конструкция `X.date.strftime(...) if
+    X.date else ""` -- четыре раза, хотя это и есть содержимое `format_moment`.
+    """
+    offenders = []
+    for path in sorted(PROJECT.glob("**/*.py")):
+        if path.name == "format.py":
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in _calls(tree):
+            if _called_name(node) not in {"strftime", "strptime"}:
+                continue
+            for argument in node.args:
+                if isinstance(argument, ast.Constant) and isinstance(argument.value, str):
+                    offenders.append(f"{path.relative_to(PROJECT)}:{node.lineno} {argument.value!r}")
+    assert not offenders, f"формат времени выписан литералом: {offenders}"

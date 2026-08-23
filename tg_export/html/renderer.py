@@ -16,7 +16,15 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from markupsafe import Markup
 
 from tg_export.config import OutputConfig
-from tg_export.format import MOMENT_WITH_SECONDS_FORMAT, format_moment, format_size
+from tg_export.format import (
+    DAY_FORMAT,
+    MOMENT_WITH_SECONDS_FORMAT,
+    MONTH_KEY_FORMAT,
+    MONTH_LABEL_FORMAT,
+    TIME_FORMAT,
+    format_moment,
+    format_size,
+)
 from tg_export.media import MEDIA_SUBDIR_NAMES
 from tg_export.models import (
     Chat,
@@ -69,67 +77,64 @@ class HtmlRenderer:
                 label = "Unknown date"
             else:
                 try:
-                    dt = datetime.strptime(key, "%Y-%m")
-                    label = dt.strftime("%B %Y")
+                    dt = datetime.strptime(key, MONTH_KEY_FORMAT)
+                    label = dt.strftime(MONTH_LABEL_FORMAT)
                 except ValueError:
                     label = key
             pages_info.append({"key": key, "filename": filename, "label": label})
         return pages_info
 
     @staticmethod
+    def _authored(item_type: str, moment, author: str | None, **extra) -> dict[str, Any]:
+        """The fields every authored item carries: who wrote it and when.
+
+        An album and a single message differ in what they hold, not in how they
+        are stamped -- the four keys used to be written out twice.
+        """
+        return {
+            "type": item_type,
+            "author": author or "Unknown",
+            "author_initial": (author or "?")[0].upper(),
+            "time": format_moment(moment, fmt=TIME_FORMAT),
+            "full_date": format_moment(moment, fmt=MOMENT_WITH_SECONDS_FORMAT),
+            **extra,
+        }
+
+    @staticmethod
     def _build_items(processed: list[Any]) -> list[dict[str, Any]]:
         items: list[dict] = []
         prev_msg = None
         prev_date = None
+
+        def open_day(moment) -> None:
+            """Start a new day in the page when the previous item was another one."""
+            nonlocal prev_date
+            day = moment.date() if moment else None
+            if day != prev_date:
+                items.append({"type": "date_separator", "date": format_moment(moment, fmt=DAY_FORMAT)})
+                prev_date = day
+
         for entry in processed:
             if isinstance(entry, list):
                 first = entry[0]
-                msg_date = first.date.date() if first.date else None
-                if msg_date != prev_date:
-                    items.append(
-                        {
-                            "type": "date_separator",
-                            "date": first.date.strftime("%B %d, %Y") if first.date else "",
-                        }
-                    )
-                    prev_date = msg_date
-                items.append(
-                    {
-                        "type": "album",
-                        "msgs": entry,
-                        "author": first.from_name or "Unknown",
-                        "author_initial": (first.from_name or "?")[0].upper(),
-                        "time": first.date.strftime("%H:%M") if first.date else "",
-                        "full_date": format_moment(first.date, fmt=MOMENT_WITH_SECONDS_FORMAT),
-                    }
-                )
+                open_day(first.date)
+                items.append(HtmlRenderer._authored("album", first.date, first.from_name, msgs=entry))
                 prev_msg = entry[-1]
             else:
                 msg = entry
-                msg_date = msg.date.date() if msg.date else None
-                if msg_date != prev_date:
-                    items.append(
-                        {
-                            "type": "date_separator",
-                            "date": msg.date.strftime("%B %d, %Y") if msg.date else "",
-                        }
-                    )
-                    prev_date = msg_date
+                open_day(msg.date)
 
                 if msg.action:
                     items.append({"type": "service", "msg": msg})
                 else:
-                    joined = is_joined(msg, prev_msg)
                     items.append(
-                        {
-                            "type": "message",
-                            "msg": msg,
-                            "joined": joined,
-                            "author": msg.from_name or "Unknown",
-                            "author_initial": (msg.from_name or "?")[0].upper(),
-                            "time": msg.date.strftime("%H:%M") if msg.date else "",
-                            "full_date": format_moment(msg.date, fmt=MOMENT_WITH_SECONDS_FORMAT),
-                        }
+                        HtmlRenderer._authored(
+                            "message",
+                            msg.date,
+                            msg.from_name,
+                            msg=msg,
+                            joined=is_joined(msg, prev_msg),
+                        )
                     )
                 prev_msg = msg
         return items
@@ -185,7 +190,7 @@ class HtmlRenderer:
         monthly: dict[str, list] = {}
         for entry in processed:
             first_msg = entry[0] if isinstance(entry, list) else entry
-            key = first_msg.date.strftime("%Y-%m") if first_msg.date else UNKNOWN_MONTH_KEY
+            key = format_moment(first_msg.date, fmt=MONTH_KEY_FORMAT) or UNKNOWN_MONTH_KEY
             monthly.setdefault(key, []).append(entry)
 
         if not monthly:

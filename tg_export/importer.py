@@ -34,6 +34,16 @@ _TDESKTOP_MEDIA_SUBDIRS = (
 # to reach the same two attributes, and the scan below runs line by line
 # without holding the document in memory. If tdesktop ever changes the shape
 # of its output, this is the place that has to change with it.
+# How many lines of the tdesktop page are read looking for the chat name: it
+# sits in the header, and reading the whole page -- megabytes of messages --
+# to find it would cost the entire import.
+_CHAT_NAME_HEADER_LINES = 50
+
+# Upper bound on the number of `messagesN.html` pages of one chat. The loop
+# stops at the first missing page; the bound only keeps a mistake from turning
+# into an endless walk.
+_MAX_TDESKTOP_PAGES = 10000
+
 _MSG_ID_RE = re.compile(r'id="message(\d+)"')
 _HREF_RE = re.compile(r'href="[^"]*?/chats/[^"]*?/(' + "|".join(_TDESKTOP_MEDIA_SUBDIRS) + r')/([^"]+)"')
 
@@ -125,12 +135,12 @@ class TdesktopIndex:
 def _extract_chat_name(msg_html: Path) -> str | None:
     """Extract chat name from tdesktop messages.html header.
 
-    Reads only first ~50 lines to find the chat name in the header.
+    Reads only the first `_CHAT_NAME_HEADER_LINES` lines: the name is in the header.
     """
     try:
         with open(msg_html, encoding="utf-8") as f:
             for i, line in enumerate(f):
-                if i > 50:
+                if i > _CHAT_NAME_HEADER_LINES:
                     break
                 if "text bold" in line:
                     # Next line contains the chat name
@@ -154,7 +164,7 @@ def _parse_chat_media(chat_dir: Path) -> dict[int, list[Path]]:
 
     # Collect all message HTML files in order
     html_files = [chat_dir / "messages.html"]
-    for i in range(2, 10000):
+    for i in range(2, _MAX_TDESKTOP_PAGES):
         f = chat_dir / f"messages{i}.html"
         if not f.exists():
             break

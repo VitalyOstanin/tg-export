@@ -213,6 +213,18 @@ async def _resolve_entities(api, ids: list) -> dict:
 # overlap the requests -- kept low, since the server counts them per account.
 INFO_CONCURRENCY = 4
 
+# How far around a message its album neighbours are looked for. Telegram sends
+# an album as up to ten separate messages posted in one go, so their ids sit
+# close together -- but they are not required to be consecutive, and a message
+# posted in between shifts them apart. A wider window costs one request either
+# way, a narrower one loses parts of the album.
+_ALBUM_ID_WINDOW = 10
+
+# How much of a file is hashed to tell two downloads apart. The head alone is
+# enough to separate different files of the same size, and reading a whole
+# video for a duplicate check is not.
+_FINGERPRINT_HEAD_BYTES = 64 * 1024
+
 
 async def _one_chat_info(api, cid, entity, *, last_n: int) -> dict:
     """Counters and the last messages of one chat, or the error it answered with."""
@@ -536,7 +548,7 @@ def tg_download(account, output, chat_id, msg_id):
         _fail(code=exit_code)
 
 
-def _file_head_sha256(path: Path, n_bytes: int = 64 * 1024) -> str:
+def _file_head_sha256(path: Path, n_bytes: int = _FINGERPRINT_HEAD_BYTES) -> str:
     """SHA-256 of the first n_bytes of a file (cheap content fingerprint)."""
     h = hashlib.sha256()
     with path.open("rb") as f:
@@ -611,8 +623,8 @@ async def _tg_download(account_name: str | None, chat_id: int, msg_id: int, out:
             count = 0
             async for grouped_msg in api.client.iter_messages(
                 chat_id,
-                min_id=msg_id - 10,
-                max_id=msg_id + 10,
+                min_id=msg_id - _ALBUM_ID_WINDOW,
+                max_id=msg_id + _ALBUM_ID_WINDOW,
             ):
                 if (
                     grouped_msg.grouped_id == tl_msg.grouped_id

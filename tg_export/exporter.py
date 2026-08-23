@@ -46,7 +46,7 @@ from tg_export.config import ChatExportConfig, Config
 # tg_export.console.
 from tg_export.console import console
 from tg_export.converter import convert_message
-from tg_export.format import format_moment, format_size, format_speed
+from tg_export.format import CLOCK_FORMAT, format_moment, format_size, format_speed
 from tg_export.html.renderer import HtmlRenderer
 from tg_export.media import (
     STORY_VIDEO_EXTENSIONS,
@@ -827,7 +827,7 @@ class Exporter:
             date_from = self.config.defaults.date_from or "..."
             date_to = self.config.defaults.date_to or "..."
             self._status_print(f"[dim]date range: {date_from} — {date_to}[/]")
-        self._status_print(f"[dim]started at {datetime.now().strftime('%H:%M:%S')}[/]\n")
+        self._status_print(f"[dim]started at {format_moment(datetime.now(), fmt=CLOCK_FORMAT)}[/]\n")
 
     def _make_progress_widgets(self):
         """Build the two Progress widgets of the live display."""

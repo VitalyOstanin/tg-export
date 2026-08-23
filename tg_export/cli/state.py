@@ -25,6 +25,31 @@ def state():
     """Manage export state (reset, show status, force re-export)."""
 
 
+# One place per column: the header, every row and the rule under the header are
+# built from this. The widths used to be written twice and the length of the
+# rule a third time, as the unrelated number 80 -- which matched neither the
+# header (62 characters) nor a row with an ISO date (77).
+_STATE_TABLE_COLUMNS = (
+    ("chat_id", 15),
+    ("msgs", 6),
+    ("last_id", 8),
+    ("oldest_id", 9),
+    ("full", 4),
+    ("updated_at", 0),
+)
+
+
+def _state_table_row(values) -> str:
+    """One line of the `state show` table, columns as wide as the header says."""
+    return "  ".join(
+        f"{value:>{width}}" if width else str(value)
+        for value, (_, width) in zip(values, _STATE_TABLE_COLUMNS, strict=True)
+    )
+
+
+_STATE_TABLE_HEADER = _state_table_row([title for title, _ in _STATE_TABLE_COLUMNS])
+
+
 @state.command("show")
 @click.option("--account", default=None, help=common.ACCOUNT_HELP)
 @click.option(
@@ -91,16 +116,20 @@ async def _state_show(account, config_override, output_override, chat_id, as_jso
             if not rows:
                 common._diag("No export state records.")
                 return
-            click.echo(
-                f"{'chat_id':>15}  {'msgs':>6}  {'last_id':>8}  {'oldest_id':>9}  {'full':>4}  updated_at"
-            )
-            click.echo("-" * 80)
+            header = _STATE_TABLE_HEADER
+            click.echo(header)
+            click.echo("-" * len(header))
             for r in rows:
                 r = dict(r)
-                full = "yes" if r["full_history"] else "no"
-                click.echo(
-                    f"{r['chat_id']:>15}  {r['msg_count']:>6}  {r['last_msg_id']:>8}  {r['oldest_msg_id']:>9}  {full:>4}  {r['updated_at']}"
+                values = (
+                    r["chat_id"],
+                    r["msg_count"],
+                    r["last_msg_id"],
+                    r["oldest_msg_id"],
+                    "yes" if r["full_history"] else "no",
+                    r["updated_at"],
                 )
+                click.echo(_state_table_row(values))
 
 
 @state.command("reset")

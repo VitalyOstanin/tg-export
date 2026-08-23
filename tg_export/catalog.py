@@ -10,6 +10,7 @@ from typing import Any
 
 import yaml
 
+from tg_export.format import DATE_FORMAT, ISO_MOMENT_FORMAT, format_moment
 from tg_export.models import Chat, ChatType
 
 logger = logging.getLogger(__name__)
@@ -56,7 +57,7 @@ def _chat_to_dict(chat: Chat) -> dict[str, Any]:
         "messages": chat.messages_count,
     }
     if chat.last_message_date:
-        d["last_message"] = chat.last_message_date.strftime("%Y-%m-%d")
+        d["last_message"] = format_moment(chat.last_message_date, fmt=DATE_FORMAT)
     if chat.members_count is not None:
         d["members"] = chat.members_count
     if chat.username:
@@ -98,7 +99,7 @@ def _chat_from_dict(d, *, folder=None, is_archived=False, is_left=False) -> Chat
     last_message = d.get("last_message")
     if isinstance(last_message, str):
         try:
-            last_message = datetime.strptime(last_message, "%Y-%m-%d")
+            last_message = datetime.strptime(last_message, DATE_FORMAT)
         except ValueError:
             raise ConfigError(f"bad last_message {last_message!r} in catalog entry id={d['id']}") from None
     elif last_message is not None and not isinstance(last_message, datetime):
@@ -176,7 +177,7 @@ def format_catalog_yaml(chats: list[Chat]) -> str:
             unfiled.append(d)
 
     result: dict = {
-        "generated": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+        "generated": format_moment(datetime.now(), fmt=ISO_MOMENT_FORMAT),
     }
 
     if folders:

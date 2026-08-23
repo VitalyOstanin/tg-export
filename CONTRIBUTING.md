@@ -225,6 +225,7 @@ uv run pyright
 | 37 | вопросы пользователю задаются помощниками `ask`/`confirm`, не в stdout   | `test_no_question_is_asked_on_stdout`                            |
 | 38 | объявленная константа модуля где-то читается                            | `test_no_module_constant_is_declared_and_never_read`             |
 | 39 | типы, записываемые через `vars()`, не содержат полей-dataclass          | `test_types_written_with_vars_stay_flat`                         |
+| 40 | формат даты и времени берётся из `format.py`, а не пишется литералом    | `test_no_time_format_is_spelled_as_a_literal`                    |
 
 ## Схема базы состояния
 
