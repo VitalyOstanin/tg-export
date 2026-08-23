@@ -83,3 +83,28 @@ def test_every_documentation_link_resolves():
                 broken.append(f"{rel}: {target} -- в файле нет такого заголовка")
 
     assert not broken, "оборванные ссылки в документации:\n" + "\n".join(broken)
+
+
+def test_every_adr_is_listed_in_the_index():
+    """Запись, которой нет в оглавлении ADR, не найдут.
+
+    Оглавление ведётся вручную; каталог растёт по одной записи за решение, и
+    пропуск обнаруживается только при следующем чтении каталога целиком.
+    """
+    adr_dir = ROOT / "docs" / "adr"
+    index = (adr_dir / "README.md").read_text(encoding="utf-8")
+    records = sorted(p.name for p in adr_dir.glob("[0-9][0-9][0-9][0-9]-*.md"))
+
+    missing = [name for name in records if f"({name})" not in index]
+    assert not missing, f"нет в оглавлении docs/adr/README.md: {missing}"
+
+
+def test_every_adr_declares_its_status_and_sections():
+    """Тело ADR неизменяемо, поэтому его состав проверяется при добавлении."""
+    required = ("## Контекст", "## Рассмотренные варианты", "## Решение", "## Последствия")
+    incomplete = []
+    for path in sorted((ROOT / "docs" / "adr").glob("[0-9][0-9][0-9][0-9]-*.md")):
+        source = path.read_text(encoding="utf-8")
+        if "- Статус:" not in source or any(section not in source for section in required):
+            incomplete.append(path.name)
+    assert not incomplete, f"ADR без статуса или обязательного раздела: {incomplete}"
