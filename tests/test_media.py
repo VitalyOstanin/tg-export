@@ -426,3 +426,34 @@ async def test_a_snapshot_of_active_downloads_keeps_the_values_it_was_taken_at(t
     await dl.download(msg, _photo(), chat_dir, chat_id=1)
 
     assert [(p.received, p.total) for p in seen] == [(10, 100), (50, 100)]
+
+
+def test_picking_a_free_name_does_not_rescan_the_names_already_given_out(tmp_path, monkeypatch):
+    """Подбор имени начинался с нуля на каждом файле и опрашивал ФС на каждого кандидата.
+
+    Загрузка идёт во временный каталог, где ничего нет, поэтому Telegram
+    всякий раз отвечает базовым именем: одноимённые файлы одного чата --
+    стикеры, пересланные снимки, `document.pdf` -- выстраиваются в сплошную
+    цепочку `имя`, `имя (1)`, `имя (2)`, и k-й из них стоил k системных
+    вызовов. Перебор идёт в потоке цикла событий, останавливая и соседние
+    загрузки, и обмен с сервером.
+    """
+    import tg_export.media as media_module
+    from tg_export.media import TargetRegistry
+
+    calls = []
+    real_size = media_module._size_or_none
+
+    def counting_size(path):
+        calls.append(path)
+        return real_size(path)
+
+    monkeypatch.setattr(media_module, "_size_or_none", counting_size)
+
+    registry = TargetRegistry()
+    files = 200
+    for _ in range(files):
+        with registry.claim(tmp_path, "photo.jpg", 0, reuse=False) as (path, _reused):
+            path.write_bytes(b"x")
+
+    assert len(calls) <= 2 * files, f"опросов файловой системы {len(calls)} на {files} файлов"

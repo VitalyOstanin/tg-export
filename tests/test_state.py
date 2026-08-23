@@ -598,6 +598,36 @@ async def test_a_file_of_unknown_size_is_offered_for_verification(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_the_verification_list_carries_only_the_columns_its_callers_read(state):
+    """`SELECT *` отдаёт колонки, которых потребители не читают.
+
+    Кроме лишнего чтения, звёздочка привязывает результат к текущей схеме:
+    переименование или перестановка колонки меняет содержимое словаря молча.
+    """
+    await state.register_file(
+        file_id=100,
+        chat_id=123,
+        msg_id=1,
+        expected_size=5000,
+        actual_size=3000,
+        local_path="photos/photo.jpg",
+        status="partial",
+    )
+
+    broken = await state.get_files_to_verify()
+
+    assert set(broken[0]) == {
+        "file_id",
+        "chat_id",
+        "msg_id",
+        "expected_size",
+        "actual_size",
+        "local_path",
+        "status",
+    }
+
+
+@pytest.mark.asyncio
 async def test_the_lock_wait_is_set_explicitly(tmp_path):
     """Ожидание блокировки зависело от умолчания stdlib (5 с).
 

@@ -202,6 +202,13 @@ class TargetRegistry:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._claimed: set[Path] = set()
+        # Where the search for a free name starts, per (directory, name). A
+        # name handed out with reuse=False is occupied by the file written into
+        # it, so scanning from zero on the next file of the same name cost k
+        # stat() calls for the k-th of them -- and the scan runs on the event
+        # loop. The cursor only moves forward: a name freed later leaves a gap
+        # in the numbering, which costs nothing.
+        self._search_from: dict[tuple[Path, str], int] = {}
 
     @contextlib.contextmanager
     def claim(
@@ -231,8 +238,13 @@ class TargetRegistry:
     ) -> tuple[Path, bool]:
         base = target_dir / name
         stem, suffix = base.stem, base.suffix
+        # The cursor is only for the plain "give me a free name" case: reuse
+        # looks for an existing file to take over, and a re-download looks for
+        # the very name it already owns -- both may be behind the cursor.
+        cursor_applies = not reuse and replacing is None
+        key = (target_dir, name)
         with self._lock:
-            counter = 0
+            counter = self._search_from.get(key, 0) if cursor_applies else 0
             while True:
                 candidate = base if counter == 0 else target_dir / f"{stem} ({counter}){suffix}"
                 counter += 1
@@ -244,6 +256,8 @@ class TargetRegistry:
                 size = _size_or_none(candidate)
                 if size is None:
                     self._claimed.add(candidate)
+                    if cursor_applies:
+                        self._search_from[key] = counter
                     return candidate, False
                 if not reuse:
                     continue

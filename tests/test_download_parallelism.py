@@ -282,3 +282,43 @@ async def test_downloads_still_overlap_when_media_is_sparse(state, tmp_path, mon
     )
 
     assert downloader.peak == 4, f"одновременных загрузок при разреженном медиа: {downloader.peak}"
+
+
+@pytest.mark.asyncio
+async def test_the_window_is_measured_without_walking_the_queue(tmp_path):
+    """Число загрузок в полёте считалось обходом всей очереди на каждое сообщение.
+
+    Пока головная загрузка идёт, сообщения без медиа копятся за ней, и каждое
+    следующее стоило обхода накопленной очереди -- то есть квадратичной работы
+    на серии таких сообщений.
+    """
+    from collections import deque
+    from unittest.mock import MagicMock
+
+    from tg_export.exporter import _MediaPipeline
+
+    class CountingDeque(deque):
+        """Очередь, считающая, сколько элементов посетили обходы."""
+
+        visited = 0
+
+        def __iter__(self):
+            for item in super().__iter__():
+                type(self).visited += 1
+                yield item
+
+    pipeline = _MediaPipeline(MagicMock(), tmp_path, MagicMock(), chat_id=1, limit=3)
+    head = asyncio.create_task(asyncio.sleep(3600))
+    pipeline._pending = CountingDeque([(head, MagicMock())])
+
+    messages = 300
+    for _ in range(messages):
+        msg = MagicMock()
+        msg.media = None
+        await pipeline.submit(msg, MagicMock())
+
+    head.cancel()
+
+    assert CountingDeque.visited <= 3 * messages, (
+        f"обходов очереди {CountingDeque.visited} на {messages} сообщений"
+    )

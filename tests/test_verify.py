@@ -201,6 +201,45 @@ async def test_broken_files_are_asked_for_in_batches_per_chat(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_downloading_starts_before_every_message_has_been_fetched(tmp_path):
+    """Все сообщения вычитывались до первой загрузки.
+
+    Запрос идёт пачками по сто на чат, и на длинном списке битых файлов сеть
+    простаивала столько кругов «запрос -- ответ», сколько пачек, прежде чем
+    начать качать хоть что-то.
+    """
+    import asyncio
+
+    from tg_export.verify import redownload_broken_files
+
+    entries = [_broken(i, 100 + i, 200 + i, tmp_path / f"f{i}.jpg") for i in range(3)]
+    for entry in entries:
+        Path(entry["local_path"]).write_bytes(b"partial")
+
+    events: list[str] = []
+
+    async def get_messages(chat_id, ids):
+        events.append("fetch")
+        await asyncio.sleep(0.01)
+        return [MagicMock(media=object()) for _ in ids]
+
+    async def download_media(tl_msg, staging):
+        events.append("download")
+        await asyncio.sleep(0)
+        return None
+
+    api = MagicMock()
+    api.client.get_messages = get_messages
+    api.download_media = download_media
+
+    await redownload_broken_files(api, AsyncMock(), entries, concurrency=3)
+
+    assert events.count("fetch") == 3, f"по запросу на чат: {events}"
+    last_fetch = len(events) - 1 - events[::-1].index("fetch")
+    assert events.index("download") < last_fetch, f"порядок событий: {events}"
+
+
+@pytest.mark.asyncio
 async def test_broken_files_are_downloaded_with_the_configured_parallelism(tmp_path):
     """Скачивание шло строго по одному: настройка concurrent_downloads к пути
     проверки не применялась, и сеть простаивала на каждом круге."""

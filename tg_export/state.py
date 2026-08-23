@@ -51,6 +51,10 @@ logger = logging.getLogger(__name__)
 # seconds on a large batch. One constant so every connection waits the same.
 DB_TIMEOUT_SECONDS = 30.0
 
+# The columns `get_files_to_verify` hands out. Callers read exactly these; the
+# rest of the row (checksum, download time) would only travel unread.
+_VERIFY_COLUMNS = "file_id, chat_id, msg_id, expected_size, actual_size, local_path, status"
+
 # Bucket key for messages that carry no date. Written by the SQL below and
 # read by the renderer, which turns it into the page title -- one constant so
 # that changing it cannot leave one of the two behind.
@@ -853,9 +857,12 @@ class ExportState:
         # configuration told it to leave alone.
         # Why the NULL branch: in SQLite a comparison with NULL yields NULL, not
         # true, so a row of unknown size never reached verification at all.
+        # Why the columns are named: `SELECT *` hands the callers whatever the
+        # table happens to hold, so a renamed or reordered column changes the
+        # dictionaries without a single line of the query moving.
         placeholders = ", ".join("?" for _ in SKIPPED_FILE_STATUSES)
         async with self.db.execute(
-            f"SELECT * FROM files WHERE status NOT IN ({placeholders}) AND ("
+            f"SELECT {_VERIFY_COLUMNS} FROM files WHERE status NOT IN ({placeholders}) AND ("
             "  status != 'done'"
             "  OR (expected_size > 0 AND actual_size IS NULL)"
             "  OR (expected_size > 0 AND actual_size != expected_size)"

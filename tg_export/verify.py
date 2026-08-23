@@ -138,30 +138,36 @@ async def redownload_broken_file(
 MESSAGE_BATCH = 100
 
 
-async def fetch_broken_messages(api, entries, *, should_stop=None) -> dict[tuple[int, int], Any]:
-    """The messages the broken files belong to, one request per batch of a chat.
+async def fetch_broken_messages(api, numbered, *, should_stop=None):
+    """Yield each request's entries together with the messages it answered.
 
     A file used to cost a round-trip of its own, while the list of broken files
     carries both the chat and the message id: grouping by chat turns hundreds
     of round-trips into one per hundred files of a chat.
-    """
-    by_chat: dict[int, list[int]] = defaultdict(list)
-    for entry in entries:
-        by_chat[entry["chat_id"]].append(entry["msg_id"])
 
-    found: dict[tuple[int, int], Any] = {}
-    for chat_id, msg_ids in by_chat.items():
-        for start in range(0, len(msg_ids), MESSAGE_BATCH):
+    The batches are handed over one by one rather than collected first, so the
+    caller can start downloading what the first request answered while the
+    rest are still being asked for.
+    """
+    by_chat: dict[int, list[tuple[int, dict]]] = defaultdict(list)
+    for index, entry in numbered:
+        by_chat[entry["chat_id"]].append((index, entry))
+
+    for chat_id, chat_entries in by_chat.items():
+        for start in range(0, len(chat_entries), MESSAGE_BATCH):
             if should_stop and should_stop():
-                return found
-            batch = msg_ids[start : start + MESSAGE_BATCH]
-            answered = await api.client.get_messages(chat_id, ids=batch)
+                return
+            batch = chat_entries[start : start + MESSAGE_BATCH]
+            msg_ids = [entry["msg_id"] for _, entry in batch]
+            answered = await api.client.get_messages(chat_id, ids=msg_ids)
             if not isinstance(answered, list):
                 answered = [answered]
-            for msg_id, tl_msg in zip(batch, answered, strict=False):
-                if tl_msg is not None:
-                    found[(chat_id, msg_id)] = tl_msg
-    return found
+            found: dict[tuple[int, int], Any] = {
+                (chat_id, msg_id): tl_msg
+                for msg_id, tl_msg in zip(msg_ids, answered, strict=False)
+                if tl_msg is not None
+            }
+            yield batch, found
 
 
 @dataclass
@@ -179,35 +185,43 @@ async def redownload_broken_files(
 ) -> list[RedownloadOutcome]:
     """Re-download every broken file, in the order they were given.
 
-    The messages are fetched in batches first, and the downloads then run with
-    the same bounded parallelism as the export itself -- the `verify` path used
-    to do both one file at a time, leaving the network idle for the whole
-    round-trip of each.
+    Each batch of messages starts its downloads as soon as it arrives, and they
+    run with the same bounded parallelism as the export itself -- the `verify`
+    path used to do both one file at a time, leaving the network idle for the
+    whole round-trip of each.
 
     Each entry comes back with its outcome, or with the exception it raised:
     one failed file does not end the pass, and what to say about it is left to
     the caller, which reports outcomes differently.
     """
-    messages = await fetch_broken_messages(api, entries, should_stop=should_stop)
+    numbered = list(enumerate(entries))
     semaphore = asyncio.Semaphore(max(1, concurrency))
     # One registry for the whole pass: the names the parallel downloads compete
     # for are in the same directories.
     targets = TargetRegistry()
 
-    async def one(entry) -> RedownloadOutcome:
+    async def one(entry, tl_msg) -> RedownloadOutcome:
         if should_stop and should_stop():
             return RedownloadOutcome(entry)
         async with semaphore:
             try:
                 result, final_path = await redownload_broken_file(
-                    api,
-                    state,
-                    entry,
-                    tl_msg=messages.get((entry["chat_id"], entry["msg_id"])),
-                    targets=targets,
+                    api, state, entry, tl_msg=tl_msg, targets=targets
                 )
             except Exception as e:  # noqa: BLE001 - reported per file by the caller
                 return RedownloadOutcome(entry, error=e)
             return RedownloadOutcome(entry, result=result, path=final_path)
 
-    return list(await asyncio.gather(*(one(entry) for entry in entries)))
+    started: list[tuple[int, asyncio.Task]] = []
+    async for batch, messages in fetch_broken_messages(api, numbered, should_stop=should_stop):
+        for index, entry in batch:
+            task = asyncio.create_task(one(entry, messages.get((entry["chat_id"], entry["msg_id"]))))
+            started.append((index, task))
+
+    outcomes: list[RedownloadOutcome] = [RedownloadOutcome(entry) for _, entry in numbered]
+    if started:
+        for (index, _), outcome in zip(
+            started, await asyncio.gather(*(task for _, task in started)), strict=True
+        ):
+            outcomes[index] = outcome
+    return outcomes

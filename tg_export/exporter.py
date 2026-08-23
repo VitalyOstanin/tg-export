@@ -418,6 +418,10 @@ class _MediaPipeline:
         # A window of one is exactly the previous sequential behaviour.
         self._limit = max(1, limit)
         self._pending: deque[tuple[asyncio.Task | None, Message]] = deque()
+        # Counted rather than recomputed: messages without media pile up behind
+        # a download in flight, and walking the queue for every one of them is
+        # quadratic work over a stretch of them.
+        self._running = 0
 
     async def __aenter__(self) -> _MediaPipeline:
         return self
@@ -465,6 +469,8 @@ class _MediaPipeline:
             task = asyncio.create_task(
                 self._exporter._process_media(msg, tl_msg, self._chat_dir, self._stats, chat_id=self._chat_id)
             )
+            self._running += 1
+            task.add_done_callback(self._one_finished)
         self._pending.append((task, msg))
         ready = []
         # Whatever is at the head and needs no waiting leaves at once: a text
@@ -486,9 +492,13 @@ class _MediaPipeline:
         task, _ = self._pending[0]
         return task is None or task.done()
 
+    def _one_finished(self, _task: asyncio.Task) -> None:
+        """Drop a finished download from the count, however it ended."""
+        self._running -= 1
+
     def _in_flight(self) -> int:
         """How many downloads are actually running."""
-        return sum(1 for task, _ in self._pending if task is not None and not task.done())
+        return self._running
 
     async def drain(self) -> list[Message]:
         """Wait for every download still in flight."""
