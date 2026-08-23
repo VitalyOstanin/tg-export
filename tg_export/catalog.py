@@ -302,9 +302,6 @@ async def fetch_catalog(api, include_left: bool = False) -> list[Chat]:
     for folder in folders:
         non_archived_ids.update(folder["peer_ids"])
 
-    # Apply flag-based folder matching for chats without explicit folder
-    _apply_folder_flags(chats, folders)
-
     # Archived dialogs (folder=1), skip duplicates
     logger.debug("Fetching archived dialogs (folder=1)...")
     archived_count = 0
@@ -322,6 +319,13 @@ async def fetch_catalog(api, include_left: bool = False) -> list[Chat]:
         chats.append(chat)
     logger.debug("Got archived dialogs, %d are archive-only", archived_count)
     logger.debug("Total chats: %d", len(chats))
+
+    # Flag-based folders are applied to chats without an explicit folder, and
+    # the archived ones are part of that: the folder decides which
+    # `folders.<name>` rule an export follows, so assigning it before the
+    # archive was fetched made an archived chat follow different settings
+    # than the same chat outside the archive.
+    _apply_folder_flags(chats, folders)
 
     if include_left:
         try:

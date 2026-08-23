@@ -1,4 +1,7 @@
 from datetime import datetime
+from types import SimpleNamespace
+
+import pytest
 
 from tg_export.catalog import format_catalog_yaml, generate_config_template
 from tg_export.models import Chat, ChatType
@@ -174,8 +177,6 @@ def test_catalog_survives_a_round_trip_through_yaml():
 
 def test_a_damaged_catalog_is_reported_instead_of_crashing():
     """Every malformed shape must come out as ConfigError, not TypeError/KeyError."""
-    import pytest
-
     from tg_export.catalog import chats_from_catalog
     from tg_export.config import ConfigError
 
@@ -204,3 +205,62 @@ def test_the_json_catalog_is_read_as_a_flat_list():
     restored = chats_from_catalog(json.loads(format_catalog_json(chats)))
 
     assert [(c.id, c.name, c.folder, c.is_archived) for c in restored] == [(10, "Team", "Work", True)]
+
+
+class Channel:
+    """Сущность супергруппы. Имя класса читает `_classify_chat`, отсюда и оно."""
+
+    def __init__(self, chat_id: int, title: str, *, megagroup: bool = False):
+        self.id = chat_id
+        self.title = title
+        self.megagroup = megagroup
+        self.username = None
+
+
+class _CatalogApi:
+    """Аккаунт с одним фильтром и заданными списками диалогов."""
+
+    def __init__(self, folders, main, archived):
+        self._folders = folders
+        self._main = main
+        self._archived = archived
+
+    async def get_folders(self):
+        return self._folders
+
+    async def iter_dialogs(self, archived: bool = False):
+        for entity in self._archived if archived else self._main:
+            yield SimpleNamespace(entity=entity, date=None, dialog=None)
+
+
+@pytest.mark.asyncio
+async def test_a_flag_folder_takes_in_an_archived_chat():
+    """Папка по флагу `groups` должна забирать и архивную супергруппу.
+
+    Папка чата участвует не только в раскладке каталогов, но и в подборе
+    правила `folders.<имя>`, поэтому архивный чат при `archived.action:
+    export_with_defaults` иначе выгружается по другим настройкам, чем такой
+    же неархивный.
+    """
+    from tg_export.catalog import fetch_catalog
+
+    api = _CatalogApi(
+        folders=[
+            {
+                "name": "Группы",
+                "peer_ids": [],
+                "exclude_ids": [],
+                "contacts": False,
+                "non_contacts": False,
+                "groups": True,
+                "broadcasts": False,
+                "bots": False,
+            }
+        ],
+        main=[],
+        archived=[Channel(10, "Команда", megagroup=True)],
+    )
+
+    chats = await fetch_catalog(api)
+
+    assert [(c.id, c.folder, c.is_archived) for c in chats] == [(10, "Группы", True)]

@@ -801,11 +801,12 @@ async def _purge_chat(chat_arg, account, config_override, output_override, skip_
         output_base,
         account,
     ):
-        # Resolve chat: by ID or by name search
+        # Resolve chat: by ID or by name search. Only the parse belongs in the
+        # try: aiosqlite raises ValueError("Connection closed") on a closed
+        # connection, and catching it here used to send a numeric argument into
+        # the name search, which reports "No chats found" instead of the failure.
         try:
             chat_id = int(chat_arg)
-            entry = await state.get_catalog_entry(chat_id)
-            chat_name = entry["name"] if entry else f"id={chat_id}"
         except ValueError:
             matches = await state.find_chat_by_name(chat_arg)
             if not matches:
@@ -817,6 +818,9 @@ async def _purge_chat(chat_arg, account, config_override, output_override, skip_
                 _fail("Specify exact chat ID.")
             chat_id = matches[0]["chat_id"]
             chat_name = matches[0]["name"]
+        else:
+            entry = await state.get_catalog_entry(chat_id)
+            chat_name = entry["name"] if entry else f"id={chat_id}"
 
         # Show what will be deleted
         counts = await state.count_chat_rows(chat_id)

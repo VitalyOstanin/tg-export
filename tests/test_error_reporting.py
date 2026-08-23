@@ -332,3 +332,33 @@ async def test_rerender_rebuilds_pages_that_no_new_message_would_touch(tmp_path)
     await exporter._render_chat_html(MagicMock(id=1, name="Chat"), chat_dir, stats)
 
     state.list_message_months.assert_awaited_once(), "рендер пропущен вопреки --rerender"
+
+
+def test_a_database_failure_in_purge_is_not_read_as_a_missing_chat(tmp_path, account_env, monkeypatch):
+    """Разбор идентификатора и запрос к каталогу делили один `except ValueError`.
+
+    aiosqlite возбуждает `ValueError("Connection closed")` при закрытом
+    соединении, и такой отказ уводил выполнение в поиск по имени с
+    аргументом-числом: пользователь получал «No chats found matching '42'»
+    вместо настоящей причины и код 1, как при опечатке в идентификаторе.
+    """
+    from click.testing import CliRunner
+
+    from tg_export.cli import main
+
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    (out_dir / ".tg-export-state.db").write_bytes(b"")
+    (account_env / "acc.yaml").write_text(f"output:\n  path: {out_dir}\n")
+
+    state = MagicMock()
+    state.__aenter__ = AsyncMock(return_value=state)
+    state.__aexit__ = AsyncMock(return_value=False)
+    state.get_catalog_entry = AsyncMock(side_effect=ValueError("Connection closed"))
+    state.find_chat_by_name = AsyncMock(return_value=[])
+    monkeypatch.setattr("tg_export.state.ExportState", lambda *a, **k: state)
+
+    result = CliRunner().invoke(main, ["purge", "42"])
+
+    assert isinstance(result.exception, ValueError), result.output
+    assert "No chats found" not in result.output, result.output
