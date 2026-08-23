@@ -778,3 +778,22 @@ def test_a_locked_session_file_is_reported_instead_of_being_silently_skipped(tmp
         assert conn.execute("SELECT takeout_id FROM sessions").fetchone()[0] == 777
     finally:
         conn.close()
+
+
+def test_the_client_is_built_on_the_fixed_session(tmp_path):
+    """Telethon принимает и строку вместо объекта сессии.
+
+    В этом случае она молча строит обычную SQLiteSession, и takeout_id теряется
+    на файлах с обратным порядком колонок -- ровно тот дефект, ради которого
+    FixedSQLiteSession существует. Статическая проверка в тестах стиля считает
+    вызов допустимым по имени переменной `session`, то есть подмену её значения
+    строкой не ловит; здесь проверяется, что в клиенте оказался нужный объект.
+    """
+    api = TgApi(tmp_path / "acc.session", api_id=1, api_hash="hash")
+    try:
+        assert isinstance(api.client.session, FixedSQLiteSession)
+    finally:
+        session = api.client.session
+        if session is not None:
+            session.close()
+        api._session_lock.release()

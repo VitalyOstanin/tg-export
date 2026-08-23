@@ -576,38 +576,21 @@ def test_every_command_is_described_in_the_cli_reference():
     assert not missing, f"команды не описаны в docs/cli.md: {missing}"
 
 
-def _ci_check_commands() -> list[str]:
-    """Ключи проверок из ci.yml: имя инструмента и подкоманда, без флагов и путей."""
-    import yaml
-
-    workflow = yaml.safe_load(
-        (PROJECT.parent / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    )
-    keys = []
-    for job in workflow["jobs"].values():
-        for step in job["steps"]:
-            run = (step.get("run") or "").strip()
-            if not run.startswith("uv ") or run.startswith("uv sync") or run.startswith("uv python"):
-                continue
-            tokens = [t for t in run.split() if t != "uv"]
-            if tokens[0] == "run":
-                tokens = tokens[1:]
-            if tokens[0] == "python":
-                keys.append(tokens[2] if tokens[1] == "-m" else Path(tokens[1]).name)
-                continue
-            tail = tokens[1] if len(tokens) > 1 and not tokens[1].startswith("-") and tokens[1] != "." else ""
-            keys.append(f"{tokens[0]} {tail}".strip())
-    return keys
-
-
 def test_one_command_runs_everything_ci_runs():
     """scripts/check.sh должен покрывать все проверки CI.
 
     Пока такой команды не было, шаг `ruff format --check` ломался коммитом и
     выяснялось это только на CI: локально его никто не запускал.
+
+    Сверяются исполняемые команды обоих файлов, а не подстроки в тексте: по
+    подстроке шаг числился на месте и тогда, когда от него осталась одна
+    строка `echo "==> pyright"`, а ветка `--fix` подменяла собой отсутствующий
+    `ruff format --check`.
     """
-    script = (PROJECT.parent / "scripts" / "check.sh").read_text(encoding="utf-8")
-    missing = [key for key in _ci_check_commands() if key not in script]
+    from parity import check_script_commands, ci_check_commands
+
+    script = check_script_commands()
+    missing = [key for key in ci_check_commands() if key not in script]
     assert not missing, f"проверки CI отсутствуют в scripts/check.sh: {missing}"
 
 

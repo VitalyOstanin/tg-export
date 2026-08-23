@@ -76,16 +76,23 @@ def test_a_tag_without_the_v_prefix_is_accepted(tmp_path):
     assert result.returncode == 0, result.stderr
 
 
-@pytest.mark.parametrize("step", ["uv lock --check", "ruff check", "pyright", "release_notes.py"])
+@pytest.mark.parametrize(
+    "step",
+    ["lock", "ruff check", "ruff format", "pyright", "pytest", "coverage_gate.py", "release_notes.py"],
+)
 def test_the_publish_workflow_runs_the_release_gate_before_publishing(step):
-    """Проверки, заявленные в RELEASING.md, шли только в ci.yml, который на тег не срабатывает."""
-    workflow = (Path(__file__).resolve().parent.parent / ".github" / "workflows" / "publish.yml").read_text(
-        encoding="utf-8"
-    )
-    assert step in workflow, f"шаг {step!r} отсутствует в publish.yml"
-    assert workflow.index(step) < workflow.index("gh-action-pypi-publish"), (
-        f"шаг {step!r} стоит после необратимой публикации на PyPI"
-    )
+    """Проверки, заявленные в RELEASING.md, шли только в ci.yml, который на тег не срабатывает.
+
+    Сверяются исполняемые команды, а не текст файла: по подстроке три проверки
+    из четырёх удовлетворялись комментарием над шагом, и подмена
+    `scripts/check.sh` на один `pytest` -- то есть снятие линтера, типов и
+    сверки lock перед необратимой публикацией -- оставляла тест зелёным.
+    """
+    from parity import publish_commands_before
+
+    executed = publish_commands_before("gh-action-pypi-publish")
+
+    assert step in executed, f"проверка {step!r} не выполняется до публикации на PyPI: {executed}"
 
 
 def test_declared_python_versions_match_the_ci_matrix():
