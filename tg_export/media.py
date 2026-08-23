@@ -23,7 +23,7 @@ from tg_export.config import MediaConfig
 from tg_export.errors import TgExportError
 from tg_export.importer import TdesktopIndex
 from tg_export.models import Media, MediaType
-from tg_export.state import DB_TIMEOUT_SECONDS
+from tg_export.state import DB_TIMEOUT_SECONDS, READER_PRAGMAS
 
 logger = logging.getLogger(__name__)
 
@@ -221,23 +221,65 @@ class _TargetRegistry:
                 return candidate, False
 
 
-def _lookup_file_in_db(db_path: Path, file_id: int) -> str | None:
-    """Look up file_id in a sibling state DB (synchronous, read-only).
+class _SiblingReaders:
+    """Read-only connections to sibling state databases, one per database.
 
-    Why timeout: a busy writer in the sibling can hold a SHARED lock for
-    seconds during a batch commit; default 5s is short for big batches.
+    A connection used to be opened and closed for every file looked up, on
+    every sibling export -- the cost the renderer already refused to pay per
+    month (see state.month_reader): a file open, a schema read and a page
+    cache that dies cold. Here the lookup happens per file, so the cost is
+    multiplied by the number of files and of siblings.
+
+    The lookups run in arbitrary threads of the default executor, so the
+    connections are opened with ``check_same_thread=False`` and serialised by
+    a lock. What they serialise is a point lookup by an indexed column, which
+    is cheaper than reopening the database each time -- and closing them from
+    the thread that owns the downloader is only possible this way.
     """
-    # quote: the path goes into a URI, so a `?` in it would start the query
-    # string and silently drop mode=ro, opening the sibling database for writing.
-    db = sqlite3.connect(f"file:{quote(str(db_path))}?mode=ro", uri=True, timeout=DB_TIMEOUT_SECONDS)
-    try:
-        row = db.execute(
-            "SELECT local_path FROM files WHERE file_id=? AND status='done' LIMIT 1",
-            (file_id,),
-        ).fetchone()
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._conns: dict[Path, sqlite3.Connection] = {}
+
+    def lookup(self, db_path: Path, file_id: int) -> str | None:
+        """The path of a completed download of `file_id` in that sibling, if any.
+
+        Why timeout: a busy writer in the sibling can hold a SHARED lock for
+        seconds during a batch commit; default 5s is short for big batches.
+        """
+        with self._lock:
+            db = self._conns.get(db_path)
+            if db is None:
+                db = self._open(db_path)
+                self._conns[db_path] = db
+            row = db.execute(
+                "SELECT local_path FROM files WHERE file_id=? AND status='done' LIMIT 1",
+                (file_id,),
+            ).fetchone()
         return row[0] if row else None
-    finally:
-        db.close()
+
+    @staticmethod
+    def _open(db_path: Path) -> sqlite3.Connection:
+        # quote: the path goes into a URI, so a `?` in it would start the query
+        # string and silently drop mode=ro, opening the sibling database for writing.
+        db = sqlite3.connect(
+            f"file:{quote(str(db_path))}?mode=ro",
+            uri=True,
+            timeout=DB_TIMEOUT_SECONDS,
+            check_same_thread=False,
+        )
+        for pragma in READER_PRAGMAS:
+            db.execute(pragma)
+        db.execute("PRAGMA query_only = ON")
+        return db
+
+    def close(self) -> None:
+        """Close every connection; the object stays usable and reopens on demand."""
+        with self._lock:
+            for db in self._conns.values():
+                with contextlib.suppress(sqlite3.Error):
+                    db.close()
+            self._conns.clear()
 
 
 def _is_sibling_path_safe(local_path: Path, db_path: Path) -> bool:
@@ -292,6 +334,7 @@ class MediaDownloader:
         self.semaphore = asyncio.Semaphore(config.concurrent_downloads)
         self.tdesktop_indexes = tdesktop_indexes or []
         self.sibling_db_paths = sibling_db_paths or []
+        self._siblings = _SiblingReaders()
         self.active_downloads: dict[int, DownloadProgress] = {}  # msg_id -> progress
         # active_downloads is mutated by the event loop and read by the Rich
         # Live refresh thread; this lock guards both sides against
@@ -527,6 +570,10 @@ class MediaDownloader:
                 return dst
         return None
 
+    def close(self) -> None:
+        """Release what the downloader keeps open for the whole export."""
+        self._siblings.close()
+
     async def _try_link_sibling(self, media: Media, chat_dir: Path) -> Path | None:
         """Try to hardlink file from a sibling account's export by file_id.
 
@@ -556,7 +603,7 @@ class MediaDownloader:
 
         for db_path in self.sibling_db_paths:
             try:
-                src_path = _lookup_file_in_db(db_path, file_id)
+                src_path = self._siblings.lookup(db_path, file_id)
             except sqlite3.Error as e:
                 logger.debug("sibling DB lookup failed (%s): %s", db_path, e)
                 continue

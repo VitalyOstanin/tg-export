@@ -7,7 +7,6 @@ import contextlib
 import json
 import logging
 import sqlite3
-from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -52,9 +51,9 @@ UNKNOWN_MONTH_KEY = "0000-00"
 
 # Pragmas that make sense for any connection to this database, reading or
 # writing: they size the cache and keep temporaries in memory. Declared once so
-# that the read-only connection of the renderer gets the same treatment as the
-# main one -- it used to get none.
-_READER_PRAGMAS = (
+# that every reader gets the same treatment as the main connection -- the
+# renderer used to get none, and so did the lookups in sibling databases.
+READER_PRAGMAS = (
     f"PRAGMA busy_timeout = {int(DB_TIMEOUT_SECONDS * 1000)}",
     "PRAGMA temp_store = MEMORY",
     "PRAGMA cache_size = -65536",
@@ -93,7 +92,7 @@ def _plain_text(text_parts: list[TextPart]) -> str:
 
 
 def _text_parts_to_json(parts: list[TextPart]) -> str:
-    return json.dumps([asdict(tp) for tp in parts], default=encode_default, ensure_ascii=False)
+    return json.dumps([vars(tp) for tp in parts], default=encode_default, ensure_ascii=False)
 
 
 def _text_parts_from_json(s: str | None) -> list[TextPart]:
@@ -136,7 +135,7 @@ def _action_from_json(s: str | None) -> ServiceAction | None:
 def _forward_to_json(fwd: ForwardInfo | None) -> str | None:
     if fwd is None:
         return None
-    return json.dumps(asdict(fwd), default=encode_default, ensure_ascii=False)
+    return json.dumps(vars(fwd), default=encode_default, ensure_ascii=False)
 
 
 def _forward_from_json(s: str | None) -> ForwardInfo | None:
@@ -149,7 +148,7 @@ def _forward_from_json(s: str | None) -> ForwardInfo | None:
 def _reactions_to_json(reactions: list[Reaction]) -> str | None:
     if not reactions:
         return None
-    return json.dumps([asdict(r) for r in reactions], default=encode_default, ensure_ascii=False)
+    return json.dumps([vars(r) for r in reactions], default=encode_default, ensure_ascii=False)
 
 
 def _reactions_from_json(s: str | None) -> list[Reaction]:
@@ -167,7 +166,7 @@ def _buttons_to_json(buttons: list[list[InlineButton]] | None) -> str | None:
     if buttons is None:
         return None
     return json.dumps(
-        [[asdict(btn) for btn in row] for row in buttons], default=encode_default, ensure_ascii=False
+        [[vars(btn) for btn in row] for row in buttons], default=encode_default, ensure_ascii=False
     )
 
 
@@ -234,8 +233,15 @@ def _load_month(db: sqlite3.Connection, chat_id: int, month_key: str) -> list[Me
         )
     else:
         start, end = _month_range(month_key)
+        # ORDER BY date, msg_id follows idx_messages_date(chat_id, date), so
+        # only messages sharing a date are sorted; ordering by msg_id alone
+        # made SQLite sort the whole month through a temp B-tree, holding full
+        # rows -- six JSON columns each -- in memory (temp_store = MEMORY).
+        # The render walks the result in order, and where the two orders differ
+        # (messages carried over by a group-to-supergroup migration) the
+        # chronological one is the right one to show.
         cur = db.execute(
-            "SELECT * FROM messages WHERE chat_id=? AND date >= ? AND date < ? ORDER BY msg_id",
+            "SELECT * FROM messages WHERE chat_id=? AND date >= ? AND date < ? ORDER BY date, msg_id",
             (chat_id, start, end),
         )
     return [_row_to_message(dict(r)) for r in cur.fetchall()]
@@ -259,7 +265,7 @@ def month_reader(db_path: Path, chat_id: int):
     db = sqlite3.connect(f"file:{quote(str(db_path))}?mode=ro", uri=True, timeout=DB_TIMEOUT_SECONDS)
     try:
         db.row_factory = sqlite3.Row
-        for pragma in _READER_PRAGMAS:
+        for pragma in READER_PRAGMAS:
             db.execute(pragma)
         # query_only does not depend on the URI being parsed the way it reads:
         # it is the same guarantee stated once more, where a malformed path
@@ -452,7 +458,7 @@ class ExportState:
         for pragma in (
             "PRAGMA journal_mode = WAL",
             "PRAGMA synchronous = NORMAL",
-            *_READER_PRAGMAS,
+            *READER_PRAGMAS,
         ):
             await self.db.execute(pragma)
 

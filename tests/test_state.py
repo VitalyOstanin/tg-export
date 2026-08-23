@@ -744,3 +744,71 @@ def test_month_reader_opens_a_database_whose_path_holds_a_question_mark(tmp_path
 
     with month_reader(db_path, 10) as load_month:
         assert [m.id for m in load_month("2024-01")] == [1]
+
+
+def test_a_month_is_read_without_sorting_it_whole(tmp_path):
+    """Порядок выборки согласован с индексом, по которому она идёт.
+
+    `ORDER BY msg_id` при отборе по дате заставлял SQLite сортировать месяц
+    целиком через временное B-дерево, складывая туда полные строки с шестью
+    JSON-колонками. При `temp_store = MEMORY` это удваивало пик памяти на
+    месяц -- ровно то, что потоковый рендер обещает держать пропорционально
+    одному месяцу.
+    """
+    import asyncio
+    import sqlite3
+    from datetime import UTC, datetime
+
+    from tg_export.state import ExportState, _load_month
+
+    db_path = tmp_path / "state.db"
+
+    async def fill():
+        async with ExportState(db_path) as state:
+            await state.store_messages_batch(
+                [
+                    _make_msg(msg_id=2, chat_id=10, date=datetime(2024, 1, 5, 12, 0, tzinfo=UTC)),
+                    _make_msg(msg_id=1, chat_id=10, date=datetime(2024, 1, 5, 13, 0, tzinfo=UTC)),
+                ]
+            )
+
+    asyncio.run(fill())
+
+    db = sqlite3.connect(db_path)
+    db.row_factory = sqlite3.Row
+    try:
+        month = _load_month(db, 10, "2024-01")
+        plan = "\n".join(
+            row[3]
+            for row in db.execute(
+                "EXPLAIN QUERY PLAN "
+                "SELECT * FROM messages WHERE chat_id=? AND date >= ? AND date < ? ORDER BY date, msg_id",
+                (10, "2024-01-01T00:00:00+00:00", "2024-02-01T00:00:00+00:00"),
+            )
+        )
+    finally:
+        db.close()
+
+    assert [m.id for m in month] == [2, 1], "порядок показа -- хронологический"
+    assert "USE TEMP B-TREE FOR ORDER BY" not in plan, plan
+
+
+def test_the_stored_json_of_a_message_keeps_its_shape(tmp_path):
+    """Формат хранения не должен зависеть от способа перевода dataclass в словарь.
+
+    Колонки читаются и прежними выгрузками, и рендером, поэтому переход с
+    `asdict` на `vars` закрепляется побайтовым видом строки.
+    """
+    from tg_export.models import Reaction, ReactionType, TextPart, TextType
+    from tg_export.state import _reactions_to_json, _text_parts_to_json
+
+    parts = [TextPart(type=TextType.bold, text="Заголовок"), TextPart(type=TextType.text, text=" и хвост")]
+    reactions = [Reaction(type=ReactionType.emoji, emoji="👍", document_id=None, count=2)]
+
+    assert _text_parts_to_json(parts) == (
+        '[{"type": "bold", "text": "Заголовок", "href": null, "user_id": null}, '
+        '{"type": "text", "text": " и хвост", "href": null, "user_id": null}]'
+    )
+    assert _reactions_to_json(reactions) == (
+        '[{"type": "emoji", "emoji": "👍", "document_id": null, "count": 2, "recent": null}]'
+    )

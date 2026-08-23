@@ -523,6 +523,24 @@ def _print_export_errors(errors) -> None:
         common._diag(f"    ... and {hidden} more (see the log)", essential=True)
 
 
+def _export_destination(account, config_override, output_override):
+    """Where this export writes: the account, its config, the tree and the state DB.
+
+    The directory is created private -- the tree holds every exported message
+    and file -- while an existing one keeps the mode the user gave it.
+    """
+    account, cfg, output_base = common._resolve_output(
+        account,
+        config_override,
+        output_override,
+        missing_config_hint="Create it with: tg-export init --account {account}",
+    )
+    common._diag(f"Account: {account}")
+    common._diag(f"Output: {output_base.resolve()}")
+    ensure_private_dir(output_base)
+    return account, cfg, output_base, output_base / STATE_DB_NAME
+
+
 async def _run_export(
     account,
     config_override,
@@ -539,22 +557,7 @@ async def _run_export(
     from tg_export.html.renderer import HtmlRenderer
     from tg_export.state import ExportState
 
-    account, cfg, output_base = common._resolve_output(
-        account,
-        config_override,
-        output_override,
-        missing_config_hint="Create it with: tg-export init --account {account}",
-    )
-    common._diag(f"Account: {account}")
-    common._diag(f"Output: {output_base.resolve()}")
-
-    # Ensure output dir exists (needed for state DB). Created private: the tree
-    # holds every exported message and file. An existing directory keeps the
-    # mode the user gave it.
-    ensure_private_dir(output_base)
-
-    # State DB next to output
-    state_path = output_base / STATE_DB_NAME
+    account, cfg, output_base, state_path = _export_destination(account, config_override, output_override)
 
     exporter = None
     stats = None
@@ -577,6 +580,9 @@ async def _run_export(
         renderer.setup()
 
         downloader = _build_downloader(api, state, cfg, output_base)
+        # The downloader keeps a read-only connection per sibling database for
+        # the whole export; the stack closes them together with the rest.
+        resources.callback(downloader.close)
 
         # Fetch chat list
         chats = await fetch_catalog(api, include_left=(cfg.left_channels_action != "skip"))

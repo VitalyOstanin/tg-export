@@ -42,11 +42,11 @@ async def test_sibling_lookup_leaves_the_event_loop(tmp_path, monkeypatch):
     занятого писателя до 30 секунд -- всё это время цикл событий стоит."""
     seen = {}
 
-    def fake_lookup(db_path, file_id):
+    def fake_lookup(self, db_path, file_id):
         seen["thread"] = threading.get_ident()
         return None
 
-    monkeypatch.setattr("tg_export.media._lookup_file_in_db", fake_lookup)
+    monkeypatch.setattr("tg_export.media._SiblingReaders.lookup", fake_lookup)
 
     dl = _downloader(sibling_db_paths=[tmp_path / "sibling.db"])
     await dl._try_link_sibling(_photo(), tmp_path / "chat")

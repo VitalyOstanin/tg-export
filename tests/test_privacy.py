@@ -111,7 +111,7 @@ def test_account_name_is_validated(tmp_path, name):
 def test_sibling_lookup_handles_a_path_with_a_question_mark(tmp_path):
     """Путь подставляется в SQLite-URI конкатенацией: `?` в имени каталога
     превращает остаток пути в параметры и снимает режим «только чтение»."""
-    from tg_export.media import _lookup_file_in_db
+    from tg_export.media import _SiblingReaders
 
     db_path = tmp_path / "why?not.db"
     conn = sqlite3.connect(str(db_path))
@@ -120,7 +120,11 @@ def test_sibling_lookup_handles_a_path_with_a_question_mark(tmp_path):
     conn.commit()
     conn.close()
 
-    assert _lookup_file_in_db(db_path, 7) == "/tmp/x.jpg"
+    readers = _SiblingReaders()
+    try:
+        assert readers.lookup(db_path, 7) == "/tmp/x.jpg"
+    finally:
+        readers.close()
 
 
 @pytest.fixture

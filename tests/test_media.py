@@ -351,3 +351,41 @@ def test_a_long_name_fits_the_progress_column():
     fitted = _progress_name("x" * 100)
     assert len(fitted) == _PROGRESS_NAME_WIDTH
     assert fitted.endswith("...")
+
+
+def test_a_sibling_database_is_opened_once_for_the_whole_export(tmp_path):
+    """Соединение с соседней базой открывалось на каждый файл.
+
+    Открытие стоит обращения к файлу, чтения схемы и холодного кэша страниц --
+    тот же довод, по которому рендер держит одно соединение на чат. Здесь цена
+    выше: не на месяц, а на файл, и умножается на число соседних выгрузок.
+    """
+    import sqlite3
+
+    from tg_export.media import _SiblingReaders
+
+    db_path = tmp_path / "sibling.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("CREATE TABLE files (file_id integer, local_path text, status text)")
+    conn.execute("INSERT INTO files VALUES (7, '/tmp/x.jpg', 'done')")
+    conn.commit()
+    conn.close()
+
+    opened: list[str] = []
+    real_connect = sqlite3.connect
+
+    def counting_connect(*args, **kwargs):
+        opened.append(str(args[0]) if args else "")
+        return real_connect(*args, **kwargs)
+
+    readers = _SiblingReaders()
+    sqlite3.connect = counting_connect
+    try:
+        assert readers.lookup(db_path, 7) == "/tmp/x.jpg"
+        assert readers.lookup(db_path, 8) is None
+        assert readers.lookup(db_path, 7) == "/tmp/x.jpg"
+    finally:
+        sqlite3.connect = real_connect
+        readers.close()
+
+    assert len(opened) == 1, f"на соседнюю базу должно открываться одно соединение, открыто: {opened}"
