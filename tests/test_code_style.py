@@ -675,3 +675,38 @@ def test_no_module_imports_the_same_name_twice():
                     offenders.append(f"{path.relative_to(PROJECT)}:{node.lineno} {sorted(repeated)}")
 
     assert not offenders, f"имя импортировано и в шапке, и внутри функции: {offenders}"
+
+
+def test_the_package_and_its_build_files_speak_english():
+    """Язык артефакта выбирается по читателю; см. CONTRIBUTING, «Язык артефактов».
+
+    Код пакета, манифест, сборочные сценарии и workflow читает всякий, кто
+    берёт пакет с PyPI, -- они на английском. Тесты и документация обращены к
+    тому, кто ведёт проект, и остаются русскими. Прежде манифест и `scripts/`
+    смешивали оба языка внутри одного файла.
+    """
+    root = PROJECT.parent
+    allowed = {
+        # Ссылка на название раздела CONTRIBUTING -- имя собственное.
+        "tg_export/cli/__init__.py",
+        # Имена разделов CHANGELOG -- данные, а не текст программы.
+        "scripts/release_notes.py",
+    }
+    files = [
+        *PROJECT.glob("**/*.py"),
+        root / "pyproject.toml",
+        *(root / "scripts").glob("*"),
+        *(root / ".github" / "workflows").glob("*.yml"),
+    ]
+    assert len(files) > 30, "список файлов подозрительно короткий -- проверка сузилась"
+
+    cyrillic = re.compile(r"[а-яё]", re.IGNORECASE)
+    offenders = [
+        f"{path.relative_to(root)}:{i}"
+        for path in files
+        if path.is_file() and str(path.relative_to(root)) not in allowed
+        for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+        if cyrillic.search(line)
+    ]
+
+    assert not offenders, f"артефакт пакета написан не на английском: {offenders}"

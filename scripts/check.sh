@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Прогоняет весь набор проверок, который выполняет CI: блокировка зависимостей,
-# линтер, формат, типы, тесты с покрытием и границы покрытия по модулям.
-# Порядок тот же, что в .github/workflows/ci.yml; расхождение ловит тест
+# Runs the whole set of checks CI runs: the dependency lock, the linter, the
+# formatter, the types, the tests with coverage and the per-module coverage
+# floors. Same order as .github/workflows/ci.yml; a divergence is caught by
 # tests/test_code_style.py::test_one_command_runs_everything_ci_runs.
 #
-#   scripts/check.sh          проверить (как на CI)
-#   scripts/check.sh --fix    сначала исправить исправимое: ruff check --fix и ruff format
+#   scripts/check.sh          check (the way CI does)
+#   scripts/check.sh --fix    fix what can be fixed first: ruff check --fix, ruff format
 #
-# Останавливается на первой упавшей проверке, код возврата -- её собственный.
+# Stops at the first failing check and exits with that check's own code.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -18,7 +18,7 @@ if [[ "${1:-}" == "--fix" ]]; then
     echo "==> ruff format"
     uv run ruff format .
 elif [[ $# -gt 0 ]]; then
-    echo "Неизвестный аргумент: $1 (допустим только --fix)" >&2
+    echo "Unknown argument: $1 (only --fix is accepted)" >&2
     exit 2
 fi
 
@@ -34,10 +34,10 @@ uv run ruff format --check .
 echo "==> pyright"
 uv run pyright
 
-echo "==> pytest с покрытием"
+echo "==> pytest with coverage"
 uv run python -m pytest --cov-report=term
 
-echo "==> границы покрытия по модулям"
+echo "==> per-module coverage floors"
 uv run python scripts/coverage_gate.py
 
-echo "Все проверки пройдены."
+echo "All checks passed."

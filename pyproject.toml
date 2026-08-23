@@ -10,9 +10,9 @@ license = "MIT"
 requires-python = ">=3.11"
 readme = "README.md"
 authors = [{name = "Vitaly Ostanin", email = "vitaly.ostanin@gmail.com"}]
-# Заявляется то, что проверяется на CI: Linux и версии Python из матрицы.
-# На Windows блокировка файла сессии вырождается в no-op (нет fcntl), а
-# обработчики сигналов не регистрируются -- работа возможна, но не проверяется.
+# What is declared is what CI exercises: Linux and the Python versions of the
+# matrix. On Windows the session file lock degrades into a no-op (no fcntl) and
+# the signal handlers are not installed -- it can run, but it is not verified.
 classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: Console",
@@ -61,16 +61,16 @@ proxy = [
     "python-socks[asyncio]>=2.0,<3",
 ]
 
-# Инструменты разработки -- группа (PEP 735), а не extra: extra попадает в
-# метаданные колеса и предлагается установщику, тогда как группа существует
-# только в исходном дереве. Практическое следствие -- `uv sync` ставит группу
-# `dev` по умолчанию, поэтому запрос другого набора (`uv sync --extra proxy`)
-# больше не вымывает pytest и ruff из окружения.
+# Development tools are a group (PEP 735), not an extra: an extra lands in the
+# wheel metadata and is offered to the installer, while a group exists only in
+# the source tree. The practical effect is that `uv sync` installs the `dev`
+# group by default, so asking for another set (`uv sync --extra proxy`) no
+# longer washes pytest and ruff out of the environment.
 [dependency-groups]
-# Нижние границы отражают то, на чём проект проверяется (см. uv.lock), а не
-# самую старую версию, с которой он когда-то собирался: окружение, поднятое без
-# lock-файла, иначе получает другой инструмент. pytest-asyncio 1.x -- отдельный
-# случай: в 0.x режим `asyncio_mode = "auto"` вёл себя иначе.
+# Lower bounds state what the project is verified against (see uv.lock), not
+# the oldest version it once built with: an environment created without the
+# lock file would otherwise get a different tool. pytest-asyncio 1.x is a case
+# of its own -- in 0.x the `asyncio_mode = "auto"` mode behaved differently.
 dev = [
     "pytest>=9.1",
     "pytest-asyncio>=1.4",
@@ -82,8 +82,8 @@ dev = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-# --cov здесь, а не только в CI: без него порог fail_under локально не
-# проверяется, и падение покрытия всплывает лишь после push.
+# --cov lives here, not only in CI: without it the fail_under threshold is not
+# checked locally and a drop in coverage surfaces only after the push.
 addopts = "-ra --strict-markers --strict-config --cov=tg_export"
 testpaths = ["tests"]
 filterwarnings = [
@@ -96,13 +96,13 @@ timeout = 60
 source = ["tg_export"]
 
 [tool.coverage.report]
-# Общий порог по проекту. Проверяется при любом запуске с --cov (см. addopts).
+# Project-wide floor. Checked by every run with --cov (see addopts).
 fail_under = 50
 
-# Нижние границы по модулям: общий порог сам по себе маскирует провал крупного
-# файла за счёт хорошо покрытых мелких. Значения стоят чуть ниже фактических,
-# чтобы ловить регрессию, а не требовать роста. Проверяются скриптом
-# scripts/coverage_gate.py после прогона с --cov.
+# Per-module floors: the project-wide threshold on its own hides a large file
+# falling behind, carried by well covered small ones. The values sit slightly
+# below the current numbers, to catch a regression rather than to demand
+# growth. Checked by scripts/coverage_gate.py after a run with --cov.
 [tool.tg-export.coverage-floor]
 "tg_export/__init__.py" = 100
 "tg_export/html/__init__.py" = 100

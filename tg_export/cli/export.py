@@ -119,15 +119,15 @@ def show_config(verbose):
 
 
 def _date_range(date_from, date_to) -> str:
-    """Подпись диапазона дат: одна форма для defaults и для правил."""
+    """A date range caption: one shape for defaults and for rules alike."""
     return f"{date_from or '...'} — {date_to or '...'}"
 
 
 def _rule_summary(rule) -> str:
-    """Подпись правила: чем оно отличается от defaults.
+    """A rule caption: how the rule differs from the defaults.
 
-    Блок был скопирован для `type_rules` и для `chats`, и копии успели
-    разойтись оформлением диапазона дат.
+    The block was copied for `type_rules` and for `chats`, and the copies
+    drifted apart in how they spelled the date range.
     """
     if rule.skip:
         return "skip"

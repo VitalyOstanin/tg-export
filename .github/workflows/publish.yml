@@ -5,12 +5,13 @@ on:
     tags:
       - "v*"
 
-# Права распределены по задачам, а не выданы всему конвейеру: GitHub кладёт
-# ACTIONS_ID_TOKEN_REQUEST_URL и ACTIONS_ID_TOKEN_REQUEST_TOKEN в окружение
-# КАЖДОГО шага job'а, объявившего id-token, поэтому обменять их на upload-token
-# PyPI может любой шаг -- в том числе `uv sync`, исполняющий build-backend'ы
-# зависимостей, и прогон тестов. Публикация в PyPI необратима, поэтому job с
-# id-token не содержит ничего, кроме скачивания артефакта и загрузки.
+# Permissions are handed out per task rather than to the whole pipeline:
+# GitHub puts ACTIONS_ID_TOKEN_REQUEST_URL and ACTIONS_ID_TOKEN_REQUEST_TOKEN
+# into the environment of EVERY step of a job that declares id-token, so any
+# step could trade them for a PyPI upload token -- including `uv sync`, which
+# runs the build backends of the dependencies, and the test run. A PyPI upload
+# cannot be undone, so the job holding id-token does nothing but download the
+# artifact and upload it.
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -34,32 +35,33 @@ jobs:
         run: uv sync
 
       - name: Run all checks
-        # Гейт перед публикацией: релиз делается из тега, ci.yml на тег не
-        # триггерится, поэтому здесь прогоняется тот же набор проверок, что и
-        # на master -- uv lock --check, ruff check, ruff format --check,
-        # pyright, тесты с покрытием и границы покрытия по модулям. Прежде тут
-        # был только pytest, и тег на коммите с рассинхронизированным uv.lock
-        # или с ошибками типов публиковался беспрепятственно.
+        # The gate before publishing: a release is cut from a tag and ci.yml
+        # does not trigger on tags, so the same set of checks master gets runs
+        # here -- uv lock --check, ruff check, ruff format --check, pyright,
+        # the tests with coverage and the per-module coverage floors. This used
+        # to be pytest alone, and a tag on a commit with an out-of-sync uv.lock
+        # or with type errors published unhindered.
         run: scripts/check.sh
 
       - name: Verify tag, manifest and CHANGELOG agree
-        # Сверка идёт ДО публикации: единственная проверка CHANGELOG стояла
-        # ниже загрузки на PyPI, поэтому отсутствующий раздел давал
-        # опубликованную версию, отсутствующий GitHub Release и красный
-        # workflow -- отката у PyPI нет. Здесь же готовятся release notes.
+        # The check runs BEFORE publishing: the only CHANGELOG check used to
+        # sit below the PyPI upload, so a missing section produced a published
+        # version, no GitHub Release and a red workflow -- and PyPI has no
+        # undo. The release notes are prepared by the same step.
         run: uv run python scripts/release_notes.py "$GITHUB_REF_NAME" --output release_notes.md
 
       - name: Build package
         run: uv build
 
       - name: Smoke test built wheel
-        # Установить собранный wheel в изолированное эфемерное окружение и
-        # убедиться, что он не только запускается, но и умеет рендерить.
-        # Why not just --version: точка входа стартует и на пакете, куда не
-        # попали Jinja-шаблоны и статика, а экспорт в такой сборке падает с
-        # TemplateNotFound. Скрипт компилирует все шаблоны и рендерит index.
-        # Why cd: из корня репозитория импортировался бы исходный tg_export,
-        # а не установленный, и проверка стала бы бессмысленной.
+        # Install the built wheel into an isolated ephemeral environment and
+        # check that it not only starts but can render.
+        # Why not just --version: the entry point starts even on a package the
+        # Jinja templates and the static files never made it into, while an
+        # export from such a build fails with TemplateNotFound. The script
+        # compiles every template and renders the index.
+        # Why cd: from the repository root the source tg_export would be
+        # imported instead of the installed one, and the check would be void.
         run: |
           set -euo pipefail
           WHEEL=$(ls "$PWD"/dist/*.whl)
@@ -88,8 +90,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      # Единственное право этого job'а: обменять OIDC-токен на upload-token
-      # PyPI. Стороннего кода здесь не выполняется.
+      # The only power of this job: trade the OIDC token for a PyPI upload
+      # token. No third-party code runs here.
       id-token: write
 
     steps:
@@ -102,10 +104,11 @@ jobs:
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33  # v1.14.2
         with:
-          # PEP 740: артефакты подписываются через тот же OIDC, что и загрузка,
-          # и PyPI показывает, каким workflow собран пакет. Значение совпадает
-          # с умолчанием действия и задано явно: умолчание может измениться, а
-          # публикация необратима, и потерю аттестаций заметили бы не сразу.
+          # PEP 740: the artifacts are signed through the same OIDC as the
+          # upload, and PyPI shows which workflow built the package. The value
+          # matches the action's default and is stated anyway: a default can
+          # change, publishing is irreversible, and losing the attestations
+          # would go unnoticed for a while.
           attestations: true
 
   github-release:
@@ -113,7 +116,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      # contents: write нужен для gh release create; id-token здесь не нужен.
+      # contents: write is what gh release create needs; id-token is not.
       contents: write
 
     steps:

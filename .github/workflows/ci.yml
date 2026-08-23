@@ -57,8 +57,9 @@ jobs:
         run: uv run python -m pytest --cov-report=xml --cov-report=term
 
       - name: Check per-module coverage floors
-        # Общий порог маскирует провал крупного модуля за счёт мелких хорошо
-        # покрытых; этот шаг сверяет каждый модуль с его собственной границей.
+        # The project-wide threshold hides a large module falling behind,
+        # carried by small well covered ones; this step checks every module
+        # against its own floor.
         run: uv run python scripts/coverage_gate.py
 
       - name: Upload coverage to Codecov

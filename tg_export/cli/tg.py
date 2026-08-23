@@ -65,18 +65,18 @@ def tg_messages(chat_id, account, limit, truncate, no_truncate):
 
 
 def _sender_name(sender) -> str:
-    """Имя одной строкой: `first last`, пустая строка -- если имени нет."""
+    """A name on one line: `first last`, empty when there is no name."""
     first = getattr(sender, "first_name", "") or ""
     last = getattr(sender, "last_name", "") or ""
     return f"{first} {last}".strip()
 
 
 def _message_preview(msg, *, truncate: int = DEFAULT_MESSAGE_TEXT_LENGTH) -> tuple[str, str]:
-    """Пара (отправитель, текст) для строки списка сообщений.
+    """The (sender, text) pair of one line of a message listing.
 
-    Медиа показывается типом в квадратных скобках, служебное сообщение -- своим
-    действием в круглых. Сборка была скопирована в `tg messages` и в `tg info`,
-    и копии успели разойтись: одна резала текст по настройке, другая литералом.
+    Media shows as its type in square brackets, a service message as its action
+    in round ones. This was copied into `tg messages` and `tg info`, and the
+    copies drifted: one cut the text by the setting, the other by a literal.
     """
     sender = _sender_name(msg.sender) if msg.sender else ""
     text = msg.message or ""
