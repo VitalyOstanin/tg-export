@@ -69,6 +69,11 @@ DOWNLOAD_STAGING_PREFIX = ".tg-export-download-"
 _DISK_SPACE_CHECK_INTERVAL = 5.0
 
 
+# Extensions a downloaded story is shown as a video by. Membership in a set,
+# not a substring test: "" is a substring of every extension, so a file without
+# one used to be taken for a video and rendered inside a <video> element.
+STORY_VIDEO_EXTENSIONS = frozenset({".mp4", ".mov", ".avi"})
+
 MEDIA_SUBDIRS = {
     MediaType.photo: "photos",
     MediaType.video: "videos",

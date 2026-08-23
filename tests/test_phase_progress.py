@@ -1,12 +1,15 @@
-"""Как двигается указатель last_msg_id между запусками экспорта.
+"""Как двигаются признаки прогресса фаз между запусками экспорта.
 
 Фаза 1 идёт от новых сообщений к старым, поэтому продвинутый на максимум
-указатель означает «всё выше этого id обработано». Прерывание посреди фазы 1
-это условие нарушает, и пропущенный интервал уже никто не заберёт: фаза 2 идёт
-вниз от oldest_msg_id и в него не заходит.
+указатель last_msg_id означает «всё выше этого id обработано». Прерывание
+посреди фазы 1 это условие нарушает, и пропущенный интервал уже никто не
+заберёт: фаза 2 идёт вниз от oldest_msg_id и в него не заходит.
+
+Признак full_history означает «ниже уже ничего нет» и навсегда отключает фазу
+2, поэтому он вправе появиться только после исчерпанного итератора.
 """
 
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -61,11 +64,12 @@ def _chat(chat_id: int) -> Chat:
     )
 
 
-def _exporter(state, ids_newest_first, *, stop_after=None, monkeypatch=None):
-    """Exporter over a fake chat whose phase 1 yields the given ids.
+def _exporter(state, ids_newest_first, *, stop_after=None, monkeypatch=None, date_of=None):
+    """Exporter over a fake chat whose passes yield the given ids.
 
     stop_after: raise the shutdown flag once that many messages have been
     handed out, imitating Ctrl+C in the middle of phase 1.
+    date_of: the date of a message by its id, for a run bounded by date_from.
     """
     exporter_holder = {}
 
@@ -75,7 +79,8 @@ def _exporter(state, ids_newest_first, *, stop_after=None, monkeypatch=None):
         for msg_id in ids_newest_first:
             if msg_id <= min_id:
                 continue
-            yield SimpleNamespace(id=msg_id, date=datetime(2026, 1, 1, 12, 0))
+            when = date_of(msg_id) if date_of else datetime(2026, 1, 1, 12, 0)
+            yield SimpleNamespace(id=msg_id, date=when)
             served += 1
             if stop_after is not None and served >= stop_after:
                 exporter_holder["exporter"]._shutdown = True
@@ -187,3 +192,58 @@ async def test_reset_rewinds_the_pointer(state):
     await state.reset_chat_progress(chat_id)
 
     assert await state.get_last_msg_id(chat_id) == 0
+
+
+@pytest.mark.asyncio
+async def test_a_pass_stopped_by_date_from_does_not_close_the_history(state, tmp_path, monkeypatch):
+    # В чате есть 110..101, и сообщения ниже 105 старше границы date_from:
+    # фаза 2 останавливается на первом из них, хотя чат ниже границы не
+    # исчерпан. Признак full_history=1 отключил бы фазу 2 навсегда, и снятие
+    # границы уже не вернуло бы эти сообщения -- помог бы только `state reset`.
+    chat_id = 46
+    exporter = _exporter(
+        state,
+        ids_newest_first=list(range(110, 100, -1)),
+        date_of=lambda msg_id: datetime(2026, 1, 1, 12, 0) if msg_id >= 105 else datetime(2025, 12, 1, 12, 0),
+        monkeypatch=monkeypatch,
+    )
+    chat_config = MagicMock()
+    chat_config.date_from = date(2026, 1, 1)
+    chat_config.date_to = None
+
+    await exporter.export_chat(
+        chat=_chat(chat_id),
+        chat_config=chat_config,
+        chat_dir=Path(tmp_path / "chat"),
+        stats=ExportStats(),
+    )
+
+    chat_state = await state.get_chat_state(chat_id)
+    assert chat_state is not None
+    assert chat_state["full_history"] == 0
+
+
+@pytest.mark.asyncio
+async def test_an_exhausted_pass_closes_the_history(state, tmp_path, monkeypatch):
+    # Контроль: без границы по дате итератор доходит до конца, и только это
+    # даёт право утверждать, что ниже в чате ничего нет.
+    chat_id = 47
+    exporter = _exporter(
+        state,
+        ids_newest_first=list(range(110, 100, -1)),
+        monkeypatch=monkeypatch,
+    )
+    chat_config = MagicMock()
+    chat_config.date_from = None
+    chat_config.date_to = None
+
+    await exporter.export_chat(
+        chat=_chat(chat_id),
+        chat_config=chat_config,
+        chat_dir=Path(tmp_path / "chat"),
+        stats=ExportStats(),
+    )
+
+    chat_state = await state.get_chat_state(chat_id)
+    assert chat_state is not None
+    assert chat_state["full_history"] == 1

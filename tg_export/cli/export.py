@@ -676,7 +676,10 @@ async def _group_chats_for_index(chats, cfg, state, should_stop):
             continue
         # Counts for every chat were read once before the loop: asking per chat
         # meant one or two round-trips through aiosqlite for each of them.
-        msg_count = counts.get(chat.id) or chat.messages_count
+        # A chat present with zero keeps its zero: chat.messages_count is the
+        # top_message id, an approximation Telegram hands over, so `or` used to
+        # replace an honest "nothing exported" with a number in the thousands.
+        msg_count = counts.get(chat.id, chat.messages_count)
 
         dir_name = f"{sanitize_name(chat.name)}_{chat.id}"
         # Why sanitize_name(folder): the on-disk folder directory is created via

@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -223,3 +224,51 @@ def test_every_download_status_has_a_place_in_the_summary():
     stats = ExportStats()
     unknown = [name for name in counters if not hasattr(stats, name)]
     assert not unknown, f"счётчиков с такими именами в ExportStats нет: {unknown}"
+
+
+async def _exported_story(tmp_path, filename: str) -> dict:
+    """Одна выгруженная история, названная скачанным файлом `filename`."""
+    story = SimpleNamespace(id=1, media=object(), caption="", date=None)
+    api = MagicMock()
+    api.get_stories = AsyncMock(return_value=(SimpleNamespace(stories=[story]), SimpleNamespace(stories=[])))
+    api.client = MagicMock()
+    api.client.download_media = AsyncMock(return_value=str(tmp_path / "stories" / filename))
+
+    renderer = MagicMock()
+    renderer.output_dir = tmp_path
+    exporter = Exporter(
+        api=api,
+        state=AsyncMock(),
+        config=MagicMock(),
+        renderer=renderer,
+        downloader=AsyncMock(),
+        account="test",
+    )
+
+    await exporter._export_stories()
+
+    (stories,), _ = renderer.render_stories.call_args
+    return stories[0]
+
+
+@pytest.mark.asyncio
+async def test_a_story_file_without_an_extension_is_rendered_as_a_photo(tmp_path):
+    """Проверялось вхождение суффикса в строку расширения, а не равенство.
+
+    Пустая строка входит в любую (`"" in ".mp4"`), поэтому файл без расширения
+    всегда попадал в `video_path` и подставлялся в `<video>` вместо `<img>`.
+    То же было у любого суффикса-префикса: `.m`, `.mo`, `.av`.
+    """
+    story = await _exported_story(tmp_path, "story_0")
+
+    assert story["photo_path"] == "stories/story_0"
+    assert story["video_path"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_story_video_is_still_rendered_as_a_video(tmp_path):
+    # Контроль: расширение из списка по-прежнему даёт видео, и регистр не мешает.
+    story = await _exported_story(tmp_path, "story_0.MP4")
+
+    assert story["video_path"] == "stories/story_0.MP4"
+    assert story["photo_path"] is None

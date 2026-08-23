@@ -636,8 +636,12 @@ class ExportState:
         """
         where = "" if chat_id is None else " WHERE chat_id=?"
         params: tuple = () if chat_id is None else (chat_id,)
+        # messages_count goes with the messages: message_counts() prefers the
+        # recorded number over COUNT(*), so a row left saying "5000" while the
+        # table is empty makes the index page advertise messages nobody has.
+        counted = ", messages_count=0" if delete_messages else ""
         await self.db.execute(
-            f"UPDATE export_state SET last_msg_id=0, oldest_msg_id=0, full_history=0{where}",
+            f"UPDATE export_state SET last_msg_id=0, oldest_msg_id=0, full_history=0{counted}{where}",
             params,
         )
         if delete_messages:
@@ -842,17 +846,19 @@ class ExportState:
         The index page asked for this chat by chat -- one or two round-trips
         each -- while `state show` had long been doing it in a single query.
         The count recorded in ``export_state`` wins when it is set, exactly as
-        the per-chat path decided.
+        the per-chat path decided. A chat known to the state but holding no
+        messages is reported as zero rather than left out: the caller has no
+        number of its own to fall back on but the top_message id Telegram
+        offers, which is an approximation in the thousands, not a count.
         """
         counts: dict[int, int] = {}
         async with self.db.execute("SELECT chat_id, COUNT(*) FROM messages GROUP BY chat_id") as cur:
             for chat_id, count in await cur.fetchall():
                 counts[chat_id] = count
-        async with self.db.execute(
-            "SELECT chat_id, messages_count FROM export_state WHERE messages_count > 0"
-        ) as cur:
+        async with self.db.execute("SELECT chat_id, messages_count FROM export_state") as cur:
             for chat_id, count in await cur.fetchall():
-                counts[chat_id] = count
+                if count > 0 or chat_id not in counts:
+                    counts[chat_id] = count
         return counts
 
     async def list_chat_states(self) -> list[dict[str, Any]]:

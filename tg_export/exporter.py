@@ -42,7 +42,13 @@ from tg_export.console import console
 from tg_export.converter import convert_message
 from tg_export.format import format_moment, format_size, format_speed
 from tg_export.html.renderer import HtmlRenderer
-from tg_export.media import DiskSpaceError, DownloadProgress, DownloadStatus, MediaDownloader
+from tg_export.media import (
+    STORY_VIDEO_EXTENSIONS,
+    DiskSpaceError,
+    DownloadProgress,
+    DownloadStatus,
+    MediaDownloader,
+)
 from tg_export.models import Chat, ForumTopic, Message
 from tg_export.state import ExportState
 from tg_export.verify import RedownloadResult, clean_staging, redownload_broken_file
@@ -1207,7 +1213,6 @@ class Exporter:
         # before_date_from below.
         p2_kwargs = phase_two_kwargs(iter_kwargs, oldest_msg_id=oldest_msg_id, last_msg_id=last_msg_id)
 
-        reached_date_from = False
         iterator_exhausted = False
         last_progress_time = time.monotonic()
         async with _MediaPipeline(self, chat_dir, stats, chat.id, self._download_window()) as media:
@@ -1215,7 +1220,6 @@ class Exporter:
                 if self._shutdown:
                     break
                 if before_date_from(tl_msg.date):
-                    reached_date_from = True
                     break
                 msg = convert_message(tl_msg, chat_id=chat.id)
                 if current_oldest == 0 or msg.id < current_oldest:
@@ -1253,7 +1257,12 @@ class Exporter:
         # interruption between them left inconsistent state -- e.g.
         # set_oldest_msg_id firing on a chat with no row and failing the
         # INSERT with NOT NULL constraint failed: export_state.last_msg_id.
-        new_full = not self._shutdown and (reached_date_from or iterator_exhausted)
+        # Only an exhausted iterator means "the chat holds nothing older".
+        # Stopping at date_from means the filter ended the descent, and the
+        # filter can be lifted: full_history=1 written here would make phase 2
+        # skipped forever, and the messages below the former bound could be
+        # recovered only through `state reset`.
+        new_full = not self._shutdown and iterator_exhausted
         await self.state.commit_phase_progress(
             chat_id=chat.id,
             last_msg_id=max(last_msg_id, phase2_max_id),
@@ -1615,7 +1624,7 @@ class Exporter:
                     if path:
                         path_obj = Path(str(path))
                         rel = f"stories/{path_obj.name}"
-                        if any(path_obj.suffix.lower() in ext for ext in [".mp4", ".mov", ".avi"]):
+                        if path_obj.suffix.lower() in STORY_VIDEO_EXTENSIONS:
                             video_path = rel
                         else:
                             photo_path = rel

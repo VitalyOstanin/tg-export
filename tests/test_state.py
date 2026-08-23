@@ -680,3 +680,37 @@ async def test_caching_the_same_chat_twice_refreshes_every_column(tmp_path):
 
     assert row is not None
     assert tuple(row) == ("After", "group", "Work", 42, 9, 1, 1, 1, 1)
+
+
+@pytest.mark.asyncio
+async def test_a_reset_that_deletes_messages_zeroes_the_recorded_count(tmp_path):
+    """Строка чата оставалась внутренне противоречивой после явной перемотки.
+
+    `message_counts` предпочитает записанное число фактическому `COUNT(*)`,
+    поэтому чат с пустой таблицей сообщений продолжал показываться на
+    индексной странице с прежними тысячами.
+    """
+    from tg_export.state import ExportState
+
+    async with ExportState(tmp_path / "state.db") as state:
+        await state.update_messages_count(5, 500)
+        assert await state.message_counts() == {5: 500}
+
+        await state.reset_chat_progress(5, delete_messages=True)
+
+        assert await state.message_counts() == {5: 0}
+
+
+@pytest.mark.asyncio
+async def test_a_chat_known_to_be_empty_is_reported_as_zero(tmp_path):
+    """Индексная страница иначе подставляет top_message -- оценку в тысячах.
+
+    Чат без выгруженных сообщений в словарь не попадал вовсе, и вызывающий
+    брал `chat.messages_count`, то есть идентификатор последнего сообщения.
+    """
+    from tg_export.state import ExportState
+
+    async with ExportState(tmp_path / "state.db") as state:
+        await state.update_messages_count(11, 0)
+
+        assert await state.message_counts() == {11: 0}
