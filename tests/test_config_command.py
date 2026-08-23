@@ -140,3 +140,77 @@ def test_the_json_of_config_never_carries_the_api_hash(account_env):
     payload = json.loads(result.stdout)
 
     assert "api_hash" not in payload["credentials"], payload
+
+
+def test_the_json_never_carries_the_proxy_password(account_env, tmp_path):
+    """Пароль прокси не должен уходить в машиночитаемый вывод.
+
+    Текстовый вывод той же команды показывает его как `***`, а `api_hash`
+    исключён из JSON намеренно и закреплён тестом. Флаг `--json` добавлен
+    позже, и секция `proxy` уходила в него сырой -- с паролем в открытом виде.
+    """
+    import json
+
+    (account_env / "config.yaml").write_text(
+        "proxy:\n  type: socks5\n  host: 10.0.0.1\n  port: 9050\n  username: alice\n  password: s3cret\n",
+        encoding="utf-8",
+    )
+    _write_full_config(account_env, tmp_path)
+
+    result = CliRunner().invoke(main, ["config", "--json"])
+
+    assert result.exit_code == 0, result.output
+    assert "s3cret" not in result.output, f"пароль прокси в выводе: {result.output}"
+    payload = json.loads(result.stdout)
+    assert payload["proxy"]["username"] == "alice"
+    assert payload["proxy"]["password_set"] is True
+
+
+def test_a_proxy_the_loader_rejects_is_not_shown_as_the_setting_in_force(account_env, tmp_path):
+    """Настройка, с которой экспорт откажется работать, не выдаётся за действующую.
+
+    Для `min_free_space` это уже сделано: запись, отвергнутая загрузчиком,
+    показывается как `<как записано> (invalid: причина)`. Секция `proxy`
+    читалась мимо загрузчика, поэтому опечатка в имени ключа давала одну
+    неверную картину в `config` и другую -- в `run`.
+    """
+    (account_env / "config.yaml").write_text(
+        "proxy:\n  type: socks\n  host: 10.0.0.1\n  prot: 9050\n", encoding="utf-8"
+    )
+    _write_full_config(account_env, tmp_path)
+
+    result = CliRunner().invoke(main, ["config"])
+
+    assert result.exit_code == 0, result.output
+    assert "invalid" in result.output, f"негодная настройка показана как действующая: {result.output}"
+
+
+def test_a_proxy_written_as_a_scalar_does_not_break_the_command(account_env, tmp_path):
+    """Команда, которая показывает конфигурацию, обязана пережить любую её запись."""
+    (account_env / "config.yaml").write_text("proxy: socks5://10.0.0.1:9050\n", encoding="utf-8")
+    _write_full_config(account_env, tmp_path)
+
+    result = CliRunner().invoke(main, ["config"])
+
+    assert result.exit_code == 0, result.output
+    assert "AttributeError" not in result.output, result.output
+    assert "invalid" in result.output, result.output
+
+
+def test_the_json_settings_name_every_section_the_text_output_shows(account_env, tmp_path):
+    """Состав `-v --json` совпадает с составом текстового `-v`.
+
+    Довод тот же, по которому в текстовый вывод внесены все разделы: раздела,
+    которого в выводе нет, для читателя не существует -- и для программы,
+    читающей JSON, в той же мере.
+    """
+    import json
+
+    _write_full_config(account_env, tmp_path)
+
+    result = CliRunner().invoke(main, ["config", "-v", "--json"])
+
+    assert result.exit_code == 0, result.output
+    settings = json.loads(result.stdout)["accounts"][0]["settings"]
+    missing = sorted(k for k in config_module._KNOWN_TOP_LEVEL_KEYS if k not in json.dumps(settings))
+    assert not missing, f"в JSON нет разделов: {missing}\n{json.dumps(settings, indent=2)}"

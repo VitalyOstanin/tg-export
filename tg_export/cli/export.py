@@ -39,6 +39,20 @@ from tg_export.verify import RedownloadResult, clean_staging, redownload_broken_
 logger = logging.getLogger(__name__)
 
 
+# Global data the account carries besides the chats. Every flag is named in the
+# output even when it is on: a section missing from `config -v` cannot be told
+# apart from one the loader does not know.
+_GLOBAL_DATA_FLAGS = (
+    "personal_info",
+    "contacts",
+    "sessions",
+    "userpics",
+    "stories",
+    "profile_music",
+    "other_data",
+)
+
+
 @click.command("config")
 @click.option("--verbose", "-v", is_flag=True, help="Verbose: show per-account filters")
 @click.option("--json", "as_json", is_flag=True, help="Output as machine-readable JSON")
@@ -55,17 +69,7 @@ def show_config(verbose, as_json):
     click.echo(f"# Global: {global_path}")
     if global_path.exists():
         data = mgr.load_global_config()
-        proxy = data.get("proxy")
-        if proxy:
-            auth_str = ""
-            if proxy.get("username"):
-                auth_str = f" auth={proxy['username']}:***"
-            click.echo(
-                f"  proxy: {proxy.get('type', 'socks5')}://{proxy.get('host')}:{proxy.get('port')}"
-                f" rdns={proxy.get('rdns', True)}{auth_str}"
-            )
-        else:
-            click.echo("  proxy: none")
+        click.echo(f"  proxy: {_proxy_caption(_proxy_view(mgr))}")
 
         mfs = _min_free_space_caption(mgr, data)
         # Check free space on the output partition, not cwd
@@ -127,7 +131,7 @@ def _config_payload(mgr, *, verbose: bool) -> dict:
     payload: dict = {
         "config_dir": str(mgr.config_dir),
         "global_config": str(global_path) if global_path.exists() else None,
-        "proxy": data.get("proxy"),
+        "proxy": _proxy_view(mgr) if global_path.exists() else None,
         "min_free_space": _min_free_space_caption(mgr, data) if global_path.exists() else None,
         "free_space_checked_at": str(disk_check_path),
         "free_bytes": usage.free,
@@ -156,19 +160,99 @@ def _credential_api_id(cred_path: Path):
     return creds.get("api_id")
 
 
+def _rule_payload(rule) -> dict:
+    """One rule as data: the same facts `_rule_summary` puts in a caption."""
+    if rule.skip:
+        return {"skip": True}
+    return {
+        "skip": False,
+        "media": {"types": list(rule.media.types), "max_file_size": rule.media.max_file_size_bytes}
+        if rule.media
+        else None,
+        "date_from": rule.date_from,
+        "date_to": rule.date_to,
+    }
+
+
 def _account_settings(config_path: Path) -> dict:
-    """Output and media settings of one account, as the loader reads them."""
+    """Every section of one account, as the loader reads them.
+
+    The same sections as the verbose text output, for the same reason it names
+    all of them: a section absent from the output cannot be told apart from one
+    the loader does not know. Rules come as structures rather than captions --
+    a program reading this compares values, not phrasing.
+    """
     from tg_export.config import load_config
 
     cfg = load_config(config_path)
+    defaults = cfg.defaults
     return {
         "output": {"path": str(cfg.output.path), "format": cfg.output.format},
-        "media": {
-            "types": list(cfg.defaults.media.types),
-            "max_file_size": format_size(cfg.defaults.media.max_file_size_bytes),
-            "concurrent_downloads": cfg.defaults.media.concurrent_downloads,
+        "defaults": {
+            "media": {
+                "types": list(defaults.media.types),
+                "max_file_size": format_size(defaults.media.max_file_size_bytes),
+                "concurrent_downloads": defaults.media.concurrent_downloads,
+            },
+            "export_service_messages": defaults.export_service_messages,
+            "date_from": defaults.date_from,
+            "date_to": defaults.date_to,
         },
+        **{name: getattr(cfg, name) for name in _GLOBAL_DATA_FLAGS},
+        "type_rules": {key: _rule_payload(rule) for key, rule in cfg.type_rules.items()},
+        "folders": {
+            name: {
+                "skip": folder.skip,
+                "media": {"types": list(folder.media.types)} if folder.media else None,
+                "chats": len(folder.chats),
+            }
+            for name, folder in cfg.folders.items()
+        },
+        "chats": [{"id": rule.id, "name": rule.name, **_rule_payload(rule)} for rule in cfg.chats],
+        "unmatched": cfg.unmatched_action,
+        "left_channels": cfg.left_channels_action,
+        "archived": cfg.archived_action,
+        "import_existing": [{"type": entry.type, "path": str(entry.path)} for entry in cfg.import_existing],
     }
+
+
+def _proxy_view(mgr) -> dict | None:
+    """The proxy as the export reads it, without the password.
+
+    Reading the raw YAML here showed a setting the export refuses to work
+    with as the one in force: a typo in a key name gave port `None` in
+    `config` and the default port in `run`. The password never leaves this
+    function -- the text output has always masked it, and the JSON one is
+    read by programs that have no use for it; whether one is set at all is
+    still worth knowing, so that stays as a flag.
+    """
+    from tg_export.config import ConfigError
+
+    try:
+        proxy = mgr.load_proxy()
+    except ConfigError as e:
+        return {"invalid": str(e)}
+    if proxy is None:
+        return None
+    kind, host, port, rdns, username, password = proxy
+    return {
+        "type": kind,
+        "host": host,
+        "port": port,
+        "rdns": rdns,
+        "username": username,
+        "password_set": bool(password),
+    }
+
+
+def _proxy_caption(view: dict | None) -> str:
+    """One line about the proxy, in the shape the other captions use."""
+    if view is None:
+        return "none"
+    if "invalid" in view:
+        return f"invalid: {view['invalid']}"
+    auth = f" auth={view['username']}:***" if view["username"] else ""
+    return f"{view['type']}://{view['host']}:{view['port']} rdns={view['rdns']}{auth}"
 
 
 def _min_free_space_caption(mgr, data: dict) -> str:
@@ -231,20 +315,6 @@ def _rule_summary(rule) -> str:
     if rule.date_from or rule.date_to:
         parts.append(f"dates={_date_range(rule.date_from, rule.date_to)}")
     return ", ".join(parts) or "defaults"
-
-
-# Global data the account carries besides the chats. Every flag is named in the
-# output even when it is on: a section missing from `config -v` cannot be told
-# apart from one the loader does not know.
-_GLOBAL_DATA_FLAGS = (
-    "personal_info",
-    "contacts",
-    "sessions",
-    "userpics",
-    "stories",
-    "profile_music",
-    "other_data",
-)
 
 
 def _global_data_summary(cfg) -> str:

@@ -237,9 +237,10 @@ class AccountManager:
             return None
         proxy_raw = data["proxy"]
         if not isinstance(proxy_raw, dict):
-            raise ConfigError(
-                f"proxy must be a mapping with type/host/port, got {type(proxy_raw).__name__} ({proxy_raw!r})"
-            )
+            # The value itself is not quoted here: a proxy written as one
+            # string carries the password, and this message reaches the
+            # terminal, the log and `config`.
+            raise ConfigError(f"proxy must be a mapping with type/host/port, got {type(proxy_raw).__name__}")
         if not proxy_raw:
             return None
         proxy_type = proxy_raw.get("type", _DEFAULT_PROXY_TYPE)
