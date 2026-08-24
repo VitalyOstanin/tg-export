@@ -131,6 +131,21 @@ class DefaultsConfig:
     export_service_messages: bool = True
 
 
+# Global data the account carries besides the chats, in the order the config
+# file and `config -v` list them. Every place that names these sections -- the
+# known top-level keys, the loader, the template, the verbose listing -- reads
+# them from here, so a section added to `Config` is added once.
+GLOBAL_DATA_SECTIONS = (
+    "personal_info",
+    "contacts",
+    "sessions",
+    "userpics",
+    "stories",
+    "profile_music",
+    "other_data",
+)
+
+
 @dataclass
 class Config:
     output: OutputConfig = field(default_factory=OutputConfig)
@@ -486,13 +501,7 @@ _OUTPUT_FORMATS = {"html"}
 _KNOWN_TOP_LEVEL_KEYS = {
     "output",
     "defaults",
-    "personal_info",
-    "contacts",
-    "sessions",
-    "userpics",
-    "stories",
-    "profile_music",
-    "other_data",
+    *GLOBAL_DATA_SECTIONS,
     "left_channels",
     "archived",
     "unmatched",
@@ -649,13 +658,7 @@ def load_config(path: Path) -> Config:
     return Config(
         output=output,
         defaults=defaults,
-        personal_info=_require_bool(raw, "personal_info", bare.personal_info),
-        contacts=_require_bool(raw, "contacts", bare.contacts),
-        sessions=_require_bool(raw, "sessions", bare.sessions),
-        userpics=_require_bool(raw, "userpics", bare.userpics),
-        stories=_require_bool(raw, "stories", bare.stories),
-        profile_music=_require_bool(raw, "profile_music", bare.profile_music),
-        other_data=_require_bool(raw, "other_data", bare.other_data),
+        **{name: _require_bool(raw, name, getattr(bare, name)) for name in GLOBAL_DATA_SECTIONS},
         left_channels_action=left_channels_action,
         archived_action=archived_action,
         import_existing=import_existing,

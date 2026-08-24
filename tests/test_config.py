@@ -516,7 +516,7 @@ def test_the_template_and_the_example_carry_the_defaults_of_the_loader(tmp_path)
     коде оставляла оба артефакта тихо утверждающими прежнее значение.
     """
     from tg_export.catalog import generate_config_template
-    from tg_export.config import Config, load_config
+    from tg_export.config import GLOBAL_DATA_SECTIONS, Config, load_config
 
     defaults = Config()
     template = tmp_path / "template.yaml"
@@ -539,16 +539,35 @@ def test_the_template_and_the_example_carry_the_defaults_of_the_loader(tmp_path)
         assert cfg.left_channels_action == defaults.left_channels_action, path
         assert cfg.archived_action == defaults.archived_action, path
         assert cfg.unmatched_action == defaults.unmatched_action, path
-        for flag in (
-            "personal_info",
-            "contacts",
-            "sessions",
-            "userpics",
-            "stories",
-            "profile_music",
-            "other_data",
-        ):
+        for flag in GLOBAL_DATA_SECTIONS:
             assert getattr(cfg, flag) == getattr(defaults, flag), (path, flag)
+
+
+def test_every_global_data_section_is_known_everywhere_it_is_named():
+    """Разделы общих данных перечислены в нескольких местах, и все — из одного.
+
+    Раздел («личные данные», «контакты», «истории» и остальные) назывался
+    заново в полях `Config`, в наборе известных ключей верхнего уровня, в
+    разборе конфигурации, в шаблоне и в перечне для `config -v`. Пропуск в
+    любом из этих мест проявлялся по-своему: отказом «Unknown config key(s)»,
+    настройкой, которой не видно в `config -v`, или строкой, которой нет в
+    шаблоне. Перечень объявлен один раз, и проверка сверяет с ним остальные.
+    """
+    from typing import get_type_hints
+
+    from tg_export.catalog import generate_config_template
+    from tg_export.cli.export import _global_data_summary
+    from tg_export.config import _KNOWN_TOP_LEVEL_KEYS, GLOBAL_DATA_SECTIONS, Config
+
+    flags = {name for name, hint in get_type_hints(Config).items() if hint is bool}
+    assert set(GLOBAL_DATA_SECTIONS) == flags
+
+    template = generate_config_template([], account="acc")
+    summary = _global_data_summary(Config())
+    for name in GLOBAL_DATA_SECTIONS:
+        assert name in _KNOWN_TOP_LEVEL_KEYS, name
+        assert f"{name}=" in summary, name
+        assert f"{name}: " in template, name
 
 
 def test_folder_media_is_not_overridden_by_a_type_rule():

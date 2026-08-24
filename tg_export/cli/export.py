@@ -41,20 +41,6 @@ from tg_export.verify import RedownloadResult, redownload_broken_files
 logger = logging.getLogger(__name__)
 
 
-# Global data the account carries besides the chats. Every flag is named in the
-# output even when it is on: a section missing from `config -v` cannot be told
-# apart from one the loader does not know.
-_GLOBAL_DATA_FLAGS = (
-    "personal_info",
-    "contacts",
-    "sessions",
-    "userpics",
-    "stories",
-    "profile_music",
-    "other_data",
-)
-
-
 @click.command("config")
 @click.option("--verbose", "-v", is_flag=True, help="Verbose: show per-account filters")
 @click.option("--json", "as_json", is_flag=True, help="Output as machine-readable JSON")
@@ -184,7 +170,7 @@ def _account_settings(config_path: Path) -> dict:
     the loader does not know. Rules come as structures rather than captions --
     a program reading this compares values, not phrasing.
     """
-    from tg_export.config import load_config
+    from tg_export.config import GLOBAL_DATA_SECTIONS, load_config
 
     cfg = load_config(config_path)
     defaults = cfg.defaults
@@ -200,7 +186,7 @@ def _account_settings(config_path: Path) -> dict:
             "date_from": defaults.date_from,
             "date_to": defaults.date_to,
         },
-        **{name: getattr(cfg, name) for name in _GLOBAL_DATA_FLAGS},
+        **{name: getattr(cfg, name) for name in GLOBAL_DATA_SECTIONS},
         "type_rules": {key: _rule_payload(rule) for key, rule in cfg.type_rules.items()},
         "folders": {
             name: {
@@ -320,8 +306,14 @@ def _rule_summary(rule) -> str:
 
 
 def _global_data_summary(cfg) -> str:
-    """One line naming every global-data flag together with its value."""
-    return ", ".join(f"{name}={'on' if getattr(cfg, name) else 'off'}" for name in _GLOBAL_DATA_FLAGS)
+    """One line naming every global-data section together with its value.
+
+    Every section is named even when it is on: a section missing from the
+    output cannot be told apart from one the loader does not know.
+    """
+    from tg_export.config import GLOBAL_DATA_SECTIONS
+
+    return ", ".join(f"{name}={'on' if getattr(cfg, name) else 'off'}" for name in GLOBAL_DATA_SECTIONS)
 
 
 def _show_account_config(config_path):

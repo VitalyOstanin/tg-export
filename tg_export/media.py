@@ -13,6 +13,7 @@ import sqlite3
 import tempfile
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -621,9 +622,7 @@ class MediaDownloader:
         if not self._has_free_space(chat_dir):
             raise DiskSpaceError(f"Free space less than {self.min_free_bytes // 1024**3} GB")
 
-        subdir = media_subdir(media.type)
-        target_dir = chat_dir / subdir
-        target_dir.mkdir(parents=True, exist_ok=True)
+        target_dir = self._media_target_dir(media, chat_dir)
 
         self._clean_stale_staging(target_dir)
         try:
@@ -719,12 +718,44 @@ class MediaDownloader:
             status=status,
         )
 
+    @staticmethod
+    def _media_target_dir(media: Media, chat_dir: Path) -> Path:
+        """Subdirectory of the chat this media type goes to, created if absent."""
+        target_dir = chat_dir / media_subdir(media.type)
+        target_dir.mkdir(parents=True, exist_ok=True)
+        return target_dir
+
+    def _place_in_chat_dir(
+        self,
+        src: Path,
+        media: Media,
+        chat_dir: Path,
+        expected_size: int,
+        hand_over: Callable[[Path, Path], bool],
+    ) -> Path | None:
+        """Put a file that is already on disk into the chat's media subdirectory.
+
+        The three sources a file can be reused from -- another chat of this
+        account, a sibling account's export, a tdesktop export -- differ only
+        in where the file comes from and how it is handed over; the rest is
+        the same for all of them. Blocking: it creates the directory, picks a
+        free name by looking at the directory and hands the file over.
+        """
+        target_dir = self._media_target_dir(media, chat_dir)
+        with self._targets.claim(target_dir, src.name, expected_size, reuse=True) as (dst, reused):
+            if reused:
+                return dst
+            if hand_over(src, dst):
+                return dst
+        return None
+
     async def _try_link_intra_account(self, media: Media, chat_dir: Path, chat_id: int) -> Path | None:
         """Try to hardlink file from another chat within the same account."""
         if not media.file or not media.file.id:
             return None
+        file_id = media.file.id
 
-        existing = await self.state.get_file_any_chat(media.file.id)
+        existing = await self.state.get_file_any_chat(file_id)
         if existing is None or existing["chat_id"] == chat_id:
             return None
 
@@ -732,19 +763,19 @@ class MediaDownloader:
         if not src.exists():
             return None
 
-        subdir = media_subdir(media.type)
-        target_dir = chat_dir / subdir
-        target_dir.mkdir(parents=True, exist_ok=True)
-        with self._targets.claim(target_dir, src.name, media.file.size or 0, reuse=True) as (dst, reused):
-            if reused:
-                return dst
-            # to_thread: os.link is a syscall and the copy fallback reads and
-            # writes the whole file. Both stall every other download and the
-            # Telegram connection while they run in the loop thread.
-            if await asyncio.to_thread(_link_or_copy, src, dst):
-                logger.debug("linked intra-account: file_id=%d %s -> %s", media.file.id, src, dst)
-                return dst
-        return None
+        def hand_over(source: Path, dst: Path) -> bool:
+            if not _link_or_copy(source, dst):
+                return False
+            logger.debug("linked intra-account: file_id=%d %s -> %s", file_id, source, dst)
+            return True
+
+        # to_thread: os.link is a syscall, the copy fallback reads and writes
+        # the whole file, and picking a free name looks at the directory. All
+        # of it stalls every other download and the Telegram connection while
+        # it runs in the loop thread.
+        return await asyncio.to_thread(
+            self._place_in_chat_dir, src, media, chat_dir, media.file.size or 0, hand_over
+        )
 
     def close(self) -> None:
         """Release what the downloader keeps open for the whole export."""
@@ -812,15 +843,15 @@ class MediaDownloader:
                 )
                 continue
 
-            subdir = media_subdir(media.type)
-            target_dir = chat_dir / subdir
-            target_dir.mkdir(parents=True, exist_ok=True)
-            with self._targets.claim(target_dir, src.name, expected_size, reuse=True) as (dst, reused):
-                if reused:
-                    return dst
-                if _link_or_copy(src, dst):
-                    logger.debug("linked from sibling: file_id=%d %s -> %s", file_id, src, dst)
-                    return dst
+            def hand_over(source: Path, dst: Path) -> bool:
+                if not _link_or_copy(source, dst):
+                    return False
+                logger.debug("linked from sibling: file_id=%d %s -> %s", file_id, source, dst)
+                return True
+
+            placed = self._place_in_chat_dir(src, media, chat_dir, expected_size, hand_over)
+            if placed is not None:
+                return placed
 
         return None
 
@@ -842,22 +873,19 @@ class MediaDownloader:
             if src is None:
                 continue
 
-            # Copy to tg-export directory structure
-            subdir = media_subdir(media.type)
-            target_dir = chat_dir / subdir
-            target_dir.mkdir(parents=True, exist_ok=True)
-            expected_size = media.file.size if media.file else 0
-            with self._targets.claim(target_dir, src.name, expected_size, reuse=True) as (dst, reused):
-                if reused:
-                    return dst
+            def hand_over(source: Path, dst: Path) -> bool:
                 try:
-                    shutil.copy2(src, dst)
+                    shutil.copy2(source, dst)
                 except OSError as e:
-                    logger.debug("tdesktop copy failed: %s -> %s (%s) -- skipping", src, dst, e)
-                    continue
-
+                    logger.debug("tdesktop copy failed: %s -> %s (%s) -- skipping", source, dst, e)
+                    return False
                 logger.debug("imported from tdesktop: msg %d -> %s", msg_id, dst)
-                return dst
+                return True
+
+            expected_size = media.file.size if media.file else 0
+            placed = self._place_in_chat_dir(src, media, chat_dir, expected_size, hand_over)
+            if placed is not None:
+                return placed
 
         return None
 

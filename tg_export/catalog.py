@@ -217,7 +217,7 @@ def generate_config_template(chats: list[Chat], account: str | None = None) -> s
     is deliberately not the loader's default is the media type list: see
     `TEMPLATE_MEDIA_TYPES`.
     """
-    from tg_export.config import Config
+    from tg_export.config import GLOBAL_DATA_SECTIONS, Config
 
     defaults = Config()
     media = defaults.defaults.media
@@ -239,13 +239,7 @@ def generate_config_template(chats: list[Chat], account: str | None = None) -> s
         f"    concurrent_downloads: {media.concurrent_downloads}",
         f"  export_service_messages: {str(defaults.defaults.export_service_messages).lower()}",
         "",
-        f"personal_info: {str(defaults.personal_info).lower()}",
-        f"contacts: {str(defaults.contacts).lower()}",
-        f"sessions: {str(defaults.sessions).lower()}",
-        f"userpics: {str(defaults.userpics).lower()}",
-        f"stories: {str(defaults.stories).lower()}",
-        f"profile_music: {str(defaults.profile_music).lower()}",
-        f"other_data: {str(defaults.other_data).lower()}",
+        *(f"{name}: {str(getattr(defaults, name)).lower()}" for name in GLOBAL_DATA_SECTIONS),
         "",
         "left_channels:",
         f"  action: {defaults.left_channels_action}  # skip | export_with_defaults",

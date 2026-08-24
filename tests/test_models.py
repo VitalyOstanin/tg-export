@@ -55,3 +55,20 @@ def test_a_service_action_of_an_unknown_class_degrades_instead_of_failing():
 
     assert isinstance(action, ServiceAction)
     assert action.type == "ActionUnknownFuture"
+
+
+def test_rebuilding_a_record_leaves_it_as_it_was():
+    """Сборка объекта из записи не должна её портить.
+
+    Одна из копий этого разбора забирала поле `type` из переданного словаря
+    методом `pop`: запись, прочитанная во второй раз, приходила уже без типа,
+    и собрать её было нельзя. Разбор читает запись, а не потребляет её.
+    """
+    from tg_export.models import TextPart, TextType, with_enum_type
+
+    record = {"type": "bold", "text": "x"}
+
+    part = with_enum_type(TextPart, record, TextType)
+
+    assert part == TextPart(type=TextType.bold, text="x")
+    assert record == {"type": "bold", "text": "x"}

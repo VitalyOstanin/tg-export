@@ -49,6 +49,11 @@ def one_message(result):
     return result
 
 
+def _peer_ids(peers) -> list[int]:
+    """Ids of the peers a folder lists, skipping the ones with no id."""
+    return [found for peer in peers if (found := peer_id(peer)) is not None]
+
+
 class TgApi:
     def __init__(self, session_path: str | Path, api_id: int, api_hash: str, proxy: ProxyTuple | None = None):
         kwargs = {}
@@ -214,12 +219,9 @@ class TgApi:
 
     async def iter_dialogs(self, archived: bool | None = None):
         """Iterate dialogs. None=all, False=non-archived only, True=archived only."""
-        if archived is None:
-            async for dialog in self.client.iter_dialogs():
-                yield dialog
-        else:
-            async for dialog in self.client.iter_dialogs(archived=archived):
-                yield dialog
+        kwargs = {} if archived is None else {"archived": archived}
+        async for dialog in self.client.iter_dialogs(**kwargs):
+            yield dialog
 
     async def get_left_channels(self) -> list[Any]:
         """Return every left channel, following the offset pages.
@@ -263,12 +265,8 @@ class TgApi:
                 continue
             raw_title = f.title
             title = raw_title.text if hasattr(raw_title, "text") else str(raw_title)
-            peer_ids = [
-                found for peer in getattr(f, "include_peers", []) if (found := peer_id(peer)) is not None
-            ]
-            exclude_ids = [
-                found for peer in getattr(f, "exclude_peers", []) if (found := peer_id(peer)) is not None
-            ]
+            peer_ids = _peer_ids(getattr(f, "include_peers", []))
+            exclude_ids = _peer_ids(getattr(f, "exclude_peers", []))
             folders.append(
                 {
                     "name": title,
@@ -293,12 +291,10 @@ class TgApi:
         return await client.download_media(message, file=str(path), progress_callback=progress_cb)  # pyright: ignore[reportArgumentType]
 
     async def get_personal_info(self):
-        result = await self.client(GetFullUserRequest(InputUserSelf()))
-        return result
+        return await self.client(GetFullUserRequest(InputUserSelf()))
 
     async def get_contacts(self):
-        contacts = await self.client(GetContactsRequest(hash=0))
-        return contacts
+        return await self.client(GetContactsRequest(hash=0))
 
     async def get_sessions(self):
         sessions = await self.client(GetAuthorizationsRequest())

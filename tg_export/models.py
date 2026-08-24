@@ -772,6 +772,17 @@ def media_to_dict(media: Media) -> dict[str, Any]:
     return d
 
 
+def with_enum_type(cls, d: dict[str, Any], enum):
+    """Rebuild `cls` from a stored record whose `type` is an enum value.
+
+    JSON keeps the enum as a plain string, so every reader turns it back and
+    passes the remaining fields on. Written out at each place, that step came
+    in three shapes, one of which popped the field off the caller's dictionary
+    -- a record read twice then came back without its type.
+    """
+    return cls(type=enum(d["type"]), **{k: v for k, v in d.items() if k != "type"})
+
+
 def _fields_the_class_takes(cls, d: dict[str, Any], *, what: str) -> dict[str, Any]:
     """Drop what `cls` cannot take, saying in the log what was dropped.
 
@@ -809,22 +820,16 @@ def media_from_dict(d: dict[str, Any]) -> Media:
     if "file" in d and isinstance(d["file"], dict):
         d["file"] = FileInfo(**d["file"])
     if "question" in d and isinstance(d.get("question"), list):
-        d["question"] = [
-            TextPart(type=TextType(p["type"]), **{k: v for k, v in p.items() if k != "type"})
-            for p in d["question"]
-        ]
+        d["question"] = [with_enum_type(TextPart, p, TextType) for p in d["question"]]
     if "answers" in d and isinstance(d.get("answers"), list):
         answers = []
         for a in d["answers"]:
-            text_parts = [
-                TextPart(type=TextType(p["type"]), **{k: v for k, v in p.items() if k != "type"})
-                for p in a.get("text", [])
-            ]
+            text_parts = [with_enum_type(TextPart, p, TextType) for p in a.get("text", [])]
             answers.append(
                 PollAnswer(text=text_parts, voters=a.get("voters", 0), chosen=a.get("chosen", False))
             )
         d["answers"] = answers
-    if "items" in d and isinstance(d.get("items"), list) and cls in (TodoListMedia,):
+    if "items" in d and isinstance(d.get("items"), list) and cls is TodoListMedia:
         d["items"] = [TodoItem(**item) for item in d["items"]]
 
     return cls(**_fields_the_class_takes(cls, d, what="media"))

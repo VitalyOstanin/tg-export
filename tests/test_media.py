@@ -281,6 +281,35 @@ async def test_reuse_replaces_a_truncated_leftover_instead_of_returning_it(tmp_p
 
 
 @pytest.mark.asyncio
+async def test_a_failed_handover_is_not_reported_as_a_reused_file(tmp_path, monkeypatch):
+    """Отказ переноса -- это не «файл на месте».
+
+    Ни ссылка, ни копия не проходят, когда на каталоге назначения нет прав или
+    кончилось место. Путь переиспользования обязан ответить отказом, чтобы
+    вызывающий скачал файл заново; ответ путём назначения зарегистрировал бы в
+    состоянии готовым файл, которого на диске нет.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    src = tmp_path / "other_chat" / "photos" / "photo.jpg"
+    src.parent.mkdir(parents=True)
+    src.write_bytes(b"full")
+
+    def refuse(*args, **kwargs):
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr("tg_export.media.os.link", refuse)
+    monkeypatch.setattr("tg_export.media.shutil.copy2", refuse)
+
+    dl = _downloader(MagicMock(), tmp_path)
+    dl.state.get_file_any_chat = AsyncMock(return_value={"chat_id": 2, "local_path": str(src)})
+
+    chat_dir = tmp_path / "chat"
+    assert await dl._try_link_intra_account(_photo(), chat_dir, chat_id=1) is None
+    assert not (chat_dir / "photos" / "photo.jpg").exists()
+
+
+@pytest.mark.asyncio
 async def test_two_files_with_the_same_name_do_not_land_on_one_path(tmp_path, monkeypatch):
     """Замок берётся по file_id, а борьба идёт за имя в каталоге назначения.
 

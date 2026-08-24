@@ -231,6 +231,7 @@ uv run pyright
 | 39 | типы, записываемые через `vars()`, не содержат полей-dataclass          | `test_types_written_with_vars_stay_flat`                         |
 | 40 | формат даты и времени берётся из `format.py`, а не пишется литералом    | `test_no_time_format_is_spelled_as_a_literal`                    |
 | 41 | группы команд не зовут имён с подчёркиванием из соседних модулей        | `test_no_command_group_reaches_for_an_underscored_name_of_another_module` |
+| 42 | проверки стиля берут файлы из общих множеств, а не своим обходом        | `test_style_rules_take_their_files_from_the_shared_sets`         |
 
 ## Схема базы состояния
 

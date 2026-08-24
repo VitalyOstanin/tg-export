@@ -39,10 +39,10 @@ _TDESKTOP_MEDIA_SUBDIRS = (
 # to find it would cost the entire import.
 _CHAT_NAME_HEADER_LINES = 50
 
-# Upper bound on the number of `messagesN.html` pages of one chat. The loop
-# stops at the first missing page; the bound only keeps a mistake from turning
-# into an endless walk.
-_MAX_TDESKTOP_PAGES = 10000
+# Pages of one chat: `messages.html`, then `messages2.html` and on. The
+# directory holds other files whose names start the same way, so a page is
+# recognised by the whole stem, not by the prefix.
+_TDESKTOP_PAGE_RE = re.compile(r"^messages(\d*)$")
 
 _MSG_ID_RE = re.compile(r'id="message(\d+)"')
 _HREF_RE = re.compile(r'href="[^"]*?/chats/[^"]*?/(' + "|".join(_TDESKTOP_MEDIA_SUBDIRS) + r')/([^"]+)"')
@@ -154,6 +154,19 @@ def _extract_chat_name(msg_html: Path) -> str | None:
     return None
 
 
+def _page_number(page: Path) -> int | None:
+    """Position of a tdesktop page in the chat; None when it is not a page.
+
+    The first page is `messages.html` and carries no number; the rest are
+    numbered from two. Sorting by the number rather than by the name keeps
+    `messages10.html` after `messages9.html`.
+    """
+    m = _TDESKTOP_PAGE_RE.match(page.stem)
+    if m is None:
+        return None
+    return int(m.group(1)) if m.group(1) else 1
+
+
 def _parse_chat_media(chat_dir: Path) -> dict[int, list[Path]]:
     """Parse all messages*.html in a chat dir to build msg_id -> [file_paths] index.
 
@@ -162,13 +175,11 @@ def _parse_chat_media(chat_dir: Path) -> dict[int, list[Path]]:
     """
     index: dict[int, list[Path]] = {}
 
-    # Collect all message HTML files in order
-    html_files = [chat_dir / "messages.html"]
-    for i in range(2, _MAX_TDESKTOP_PAGES):
-        f = chat_dir / f"messages{i}.html"
-        if not f.exists():
-            break
-        html_files.append(f)
+    # Pages are taken as they are on disk rather than counted off from the
+    # second one: a chat whose pages were deleted or renumbered used to lose
+    # everything past the first missing number, without a word about it.
+    pages = [(n, f) for f in chat_dir.glob("messages*.html") if (n := _page_number(f)) is not None]
+    html_files = [f for _, f in sorted(pages)]
 
     chat_dir_resolved = chat_dir.resolve()
     for html_file in html_files:

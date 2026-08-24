@@ -40,6 +40,7 @@ from tg_export.models import (
     encode_default,
     media_from_dict,
     media_to_dict,
+    with_enum_type,
 )
 from tg_export.privacy import create_private_file, restrict_file
 
@@ -118,12 +119,7 @@ def _text_parts_to_json(parts: list[TextPart]) -> str:
 def _text_parts_from_json(s: str | None) -> list[TextPart]:
     if not s:
         return []
-    raw = json.loads(s)
-    result = []
-    for tp in raw:
-        tp_type = TextType(tp.pop("type"))
-        result.append(TextPart(type=tp_type, **tp))
-    return result
+    return [with_enum_type(TextPart, tp, TextType) for tp in json.loads(s)]
 
 
 def _media_to_json(media: Media | None) -> str | None:
@@ -174,12 +170,7 @@ def _reactions_to_json(reactions: list[Reaction]) -> str | None:
 def _reactions_from_json(s: str | None) -> list[Reaction]:
     if not s:
         return []
-    raw = json.loads(s)
-    result = []
-    for r in raw:
-        r["type"] = ReactionType(r["type"])
-        result.append(Reaction(**r))
-    return result
+    return [with_enum_type(Reaction, r, ReactionType) for r in json.loads(s)]
 
 
 def _buttons_to_json(buttons: list[list[InlineButton]] | None) -> str | None:
@@ -193,14 +184,7 @@ def _buttons_to_json(buttons: list[list[InlineButton]] | None) -> str | None:
 def _buttons_from_json(s: str | None) -> list[list[InlineButton]] | None:
     if not s:
         return None
-    raw = json.loads(s)
-    return [
-        [
-            InlineButton(type=InlineButtonType(btn["type"]), **{k: v for k, v in btn.items() if k != "type"})
-            for btn in row
-        ]
-        for row in raw
-    ]
+    return [[with_enum_type(InlineButton, btn, InlineButtonType) for btn in row] for row in json.loads(s)]
 
 
 def _month_range(month_key: str) -> tuple[str, str]:

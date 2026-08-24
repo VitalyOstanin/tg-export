@@ -261,3 +261,35 @@ async def test_closing_the_sibling_readers_leaves_the_event_loop(tmp_path, monke
     await cli_export._close_downloader(dl)
 
     assert seen["thread"] != threading.get_ident()
+
+
+@pytest.mark.asyncio
+async def test_intra_account_target_dir_is_prepared_off_the_loop(tmp_path, monkeypatch):
+    """Подготовка каталога назначения тоже блокирующая работа.
+
+    Кроме самого связывания файла, путь между чатами создаёт подкаталог типа
+    медиа и подбирает свободное имя, обходя каталог вызовами stat. В выгрузке
+    с тысячами файлов в одном подкаталоге это заметная работа, и в потоке
+    цикла она останавливает соседние загрузки так же, как копирование.
+    """
+    src_dir = tmp_path / "other"
+    src_dir.mkdir()
+    src = src_dir / "p.jpg"
+    src.write_bytes(b"data")
+
+    seen = {}
+    real_mkdir = Path.mkdir
+
+    def watching_mkdir(self, *args, **kwargs):
+        seen["thread"] = threading.get_ident()
+        return real_mkdir(self, *args, **kwargs)
+
+    monkeypatch.setattr("tg_export.media.Path.mkdir", watching_mkdir)
+
+    dl = _downloader()
+    dl.state.get_file_any_chat = AsyncMock(return_value={"chat_id": 2, "local_path": str(src)})
+
+    result = await dl._try_link_intra_account(_photo(), tmp_path / "chat", chat_id=1)
+
+    assert result is not None
+    assert seen["thread"] != threading.get_ident()

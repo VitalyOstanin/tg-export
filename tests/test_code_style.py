@@ -18,6 +18,33 @@ from pathlib import Path
 
 PROJECT = Path(__file__).resolve().parent.parent / "tg_export"
 
+# Файлы, по которым идут проверки. Правило берёт то множество, чей охват оно
+# задумано проверять, и охват виден по имени: язык артефактов и уровень
+# импортов относятся и к сценариям обслуживания -- это такой же код проекта,
+# -- а предел длины функции и запрет своего SQL касаются только того кода,
+# который ставится вместе с пакетом.
+
+
+def _package_sources() -> list[Path]:
+    """Модули пакета."""
+    return sorted(PROJECT.rglob("*.py"))
+
+
+def _project_sources() -> list[Path]:
+    """Модули пакета и сценарии обслуживания в `scripts/`."""
+    return sorted([*PROJECT.rglob("*.py"), *(PROJECT.parent / "scripts").rglob("*.py")])
+
+
+def _test_sources() -> list[Path]:
+    """Файлы тестов."""
+    return sorted(Path(__file__).resolve().parent.glob("*.py"))
+
+
+def _trees(sources: list[Path]) -> Iterator[tuple[Path, ast.Module]]:
+    """Пары «путь, разобранное дерево» для перечисленных файлов."""
+    for path in sources:
+        yield path, ast.parse(path.read_text(encoding="utf-8"))
+
 
 def _read(name: str) -> str:
     return (PROJECT / name).read_text(encoding="utf-8")
@@ -138,14 +165,8 @@ def test_every_telegram_client_is_built_on_the_fixed_session():
     они позиционно. Проверка статическая: подсчитывать поведением каждый новый
     путь создания клиента пришлось бы отдельным тестом.
     """
-    import ast
-
     offenders = []
-    # Скрипты обслуживания -- такой же код проекта: конвенция обходила их
-    # только потому, что проверка начиналась с каталога пакета.
-    sources = [*PROJECT.rglob("*.py"), *(PROJECT.parent / "scripts").rglob("*.py")]
-    for path in sorted(sources):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
+    for path, tree in _trees(_project_sources()):
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
@@ -170,8 +191,6 @@ def _exit_is_a_failure(node) -> bool:
     tg_export/cli/common.py); до этого то же место выглядело как
     `raise click.exceptions.Exit(1)`, и обе формы здесь распознаются.
     """
-    import ast
-
     if isinstance(node, ast.Raise) and isinstance(node.exc, ast.Call):
         call = node.exc
     elif isinstance(node, ast.Expr) and isinstance(node.value, ast.Call):
@@ -189,8 +208,6 @@ def _exit_is_a_failure(node) -> bool:
 
 def _is_suppressible_diag(node) -> bool:
     """Истина для вызова `diag(...)`, который проглотит `--quiet`."""
-    import ast
-
     if not isinstance(node, ast.Expr) or not isinstance(node.value, ast.Call):
         return False
     func = node.value.func
@@ -210,8 +227,6 @@ def test_messages_before_a_failure_exit_survive_quiet():
     путь отказа пришлось бы писать отдельно, а новый путь появляется с каждой
     командой.
     """
-    import ast
-
     offenders = []
     for node in ast.walk(ast.parse(_read_cli())):
         for field in ("body", "orelse", "finalbody"):
@@ -262,8 +277,8 @@ def test_logger_declared_after_all_module_imports():
     константой -- то же поведение, другая запись.
     """
     offenders = []
-    for path in sorted(PROJECT.glob("**/*.py")):
-        body = ast.parse(path.read_text(encoding="utf-8")).body
+    for path, tree in _trees(_package_sources()):
+        body = tree.body
         assignments = [
             (i, node, target.id)
             for i, node in enumerate(body)
@@ -306,11 +321,7 @@ def test_standard_library_is_imported_at_module_level():
     import sys
 
     offenders = []
-    # Скрипты обслуживания -- такой же код проекта: конвенция обходила их
-    # только потому, что проверка начиналась с каталога пакета.
-    sources = [*PROJECT.rglob("*.py"), *(PROJECT.parent / "scripts").rglob("*.py")]
-    for path in sorted(sources):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
+    for path, tree in _trees(_project_sources()):
         for node in ast.walk(tree):
             if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
                 continue
@@ -417,8 +428,6 @@ def test_every_package_data_file_is_declared_for_packaging():
 
 
 def _cli_ast():
-    import ast
-
     return ast.parse(_read_cli())
 
 
@@ -430,8 +439,6 @@ def test_cli_never_manages_connection_lifetime_by_hand():
     оставляло соединение открытым. Контекстменеджер убирает и повтор, и разрыв
     между захватом ресурса и его защитой.
     """
-    import ast
-
     manual = {"connect", "disconnect", "open", "close"}
     hits = []
     for node in ast.walk(_cli_ast()):
@@ -453,8 +460,6 @@ def test_cli_helpers_are_context_managers():
     done»; ровно так же поступал `_open_state`. Обязательство, записанное в
     docstring, а не в коде, соблюдается ровно до первой невнимательности.
     """
-    import ast
-
     src = _read("cli/common.py")
     tree = ast.parse(src)
     for name in ("connected_api", "opened_state"):
@@ -479,12 +484,9 @@ def test_no_function_is_longer_than_a_screenful():
     форматирования статуса, настройку Live и цикл по чатам. На таком объёме
     побочные эффекты собственной правки перестают быть видны.
     """
-    import ast
-
     limit = 100
     too_long = []
-    for path in sorted(PROJECT.rglob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
+    for path, tree in _trees(_package_sources()):
         for node in ast.walk(tree):
             if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
                 continue
@@ -514,8 +516,6 @@ def test_cli_does_not_run_sql_of_its_own():
 
 def test_cli_has_a_module_docstring():
     """У каждого модуля пакета cli есть строка назначения, у пакета -- карта групп."""
-    import ast
-
     missing = [p.name for p in CLI_MODULES if not ast.get_docstring(ast.parse(p.read_text(encoding="utf-8")))]
     assert not missing, f"модулям пакета cli нужен docstring: {missing}"
     doc = ast.get_docstring(ast.parse(_read("cli/__init__.py")))
@@ -536,7 +536,6 @@ def test_every_text_file_is_read_as_utf8():
     кириллице, поэтому на системе с не-UTF-8 локалью это либо падение, либо
     искажённые имена, из-за которых правила молча не срабатывают.
     """
-    import ast
 
     def _mode(node: ast.Call) -> str:
         """Режим открытия: у open(path, mode) он второй, у Path.open(mode) -- первый."""
@@ -544,11 +543,7 @@ def test_every_text_file_is_read_as_utf8():
         return getattr(args[0], "value", "") if args else ""
 
     offenders = []
-    # Скрипты обслуживания -- такой же код проекта: конвенция обходила их
-    # только потому, что проверка начиналась с каталога пакета.
-    sources = [*PROJECT.rglob("*.py"), *(PROJECT.parent / "scripts").rglob("*.py")]
-    for path in sorted(sources):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
+    for path, tree in _trees(_project_sources()):
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
@@ -618,7 +613,7 @@ def test_cli_does_not_use_click_private_exit_exception():
     деталь реализации зависимости. Документированный способ -- `ctx.exit(code)`.
     """
     offenders = []
-    for path in PROJECT.rglob("*.py"):
+    for path in _package_sources():
         for ln_no, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
             if "click.exceptions." in line:
                 offenders.append((path.name, ln_no, line.strip()))
@@ -672,8 +667,7 @@ def test_no_module_imports_the_same_name_twice():
     впечатление, что зависимость уводится в тело по той же причине, что и они.
     """
     offenders = []
-    for path in sorted(PROJECT.glob("**/*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
+    for path, tree in _trees(_package_sources()):
         top = {
             alias.asname or alias.name.split(".")[0]
             for node in tree.body
@@ -709,7 +703,7 @@ def test_the_package_and_its_build_files_speak_english():
         "scripts/release_notes.py",
     }
     files = [
-        *PROJECT.glob("**/*.py"),
+        *_package_sources(),
         root / "pyproject.toml",
         *(root / "scripts").glob("*"),
         *(root / ".github" / "workflows").glob("*.yml"),
@@ -753,8 +747,7 @@ def test_every_command_named_in_the_code_exists():
     valid = _command_paths()
     groups = {path for path in valid if " " not in path}
     offenders = []
-    for path in sorted(PROJECT.glob("**/*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
+    for path, tree in _trees(_package_sources()):
         for node in ast.walk(tree):
             if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
                 continue
@@ -779,9 +772,9 @@ def test_no_function_body_starts_with_a_blank_line():
     начале блока сохраняет, поэтому расхождение остаётся незамеченным.
     """
     offenders = []
-    for path in sorted(PROJECT.glob("**/*.py")):
+    for path, tree in _trees(_package_sources()):
         lines = path.read_text(encoding="utf-8").splitlines()
-        for node in ast.walk(ast.parse("\n".join(lines))):
+        for node in ast.walk(tree):
             if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
                 continue
             first = node.body[0].lineno
@@ -798,7 +791,7 @@ def test_no_module_ends_with_a_divider_banner():
     репозиторию приводил читателя не в тот модуль.
     """
     offenders = []
-    for path in sorted(PROJECT.glob("**/*.py")):
+    for path in _package_sources():
         tail = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
         if tail and tail[-1].lstrip().startswith("#"):
             offenders.append(str(path.relative_to(PROJECT)))
@@ -817,10 +810,9 @@ def test_file_statuses_are_spelled_by_the_enum_not_as_free_strings():
 
     values = {status.value for status in FileStatus}
     offenders = []
-    for path in sorted(PROJECT.glob("**/*.py")):
+    for path, tree in _trees(_package_sources()):
         if path.name == "models.py":
             continue
-        tree = ast.parse(path.read_text(encoding="utf-8"))
         enum_bodies = {
             id(child)
             for node in ast.walk(tree)
@@ -856,8 +848,7 @@ def test_no_module_constant_is_read_above_its_declaration():
     списки известных ключей секций.
     """
     offenders = []
-    for path in sorted(PROJECT.glob("**/*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
+    for path, tree in _trees(_package_sources()):
         declared: dict[str, int] = {}
         for node in tree.body:
             targets = node.targets if isinstance(node, ast.Assign) else []
@@ -904,11 +895,9 @@ def test_the_tests_speak_russian():
     нет, и разошлась с кодом именно она: пятьдесят один docstring без единой
     кириллической буквы, причём языки смешаны внутри одного файла.
     """
-    tests_dir = Path(__file__).resolve().parent
     cyrillic = re.compile("[а-яА-ЯёЁ]")
     offenders = []
-    for path in sorted(tests_dir.glob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
+    for path, tree in _trees(_test_sources()):
         module_doc = ast.get_docstring(tree)
         if module_doc and not cyrillic.search(module_doc):
             offenders.append(f"{path.name}:1 docstring модуля")
@@ -938,11 +927,10 @@ def test_no_question_is_asked_on_stdout():
     описание удаляемого и затем молчание, а stdout переставал быть пустым.
     """
     offenders = []
-    for path in sorted(PROJECT.glob("**/*.py")):
+    for path, tree in _trees(_package_sources()):
         # console.py объявляет сами помощники -- поток задан там.
         if path.name == "console.py":
             continue
-        tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in _calls(tree):
             if _qualified_call(node) in {"click.confirm", "click.prompt"}:
                 offenders.append(f"{path.relative_to(PROJECT)}:{node.lineno} прямой вызов")
@@ -1023,10 +1011,9 @@ def test_no_time_format_is_spelled_as_a_literal():
     X.date else ""` -- четыре раза, хотя это и есть содержимое `format_moment`.
     """
     offenders = []
-    for path in sorted(PROJECT.glob("**/*.py")):
+    for path, tree in _trees(_package_sources()):
         if path.name == "format.py":
             continue
-        tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in _calls(tree):
             if _called_name(node) not in {"strftime", "strptime"}:
                 continue
@@ -1047,8 +1034,7 @@ def test_no_command_group_reaches_for_an_underscored_name_of_another_module():
     """
     allowed = {"_QUIET", "_DEBUG"}  # состояние прогона, читается через модуль
     offenders = []
-    for path in sorted((PROJECT / "cli").glob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
+    for path, tree in _trees(CLI_MODULES):
         for node in ast.walk(tree):
             if isinstance(node, ast.Attribute) and node.attr.startswith("_") and node.attr not in allowed:
                 owner = node.value
@@ -1061,3 +1047,31 @@ def test_no_command_group_reaches_for_an_underscored_name_of_another_module():
                     if alias.name.startswith("_") and alias.name not in allowed
                 ]
     assert not offenders, f"чужое имя с подчёркиванием: {offenders}"
+
+
+def test_style_rules_take_their_files_from_the_shared_sets():
+    """Охват правила задаётся именем множества, а не выражением на месте.
+
+    Исходники обходились здесь тремя разными выражениями: два из них означали
+    одно и то же множество разными словами, а третье добавляло `scripts/`.
+    Какое из них верно для нового правила, по коду понять было нельзя, и
+    правило молча получало охват уже задуманного -- зелёный тест при этом
+    выглядит одинаково в обоих случаях. Множества объявлены в шапке файла с
+    обоснованием, а проверки берут файлы из них.
+    """
+    allowed = {"_package_sources", "_project_sources", "_test_sources"}
+    tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+    offenders = []
+    for function in tree.body:
+        if not isinstance(function, ast.FunctionDef) or function.name in allowed:
+            continue
+        for node in ast.walk(function):
+            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                continue
+            if node.func.attr not in {"glob", "rglob"}:
+                continue
+            pattern = node.args[0] if node.args else None
+            if isinstance(pattern, ast.Constant) and str(pattern.value).endswith(".py"):
+                offenders.append(f"{function.name}:{node.lineno}")
+
+    assert not offenders, f"свой обход исходников вместо общего множества: {offenders}"
