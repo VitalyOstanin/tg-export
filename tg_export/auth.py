@@ -61,6 +61,9 @@ _DEFAULT_PROXY_TYPE = "socks5"
 _DEFAULT_PROXY_HOST = "127.0.0.1"
 _DEFAULT_PROXY_PORT = 1080
 
+# Keys the `proxy` section of the global config may carry.
+_PROXY_KEYS = {"type", "host", "port", "rdns", "username", "password"}
+
 
 def _notify(message: str) -> None:
     """Print a login status line to stderr.
@@ -262,14 +265,24 @@ class AccountManager:
         host = proxy_raw.get("host", _DEFAULT_PROXY_HOST)
         if not isinstance(host, str) or not host:
             raise ConfigError(f"proxy.host must be a non-empty string, got {host!r}")
-        return (
-            proxy_type,
-            host,
-            port,
-            proxy_raw.get("rdns", True),
-            proxy_raw.get("username"),
-            proxy_raw.get("password"),
-        )
+        # Unknown keys are refused, as everywhere else in the configuration:
+        # `user:` written instead of `username:` connected to the proxy with no
+        # credentials at all and said nothing about it.
+        unknown = sorted(set(proxy_raw) - _PROXY_KEYS)
+        if unknown:
+            raise ConfigError(
+                f"unknown keys in proxy: {', '.join(unknown)}; known keys: {', '.join(sorted(_PROXY_KEYS))}"
+            )
+        rdns = proxy_raw.get("rdns", True)
+        if not isinstance(rdns, bool):
+            raise ConfigError(f"proxy.rdns must be true or false, got {rdns!r}")
+        credentials = []
+        for key in ("username", "password"):
+            value = proxy_raw.get(key)
+            if value is not None and not isinstance(value, str):
+                raise ConfigError(f"proxy.{key} must be a string, got {type(value).__name__}")
+            credentials.append(value)
+        return (proxy_type, host, port, rdns, credentials[0], credentials[1])
 
     def load_min_free_space(self) -> int:
         """Free space an export must keep, in bytes.

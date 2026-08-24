@@ -9,6 +9,7 @@ import logging
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from conftest import make_chat
 
 from tg_export.cli import common as cli_common
 from tg_export.exporter import Exporter, ExportStats, chat_error_line
@@ -527,3 +528,45 @@ async def test_a_database_that_did_not_close_changes_the_outcome_of_the_run(tmp_
 
     assert not state._lock.held, "блокировка осталась взятой"
     await real_db.close()
+
+
+@pytest.mark.asyncio
+async def test_a_revoked_session_ends_the_run_instead_of_failing_every_chat(tmp_path, monkeypatch):
+    """Отзыв сессии считался отказом одного чата.
+
+    Каталог из сотен чатов проходился целиком, собирая одну и ту же ошибку:
+    сессия негодна, и каждый следующий чат отказал бы так же.
+    """
+    from telethon.errors import AuthKeyUnregisteredError
+
+    from tg_export.exporter import Exporter, ExportStats
+
+    exporter = Exporter(  # pyright: ignore[reportArgumentType]
+        api=MagicMock(),
+        state=AsyncMock(),
+        config=MagicMock(),
+        renderer=MagicMock(),
+        downloader=MagicMock(),
+        account="acc",
+        quiet=True,
+    )
+    monkeypatch.setattr(
+        exporter,
+        "export_chat",
+        AsyncMock(side_effect=AuthKeyUnregisteredError(request=None)),
+    )
+    monkeypatch.setattr(exporter, "_cleanup_orphaned_files", AsyncMock())
+    exporter.downloader.tdesktop_indexes = []
+
+    stats = ExportStats()
+    keep_going = await exporter._export_chat_entry(
+        make_chat(id=1, name="Чат"),
+        MagicMock(),
+        tmp_path,
+        stats,
+        MagicMock(),
+        MagicMock(),
+    )
+
+    assert keep_going is False, "прогон продолжился на негодной сессии"
+    assert any("no longer authorised" in error for error in stats.errors), stats.errors

@@ -31,6 +31,7 @@ from telethon.tl.functions.users import GetFullUserRequest
 from telethon.tl.types import InputPeerSelf, InputUserSelf
 
 from tg_export.auth import ProxyTuple
+from tg_export.config import ConfigError
 from tg_export.converter import peer_id
 from tg_export.locking import ProcessLock
 from tg_export.session import FixedSQLiteSession
@@ -82,7 +83,11 @@ class TgApi:
             # python-socks is a dependency of the package, so getting here means
             # the environment lost it rather than never had it.
             if importlib.util.find_spec("python_socks") is None:
-                raise RuntimeError(
+                # ConfigError, not a bare RuntimeError: this is a state of the
+                # environment the user can fix, and the message below says how.
+                # Outside the TgExportError hierarchy it was printed with a
+                # "RuntimeError:" prefix and the advice to re-run with --debug.
+                raise ConfigError(
                     "Proxy is configured, but the 'python-socks' package is missing from "
                     "this environment. Telethon would ignore the proxy and connect "
                     "directly, exposing the real IP. The package is a dependency of "

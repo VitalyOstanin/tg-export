@@ -389,3 +389,45 @@ def test_a_leftover_staging_session_is_not_listed_as_an_account(tmp_path):
     (mgr.sessions_dir / ".work.session.new.session").write_bytes(b"")
 
     assert mgr.list_accounts() == ["work"]
+
+
+def test_a_misspelled_proxy_key_is_refused(tmp_path):
+    """`user:` вместо `username:` давало подключение к прокси без учётных данных.
+
+    Секция разбиралась выборкой по известным ключам, а состав не проверялся --
+    в отличие от остальных разделов конфигурации.
+    """
+    import pytest as _pytest
+    import yaml as _yaml
+
+    from tg_export.auth import AccountManager
+    from tg_export.config import ConfigError
+
+    mgr = AccountManager(config_dir=tmp_path)
+    mgr.ensure_dirs()
+    (tmp_path / "config.yaml").write_text(
+        _yaml.safe_dump({"proxy": {"type": "socks5", "host": "127.0.0.1", "port": 1080, "user": "u"}}),
+        encoding="utf-8",
+    )
+
+    with _pytest.raises(ConfigError, match="user"):
+        mgr.load_proxy()
+
+
+def test_proxy_credentials_must_be_strings(tmp_path):
+    """Пароль числом уходил в Telethon как есть."""
+    import pytest as _pytest
+    import yaml as _yaml
+
+    from tg_export.auth import AccountManager
+    from tg_export.config import ConfigError
+
+    mgr = AccountManager(config_dir=tmp_path)
+    mgr.ensure_dirs()
+    (tmp_path / "config.yaml").write_text(
+        _yaml.safe_dump({"proxy": {"host": "127.0.0.1", "port": 1080, "password": 12345}}),
+        encoding="utf-8",
+    )
+
+    with _pytest.raises(ConfigError, match="proxy.password"):
+        mgr.load_proxy()

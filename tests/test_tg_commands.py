@@ -281,12 +281,19 @@ class TestTgMessagesJson:
 
 
 def test_tgapi_raises_when_proxy_set_but_python_socks_missing(tmp_path):
+    """Отказ входит в иерархию ошибок пакета: это состояние окружения, а не дефект.
+
+    Голый `RuntimeError` печатался с приставкой «RuntimeError:» и советом
+    перезапустить с `--debug`, тогда как соседние проверки прокси поднимают
+    `ConfigError` и показывают одно сообщение по существу.
+    """
     from tg_export.api import TgApi
+    from tg_export.config import ConfigError
 
     proxy = ("socks5", "127.0.0.1", 1080, True, None, None)
     with (
         patch("tg_export.api.importlib.util.find_spec", return_value=None),
-        pytest.raises(RuntimeError, match="python-socks"),
+        pytest.raises(ConfigError, match="python-socks"),
     ):
         TgApi(str(tmp_path / "test.session"), 1, "hash", proxy=proxy)
 
@@ -303,6 +310,7 @@ def test_the_missing_proxy_hint_names_a_dependency_of_the_package(tmp_path):
     import tomllib
 
     from tg_export.api import TgApi
+    from tg_export.config import ConfigError
 
     root = Path(__file__).resolve().parent.parent
     with (root / "pyproject.toml").open("rb") as fh:
@@ -313,7 +321,7 @@ def test_the_missing_proxy_hint_names_a_dependency_of_the_package(tmp_path):
     proxy = ("socks5", "127.0.0.1", 1080, True, None, None)
     with (
         patch("tg_export.api.importlib.util.find_spec", return_value=None),
-        pytest.raises(RuntimeError) as excinfo,
+        pytest.raises(ConfigError) as excinfo,
     ):
         TgApi(str(tmp_path / "test.session"), 1, "hash", proxy=proxy)
 

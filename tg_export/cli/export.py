@@ -522,6 +522,7 @@ def _get_dir_size(path: Path) -> int | None:
     """
     # Why "--": prevents paths starting with "-" from being parsed as flags.
     # Why fallback: BSD du has no -b; -sk returns KiB.
+    reasons = []
     for cmd in (["du", "-sb", "--", str(path)], ["du", "-sk", "--", str(path)]):
         try:
             result = subprocess.run(
@@ -533,8 +534,12 @@ def _get_dir_size(path: Path) -> int | None:
             if result.returncode == 0:
                 value = int(result.stdout.split()[0])
                 return value * 1024 if cmd[1] == "-sk" else value
-        except (FileNotFoundError, subprocess.TimeoutExpired, ValueError):
-            continue
+            reasons.append(f"{cmd[1]}: exit {result.returncode}")
+        except (FileNotFoundError, subprocess.TimeoutExpired, ValueError) as e:
+            reasons.append(f"{cmd[1]}: {type(e).__name__}")
+    # The caller drops the line about the size, and until now it did so without
+    # a word anywhere about why -- the two attempts failed silently.
+    logger.debug("size of %s unknown, du failed (%s)", path, "; ".join(reasons))
     return None
 
 
@@ -630,7 +635,7 @@ async def _start_takeout(api, cfg, *, require: bool) -> bool:
     return False
 
 
-def _build_downloader(api, state, cfg, output_base: Path) -> MediaDownloader:
+def _build_downloader(api, state, cfg, output_base: Path, min_free_bytes: int) -> MediaDownloader:
     """Assemble the media downloader together with its reuse sources.
 
     Files already present in a Telegram Desktop export or in a sibling account's
@@ -656,12 +661,11 @@ def _build_downloader(api, state, cfg, output_base: Path) -> MediaDownloader:
         names = [s.parent.name for s in sibling_dbs]
         common.diag(f"Sibling exports for file dedup: {', '.join(names)}")
 
-    min_free = common.account_manager().load_min_free_space()
     return MediaDownloader(
         api=api,
         state=state,
         config=cfg.defaults.media,
-        min_free_bytes=min_free,
+        min_free_bytes=min_free_bytes,
         tdesktop_indexes=tdesktop_indexes,
         sibling_db_paths=sibling_dbs,
     )
@@ -788,6 +792,11 @@ async def _run_export(
     from tg_export.state import ExportState
 
     account, cfg, output_base, state_path = _export_destination(account, config_override, output_override)
+    # Read before anything reaches the network: a bad `min_free_space` used to
+    # be parsed inside `_build_downloader`, that is, after the connect and
+    # after the Takeout request -- and a refused Takeout request costs a
+    # cooldown of up to twenty-four hours.
+    min_free_bytes = common.account_manager().load_min_free_space()
 
     exporter = None
     stats = None
@@ -808,7 +817,7 @@ async def _run_export(
         renderer = HtmlRenderer(output_dir=output_base, config=cfg.output)
         renderer.setup()
 
-        downloader = _build_downloader(api, state, cfg, output_base)
+        downloader = _build_downloader(api, state, cfg, output_base, min_free_bytes)
         # The downloader keeps a read-only connection per sibling database for
         # the whole export; the stack closes them together with the rest.
         resources.push_async_callback(_close_downloader, downloader)

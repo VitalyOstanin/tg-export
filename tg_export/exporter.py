@@ -920,6 +920,10 @@ class Exporter:
         A failure of a single chat is recorded and the run goes on; running out
         of disk space or a forced shutdown ends it.
         """
+        # In the body, as every telethon import of this package: the CLI must
+        # not pay for loading the library on `--help`.
+        from telethon.errors import UnauthorizedError
+
         chat_dir = resolve_chat_dir(
             base=output_base,
             chat_name=chat.name,
@@ -982,6 +986,16 @@ class Exporter:
             # orderly exit.
             console.print("[yellow]Force shutdown during export...[/]")
             raise
+        except UnauthorizedError as e:
+            # Not the failure of one chat: the session is no longer usable, so
+            # every chat still ahead would fail the same way. A catalog of
+            # hundreds used to be walked to the end, collecting one identical
+            # error per chat, and there is no check of the authorisation before
+            # the walk either.
+            logger.warning("Export stopped: the session is no longer authorised", exc_info=True)
+            console.print(chat_error_line(chat.name, e, chat_id=chat.id))
+            stats.errors.append(f"session is no longer authorised: {describe_error(e)}")
+            return False
         except Exception as e:
             logger.warning("Export failed: chat_id=%s name=%s", chat.id, chat.name, exc_info=True)
             console.print(chat_error_line(chat.name, e, chat_id=chat.id))
@@ -1647,7 +1661,10 @@ class Exporter:
                 if path:
                     photo_path = f"profile_photos/{Path(path).name}"
             except Exception as e:
-                logger.debug("Failed to download profile photo: %s", e)
+                # A warning, like the other optional sections (top peers, left
+                # channels): a file that did not arrive is missing from the
+                # export, and at the default level nothing said so.
+                logger.warning("Failed to download profile photo: %s", e)
 
         user_data = {
             "first_name": getattr(user, "first_name", "") or "",
@@ -1761,7 +1778,7 @@ class Exporter:
                 try:
                     path = await self.api.client.download_media(media, file=target)
                 except Exception as e:
-                    logger.debug("Failed to download %s %d: %s", what, index, e)
+                    logger.warning("Failed to download %s %d: %s", what, index, e)
                     return None
             return Path(str(path)) if path else None
 
