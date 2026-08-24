@@ -11,13 +11,17 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import TYPE_CHECKING, Any, NoReturn
 
 import click
 
 from tg_export.auth import AccountManager
 from tg_export.errors import EXIT_FAILURE, EXIT_OK
+
+if TYPE_CHECKING:
+    from tg_export.state import ExportState
 
 logger = logging.getLogger(__name__)
 
@@ -204,13 +208,37 @@ def account_output_dir(base: Path, account: str) -> Path:
 
 
 @contextlib.asynccontextmanager
-async def opened_state(account, config_override, output_override, *, required: bool = True):
+async def opened_state(
+    account, config_override, output_override
+) -> AsyncIterator[tuple[ExportState, Path, str]]:
     """Open the state database of an account; yield ``(state, output_base, account)``.
 
-    With ``required=False`` a missing database yields ``(None, ...)`` instead of
-    exiting: `verify` has nothing to check on a fresh output directory, which is
-    not a failure.
+    A missing database ends the command: every caller of this helper works over
+    an export that must already exist. `verify` is the one command for which a
+    fresh output directory is not a failure, and it has a helper of its own --
+    a boolean flag here used to change the type of what is yielded, so every
+    caller was handed a value that might be None and pyright had to be told to
+    keep quiet about it project-wide.
     """
+    async with _opened_state(account, config_override, output_override, required=True) as opened:
+        state, output_base, resolved = opened
+        assert state is not None  # required=True exits instead of yielding None
+        yield state, output_base, resolved
+
+
+@contextlib.asynccontextmanager
+async def opened_state_if_any(
+    account, config_override, output_override
+) -> AsyncIterator[tuple[ExportState | None, Path, str]]:
+    """Same, but a missing database yields ``(None, ...)`` instead of exiting."""
+    async with _opened_state(account, config_override, output_override, required=False) as opened:
+        yield opened
+
+
+@contextlib.asynccontextmanager
+async def _opened_state(
+    account, config_override, output_override, *, required: bool
+) -> AsyncIterator[tuple[ExportState | None, Path, str]]:
     from tg_export.state import ExportState
 
     account, _, output_base = resolve_output(account, config_override, output_override)
@@ -233,6 +261,34 @@ DEFAULT_MESSAGE_TEXT_LENGTH = 200
 
 # Help for every --account option: one wording, and the command it names is real.
 ACCOUNT_HELP = "Account alias (default: the one set by 'account default')"
+
+
+def over_an_export(func):
+    """The three options of every command that works over an existing export.
+
+    `--account`, `--config` and `--output` were written out at five call sites
+    in two modules, and the copies had drifted: `--output` carried
+    `default=None` in one module and not in the other, so the same flag left a
+    different value behind depending on which command read it.
+    """
+    options = (
+        click.option("--account", default=None, help=ACCOUNT_HELP),
+        click.option(
+            "--config",
+            type=click.Path(exists=True, path_type=Path),
+            default=None,
+            help="Override config path",
+        ),
+        click.option(
+            "--output",
+            type=click.Path(path_type=Path),
+            default=None,
+            help="Export output directory, overriding the config",
+        ),
+    )
+    for option in reversed(options):
+        func = option(func)
+    return func
 
 
 def one_account(positional: str | None, option: str | None) -> str | None:

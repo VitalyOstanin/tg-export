@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from pathlib import Path
 
 import click
 
@@ -51,16 +50,7 @@ _STATE_TABLE_HEADER = _state_table_row([title for title, _ in _STATE_TABLE_COLUM
 
 
 @state.command("show")
-@click.option("--account", default=None, help=common.ACCOUNT_HELP)
-@click.option(
-    "--config", type=click.Path(exists=True, path_type=Path), default=None, help="Override config path"
-)
-@click.option(
-    "--output",
-    type=click.Path(path_type=Path),
-    default=None,
-    help="Export output directory, overriding the config",
-)
+@common.over_an_export
 @click.option("--json", "as_json", is_flag=True, help="Output as machine-readable JSON")
 @click.argument("chat_id", type=int, required=False)
 def state_show(account, config, output, as_json, chat_id):
@@ -133,16 +123,7 @@ async def _state_show(account, config_override, output_override, chat_id, as_jso
 
 
 @state.command("reset")
-@click.option("--account", default=None, help=common.ACCOUNT_HELP)
-@click.option(
-    "--config", type=click.Path(exists=True, path_type=Path), default=None, help="Override config path"
-)
-@click.option(
-    "--output",
-    type=click.Path(path_type=Path),
-    default=None,
-    help="Export output directory, overriding the config",
-)
+@common.over_an_export
 @click.option("--all", "reset_all", is_flag=True, help="Reset all chats")
 @click.option("--delete-messages", is_flag=True, help="Also delete messages from DB")
 @click.option("--yes", is_flag=True, help="Skip confirmation for destructive resets")

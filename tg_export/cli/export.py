@@ -533,13 +533,7 @@ def _get_dir_size(path: Path) -> int | None:
 
 
 @click.command("run")
-@click.option("--account", default=None, help=common.ACCOUNT_HELP)
-@click.option(
-    "--config", type=click.Path(exists=True, path_type=Path), default=None, help="Override config path"
-)
-@click.option(
-    "--output", type=click.Path(path_type=Path), help="Export output directory, overriding the config"
-)
+@common.over_an_export
 @click.option("--verify", is_flag=True, help="Verify file integrity after export")
 @click.option("--dry-run", is_flag=True, help="Show what would be exported")
 @click.option(
@@ -1028,13 +1022,7 @@ async def _render_index(renderer, chats, cfg, state, should_stop=None):
 
 @click.command("purge")
 @click.argument("chat", required=True)
-@click.option("--account", default=None, help=common.ACCOUNT_HELP)
-@click.option(
-    "--config", type=click.Path(exists=True, path_type=Path), default=None, help="Override config path"
-)
-@click.option(
-    "--output", type=click.Path(path_type=Path), help="Export output directory, overriding the config"
-)
+@common.over_an_export
 @click.option("--yes", is_flag=True, help="Skip confirmation")
 def purge_chat(chat, account, config, output, yes):
     """Purge chat data: messages, files, state, and rendered HTML.
@@ -1144,13 +1132,7 @@ async def _purge_chat(chat_arg, account, config_override, output_override, skip_
 
 
 @click.command("verify")
-@click.option("--account", default=None, help=common.ACCOUNT_HELP)
-@click.option(
-    "--config", type=click.Path(exists=True, path_type=Path), default=None, help="Override config path"
-)
-@click.option(
-    "--output", type=click.Path(path_type=Path), help="Export output directory, overriding the config"
-)
+@common.over_an_export
 def verify_files(account, config, output):
     """Verify integrity of previously downloaded files."""
     exit_code = asyncio.run(_verify_files(account, config, output))
@@ -1159,7 +1141,7 @@ def verify_files(account, config, output):
 
 
 async def _verify_files(account, config_override, output_override):
-    async with common.opened_state(account, config_override, output_override, required=False) as (
+    async with common.opened_state_if_any(account, config_override, output_override) as (
         state,
         output_base,
         account,

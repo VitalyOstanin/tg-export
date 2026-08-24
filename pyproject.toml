@@ -187,6 +187,17 @@ venvPath = "."
 venv = ".venv"
 typeCheckingMode = "standard"
 reportMissingImports = "warning"
+# An error in the package: the helper that made a value optional for every
+# caller (`opened_state(..., required=...)`) is gone, and nothing in tg_export
+# reads through a value that may be None. In the tests it stays a warning --
+# they reach into private fields and set attributes of what a stub returned.
+reportOptionalMemberAccess = "error"
+
+[[tool.pyright.executionEnvironments]]
+root = "tests"
+# The package itself is imported from the root of the repository; without this
+# every `from tg_export...` in the tests reads as an unresolved import.
+extraPaths = ["."]
 reportOptionalMemberAccess = "warning"
 
 [tool.setuptools.packages.find]

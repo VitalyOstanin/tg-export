@@ -338,9 +338,11 @@ def test_the_size_of_a_photo_is_taken_from_the_largest_variant():
 
     progressive = type("PhotoSizeProgressive", (), {"w": 1280, "h": 720, "sizes": [100, 5000, 900]})()
 
+    from tg_export.models import PhotoMedia
+
     media = _photo_media(_photo_with(progressive))
 
-    assert media is not None and media.file is not None
+    assert isinstance(media, PhotoMedia) and media.file is not None
     assert (media.width, media.height) == (1280, 720)
     assert media.file.size == 5000
 
@@ -359,9 +361,11 @@ def test_a_cached_photo_reports_the_length_of_its_bytes():
 def test_a_photo_without_variants_is_still_converted():
     from tg_export.converter import _photo_media
 
+    from tg_export.models import PhotoMedia
+
     media = _photo_media(_photo_with(None))
 
-    assert media is not None and media.file is not None
+    assert isinstance(media, PhotoMedia) and media.file is not None
     assert (media.width, media.height, media.file.size) == (0, 0, 0)
 
 
@@ -385,9 +389,11 @@ def test_a_poll_carries_the_votes_of_every_answer():
     )
     results = MagicMock(results=[MagicMock(option=option_a, voters=3), MagicMock(option=option_b, voters=1)])
 
+    from tg_export.models import PollMedia
+
     media = _poll_media(MagicMock(poll=poll, results=results))
 
-    assert media is not None
+    assert isinstance(media, PollMedia)
     assert [answer.voters for answer in media.answers] == [3, 1]
 
 
