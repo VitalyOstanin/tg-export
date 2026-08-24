@@ -1864,32 +1864,29 @@ class Exporter:
             doc_list = list(getattr(result, "ringtones", []) or [])
             if doc_list:
                 ringtones_dir.mkdir(parents=True, exist_ok=True)
-                for idx, doc in enumerate(doc_list):
-                    name = f"ringtone_{idx}"
-                    for attr in getattr(doc, "attributes", []):
-                        if hasattr(attr, "file_name") and attr.file_name:
-                            name = attr.file_name
-                            break
-
-                    path = None
-                    try:
-                        path = await self.api.client.download_media(
-                            doc,
-                            file=str(ringtones_dir / f"ringtone_{idx}"),
-                        )
-                    except Exception as e:
-                        failed += 1
-                        logger.debug("Failed to download ringtone %d: %s", idx, e)
-
-                    size_str = ""
-                    if hasattr(doc, "size") and doc.size:
-                        size_str = format_size(doc.size)
-
+                # Through the same window as the profile photos and the
+                # stories: this was the one global-data section still asking
+                # for a file, waiting for it and only then asking for the next.
+                paths = await self._download_batch(
+                    [(doc, str(ringtones_dir / f"ringtone_{idx}")) for idx, doc in enumerate(doc_list)],
+                    what="ringtone",
+                )
+                failed = sum(1 for path in paths if path is None)
+                for idx, (doc, path) in enumerate(zip(doc_list, paths, strict=True)):
+                    name = next(
+                        (
+                            attr.file_name
+                            for attr in getattr(doc, "attributes", [])
+                            if getattr(attr, "file_name", None)
+                        ),
+                        f"ringtone_{idx}",
+                    )
+                    size = getattr(doc, "size", 0)
                     ringtones.append(
                         {
                             "name": name,
-                            "path": f"ringtones/{Path(str(path)).name}" if path else None,
-                            "size": size_str,
+                            "path": f"ringtones/{path.name}" if path else None,
+                            "size": format_size(size) if size else "",
                         }
                     )
         except Exception:

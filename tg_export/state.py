@@ -918,8 +918,13 @@ class ExportState:
         await self.db.execute(self._UPSERT_SQL, self._msg_to_params(msg))
 
     async def store_messages_batch(self, messages: list[Message]) -> None:
-        """Store a batch of messages in a single transaction."""
-        params = [self._msg_to_params(msg) for msg in messages]
+        """Store a batch of messages in a single transaction.
+
+        The parameters are built in a thread: serialising the JSON columns of
+        five hundred messages costs about sixteen milliseconds, and on the loop
+        that is sixteen milliseconds during which no download advances.
+        """
+        params = await asyncio.to_thread(lambda: [self._msg_to_params(msg) for msg in messages])
         await self.db.executemany(self._UPSERT_SQL, params)
         await self.commit()
 

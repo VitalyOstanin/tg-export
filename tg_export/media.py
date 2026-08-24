@@ -113,7 +113,10 @@ def clean_staging(root: Path) -> None:
 def clean_staging_in(target_dir: Path) -> None:
     """Remove staging directories of `target_dir` itself, without descending."""
     for entry in target_dir.iterdir():
-        if entry.is_dir() and entry.name.startswith(STAGING_PREFIXES):
+        # The name first: `is_dir()` is a stat() per entry, and a media
+        # directory of an export holds tens of thousands of files, none of
+        # which carries the prefix.
+        if entry.name.startswith(STAGING_PREFIXES) and entry.is_dir():
             shutil.rmtree(entry, ignore_errors=True)
             logger.debug("removed stale staging dir: %s", entry)
 
@@ -656,30 +659,27 @@ class MediaDownloader:
                 await self._register(tl_message, media, reused, chat_id)
                 return reused, status
 
-        chat_dir.mkdir(parents=True, exist_ok=True)
-        if not self._has_free_space(chat_dir):
+        max_size = (config or self.config).max_file_size_bytes
+        # In a thread: creating the directories, sweeping the staging left by a
+        # killed run (an iterdir over the whole media directory) and making the
+        # staging directory of this download are filesystem calls, and on the
+        # loop each of them holds up every other download of the chat.
+        target_dir, staging, has_space = await asyncio.to_thread(self._prepare_target, media, chat_dir)
+        if not has_space:
+            await asyncio.to_thread(shutil.rmtree, staging, ignore_errors=True)
             raise DiskSpaceError(f"Free space less than {self.min_free_bytes // 1024**3} GB")
 
-        target_dir = self._media_target_dir(media, chat_dir)
-        max_size = (config or self.config).max_file_size_bytes
-
-        self._clean_stale_staging(target_dir)
         try:
-            # TemporaryDirectory drops whatever the download left behind on any
-            # exit path, and it can only contain this download's own files.
-            # dir=target_dir keeps it on the same filesystem, so the move below
-            # is a rename rather than a copy.
-            with tempfile.TemporaryDirectory(dir=target_dir, prefix=STAGING_PREFIX) as staging:
-                async with self.semaphore:
-                    path = await self._download_with_retry(
-                        tl_message, Path(staging), media, max_size=max_size
-                    )
+            # The staging directory sits inside target_dir, so the move below
+            # is a rename rather than a copy, and it can hold nothing but this
+            # download's own files.
+            async with self.semaphore:
+                path = await self._download_with_retry(tl_message, staging, media, max_size=max_size)
 
-                if path is None:
-                    return None, DownloadStatus.no_file
+            if path is None:
+                return None, DownloadStatus.no_file
 
-                local_path = self._move_into_place(Path(path), target_dir)
-
+            local_path = self._move_into_place(Path(path), target_dir)
             await self._register(tl_message, media, local_path, chat_id)
             return local_path, DownloadStatus.downloaded
         except _FileTooLargeError as e:
@@ -691,6 +691,11 @@ class MediaDownloader:
             )
             await self._register_skip(tl_message, media, chat_id, DownloadStatus.skipped_by_size)
             return None, DownloadStatus.skipped_by_size
+        finally:
+            # Whatever is left in the staging directory on any exit path goes
+            # with it -- that is what TemporaryDirectory did before the
+            # creation moved off the loop.
+            await asyncio.to_thread(shutil.rmtree, staging, ignore_errors=True)
 
     def _has_free_space(self, path: Path) -> bool:
         """Disk space check, asked at most once per interval.
@@ -708,6 +713,20 @@ class MediaDownloader:
             return False
         self._space_ok_until = now + _DISK_SPACE_CHECK_INTERVAL
         return True
+
+    def _prepare_target(self, media: Media, chat_dir: Path) -> tuple[Path, Path, bool]:
+        """Make the directories this download needs. Blocking, called in a thread.
+
+        Returns the directory of this media type, the staging directory of this
+        download and whether the disk still holds the free space the settings
+        ask for.
+        """
+        chat_dir.mkdir(parents=True, exist_ok=True)
+        has_space = self._has_free_space(chat_dir)
+        target_dir = self._media_target_dir(media, chat_dir)
+        self._clean_stale_staging(target_dir)
+        staging = Path(tempfile.mkdtemp(dir=target_dir, prefix=STAGING_PREFIX))
+        return target_dir, staging, has_space
 
     def _clean_stale_staging(self, target_dir: Path) -> None:
         """Drop staging directories left by a run that was killed mid-download."""

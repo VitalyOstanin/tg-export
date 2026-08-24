@@ -292,3 +292,31 @@ async def test_intra_account_target_dir_is_prepared_off_the_loop(tmp_path, monke
 
     assert result is not None
     assert seen["thread"] != threading.get_ident()
+
+
+@pytest.mark.asyncio
+async def test_the_download_path_prepares_its_directories_off_the_loop(tmp_path, monkeypatch):
+    """Создание каталогов, уборка staging и mkdtemp шли в потоке цикла событий.
+
+    Проект держит правило «файловые вызовы -- в поток» и следит за ним для
+    пути между чатами, но основной путь загрузки под него не попал: каждый
+    файл платил тремя обращениями к файловой системе, останавливая соседние
+    загрузки того же чата.
+    """
+    import tempfile as tempfile_module
+
+    seen = {}
+    real_mkdtemp = tempfile_module.mkdtemp
+
+    def watching_mkdtemp(*args, **kwargs):
+        seen["thread"] = threading.get_ident()
+        return real_mkdtemp(*args, **kwargs)
+
+    monkeypatch.setattr("tg_export.media.tempfile.mkdtemp", watching_mkdtemp)
+
+    dl = _downloader()
+    dl.api.download_media = AsyncMock(return_value=None)
+
+    await dl.download(MagicMock(id=5), _photo(), tmp_path / "chat", chat_id=1)
+
+    assert seen["thread"] != threading.get_ident()
