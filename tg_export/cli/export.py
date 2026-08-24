@@ -667,13 +667,21 @@ def _build_downloader(api, state, cfg, output_base: Path):
     )
 
 
-async def _print_export_summary(stats, state, output_base: Path, *, takeout_active: bool) -> None:
+async def _print_export_summary(
+    stats, state, output_base: Path, *, takeout_active: bool, interrupted: bool = False
+) -> None:
     """Print the final report of an export.
 
     Goes to stderr and is marked essential, so --quiet keeps it: the export
     artifacts themselves are the files written to disk.
+
+    An interrupted run prints the same numbers -- what it did manage to save --
+    but must not call itself complete: the counters of a run stopped on the
+    214th chat of 243 look exactly like those of a finished one, and the
+    heading was the only place the difference could be read.
     """
-    common.diag("\nExport complete:", essential=True)
+    heading = "Export interrupted — state saved:" if interrupted else "Export complete:"
+    common.diag(f"\n{heading}", essential=True)
     # Which API served the export decides how complete and how fast it was, so
     # it belongs in the summary rather than only in a line printed at start-up
     # and long scrolled away.
@@ -885,7 +893,13 @@ async def _report_export_result(
         return
     if not dry_run:
         await _render_index(renderer, chats, cfg, state, should_stop=lambda: exporter.shutdown_requested)
-    await _print_export_summary(stats, state, output_base, takeout_active=takeout_active)
+    await _print_export_summary(
+        stats,
+        state,
+        output_base,
+        takeout_active=takeout_active,
+        interrupted=exporter.shutdown_requested,
+    )
 
 
 async def _group_chats_for_index(chats, cfg, state, should_stop):

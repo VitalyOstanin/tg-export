@@ -336,3 +336,19 @@ def test_takeout_clear_drops_the_id_when_the_server_refused_on_the_merits(tmp_pa
 
     assert result.exit_code == 0, result.output
     assert api.client.session.takeout_id is None
+
+
+def test_an_interrupted_run_does_not_report_itself_as_complete(run_env):
+    """После Ctrl+C сводка названа прерванной, а не завершённой.
+
+    Мягкое прерывание сохраняет состояние и печатает те же цифры, поэтому
+    заголовок -- единственное, что отличает прогон, дошедший до конца, от
+    прогона, остановленного на 214-м чате из 243.
+    """
+    import signal
+
+    run_env.exporter.shutdown_requested = True
+    run_env.exporter.shutdown_signal = signal.SIGINT
+    result = CliRunner().invoke(main, ["run"])
+    assert "Export complete:" not in result.output
+    assert "Export interrupted" in result.output
