@@ -79,7 +79,10 @@ jobs:
           cache-dependency-glob: "uv.lock"
 
       - name: Set up Python
-        run: uv python install 3.12
+        # The version comes from UV_PYTHON above rather than being written a
+        # second time: two literals of the same interpreter could drift, and
+        # nothing checked that they agreed.
+        run: uv python install "$UV_PYTHON"
 
       - name: Install dependencies
         run: uv sync
@@ -135,8 +138,14 @@ jobs:
         # imported instead of the installed one, and the check would be void.
         run: |
           set -euo pipefail
-          WHEEL=$(ls "$PWD"/dist/*.whl)
-          SDIST=$(ls "$PWD"/dist/*.tar.gz)
+          # Globs, not `ls`: a second match would end up inside the variable
+          # as one string, and `set -euo pipefail` says nothing about that.
+          wheels=("$PWD"/dist/*.whl)
+          sdists=("$PWD"/dist/*.tar.gz)
+          test "${#wheels[@]}" -eq 1 || { echo "expected one wheel, got ${wheels[*]}" >&2; exit 1; }
+          test "${#sdists[@]}" -eq 1 || { echo "expected one sdist, got ${sdists[*]}" >&2; exit 1; }
+          WHEEL="${wheels[0]}"
+          SDIST="${sdists[0]}"
           SCRIPT="$PWD/scripts/smoke_installed_package.py"
           uv run --no-project --with "$WHEEL" tg-export --version
           uv run --no-project --with "$WHEEL" tg-export --help

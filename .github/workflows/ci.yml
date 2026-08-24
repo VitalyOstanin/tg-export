@@ -80,3 +80,34 @@ jobs:
           # Don't fail the build on Codecov outages — coverage drift is
           # signal, not a release blocker.
           fail_ci_if_error: false
+
+  lowest-direct:
+    # The declared lower bounds are what a user with an older environment
+    # actually installs, and nothing checked that the project works there: the
+    # lock file pins the newest of everything, so a bound raised too late (or
+    # never raised at all) stayed invisible. `lowest-direct` takes the lowest
+    # release allowed for every direct dependency and the usual resolution for
+    # the rest.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d  # v10.0.1
+        with:
+          version: "latest"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Set up Python
+        run: uv python install 3.11
+
+      - name: Install the lowest allowed direct dependencies
+        run: uv sync --resolution lowest-direct
+
+      - name: Run tests
+        # Without coverage: the floors are measured on the matrix above, and
+        # this job answers one question -- does the code run on the versions
+        # the manifest says it supports.
+        run: uv run python -m pytest --no-cov

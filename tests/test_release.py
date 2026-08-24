@@ -22,7 +22,10 @@ def _run(tag, tmp_path, *, pyproject_version="1.5.1", changelog=None, extra=(), 
     (tmp_path / "CHANGELOG.md").write_text(
         changelog
         if changelog is not None
-        else "# Changelog\n\n## [1.5.1] -- 2026-07-30\n\n### Исправлено\n\n- Что-то починено.\n\n## [1.5.0] -- 2026-07-30\n\n- Старое.\n",
+        else (
+            "# Changelog\n\n## [1.5.1] -- 2026-07-30\n\n### Исправлено\n\n- Что-то починено.\n\n"
+            "## [1.5.0] -- 2026-07-30\n\n- Старое.\n"
+        ),
         encoding="utf-8",
     )
     out = tmp_path / "release_notes.md"
@@ -202,7 +205,10 @@ def test_notes_over_the_github_limit_stop_the_release(tmp_path):
     не выясняется на последнем шаге workflow.
     """
     body = "\n".join(f"- Пункт {i}." for i in range(200))
-    changelog = f"# Changelog\n\n## [1.5.1] -- 2026-07-30\n\n### Исправлено\n\n{body}\n\n## [1.5.0] -- 2026-07-30\n\n- Старое.\n"
+    changelog = (
+        f"# Changelog\n\n## [1.5.1] -- 2026-07-30\n\n### Исправлено\n\n{body}\n\n"
+        f"## [1.5.0] -- 2026-07-30\n\n- Старое.\n"
+    )
     result, out = _run("v1.5.1", tmp_path, changelog=changelog, extra=["--max-chars", "500"])
 
     assert result.returncode != 0

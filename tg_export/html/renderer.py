@@ -221,7 +221,12 @@ class HtmlRenderer:
             )
 
         if pages_info:
-            redirect_html = f'<!DOCTYPE html><html><head><meta http-equiv="refresh" content="0;url={pages_info[0]["filename"]}"></head></html>'
+            first_page = pages_info[0]["filename"]
+            redirect_html = (
+                f"<!DOCTYPE html><html><head>"
+                f'<meta http-equiv="refresh" content="0;url={first_page}">'
+                f"</head></html>"
+            )
             (chat_dir / "messages.html").write_text(redirect_html, encoding="utf-8")
 
     def render_chat_streaming(
@@ -282,7 +287,12 @@ class HtmlRenderer:
             )
 
         if pages_info and not aborted:
-            redirect_html = f'<!DOCTYPE html><html><head><meta http-equiv="refresh" content="0;url={pages_info[0]["filename"]}"></head></html>'
+            first_page = pages_info[0]["filename"]
+            redirect_html = (
+                f"<!DOCTYPE html><html><head>"
+                f'<meta http-equiv="refresh" content="0;url={first_page}">'
+                f"</head></html>"
+            )
             (chat_dir / "messages.html").write_text(redirect_html, encoding="utf-8")
 
     def render_index(

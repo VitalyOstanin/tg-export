@@ -214,7 +214,10 @@ def main() -> None:
         "--max-chars",
         type=int,
         default=NOTES_LIMIT,
-        help=f"refuse notes longer than this many characters (default {NOTES_LIMIT}, the limit of a GitHub release body)",
+        help=(
+            f"refuse notes longer than this many characters "
+            f"(default {NOTES_LIMIT}, the limit of a GitHub release body)"
+        ),
     )
     args = parser.parse_args()
 

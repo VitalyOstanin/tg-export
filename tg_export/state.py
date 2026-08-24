@@ -792,7 +792,9 @@ class ExportState:
     ) -> None:
         now = _now()
         await self.db.execute(
-            """INSERT INTO files (file_id, chat_id, msg_id, expected_size, actual_size, local_path, status, downloaded_at)
+            """INSERT INTO files
+                   (file_id, chat_id, msg_id, expected_size, actual_size,
+                    local_path, status, downloaded_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(file_id, chat_id) DO UPDATE SET
                    actual_size=excluded.actual_size, local_path=excluded.local_path,

@@ -8,3 +8,13 @@ updates:
     directory: /
     schedule:
       interval: weekly
+
+  # Python dependencies are locked in uv.lock, and a fix released in any of
+  # them reached the project only when somebody went looking: the security
+  # bounds written into the manifest by hand (setuptools, jinja2, click) are
+  # what that looks like. Dependabot supports the uv ecosystem even though the
+  # overview page of the documentation does not list it.
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly

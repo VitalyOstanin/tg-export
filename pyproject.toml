@@ -55,9 +55,10 @@ dependencies = [
     # `proxy=` when python_socks is missing, so an installation without it
     # cannot serve a configuration that names a proxy -- and which of the two
     # a particular run needs is decided by the config file, not by the person
-    # installing the package. It costs one package of 380 KB and, on the
-    # supported Python versions, nothing transitively (`async-timeout` is
-    # required below 3.11 only).
+    # installing the package. At the pinned 2.8.2 it costs one package of
+    # 380 KB and nothing transitively; older releases within the bound do pull
+    # `async-timeout` on every Python version -- the marker limiting it to
+    # 3.10 and below appeared later in the 2.x line.
     # The `[asyncio]` extra is what Telethon's async client needs. Upper bound:
     # python-socks 3.0.0 (2026-08-11) drops the public `proxy_host` /
     # `proxy_port` properties of `AsyncioProxy` (2.8.2 defines them in
@@ -165,6 +166,9 @@ fail_under = 50
 [tool.ruff]
 target-version = "py311"
 line-length = 110
+# E501 is not ignored: the formatter wraps code but not a long string
+# literal, and with the rule off the declared width held for everything except
+# the lines that actually got long.
 extend-exclude = ["export_output", "docs/reviews", "docs/__check"]
 
 [tool.ruff.lint]
@@ -176,7 +180,6 @@ extend-exclude = ["export_output", "docs/reviews", "docs/__check"]
 # parameter of the Telethon boundary would mostly write `Any`.
 select = ["E", "F", "I", "UP", "B", "SIM", "PIE790", "RUF100", "ANN2"]
 ignore = [
-    "E501",  # line too long (handled by formatter)
     "B008",  # function call in default arg (used by Click)
 ]
 
