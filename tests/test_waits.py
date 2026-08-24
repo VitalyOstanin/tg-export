@@ -177,20 +177,19 @@ def test_the_default_run_lifts_the_flood_wait_notices_of_telethon():
     CliRunner().invoke(main, ["state"])
     telethon_logger = logging.getLogger(FLOOD_WAIT_LOGGER)
     assert telethon_logger.level == logging.INFO
-    assert telethon_logger.filter(_flood_record(18, "GetHistoryRequest")) is True
-    assert (
-        telethon_logger.filter(
-            logging.LogRecord(
-                name=FLOOD_WAIT_LOGGER,
-                level=logging.INFO,
-                pathname=__file__,
-                lineno=1,
-                msg="Connecting to %s...",
-                args=("dc",),
-                exc_info=None,
-            )
+    # Logger.filter отдаёт True на 3.11 и саму запись на 3.12+, где фильтру
+    # разрешено её подменять, поэтому сверяется истинность, а не тождество.
+    assert bool(telethon_logger.filter(_flood_record(18, "GetHistoryRequest")))
+    assert not telethon_logger.filter(
+        logging.LogRecord(
+            name=FLOOD_WAIT_LOGGER,
+            level=logging.INFO,
+            pathname=__file__,
+            lineno=1,
+            msg="Connecting to %s...",
+            args=("dc",),
+            exc_info=None,
         )
-        is False
     )
 
 
@@ -204,7 +203,7 @@ def test_asking_for_the_library_log_still_gives_all_of_it():
     CliRunner().invoke(main, ["--log-level", "DEBUG:all", "state"])
     telethon_logger = logging.getLogger(FLOOD_WAIT_LOGGER)
     assert telethon_logger.level == logging.DEBUG
-    assert (
+    assert bool(
         telethon_logger.filter(
             logging.LogRecord(
                 name=FLOOD_WAIT_LOGGER,
@@ -216,7 +215,6 @@ def test_asking_for_the_library_log_still_gives_all_of_it():
                 exc_info=None,
             )
         )
-        is True
     )
 
 
