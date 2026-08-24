@@ -18,3 +18,7 @@ updates:
     directory: /
     schedule:
       interval: weekly
+
+# What this file does not cover: the values of `with:` inputs and the runner
+# label. `version: "0.12.5"` of setup-uv and `runs-on: ubuntu-24.04` are raised
+# by hand -- Dependabot rewrites `uses:` and the SHA next to it, nothing else.

@@ -34,17 +34,18 @@ logger = logging.getLogger(__name__)
 # value it had at import time.
 _DEBUG = False
 
+# Set by main() from the global --quiet flag. When True, non-essential status
+# and progress messages are suppressed; errors and final summaries still print.
+# Underscored for the same reason as `_DEBUG` above -- which is why the two
+# stand together: a function used to sit between them, and the reference
+# jumped over it.
+_QUIET = False
+
 
 def account_manager() -> AccountManager:
     manager = AccountManager()
     manager.ensure_dirs()
     return manager
-
-
-# Set by main() from the global --quiet flag. When True, non-essential status
-# and progress messages are suppressed; errors and final summaries still print.
-# Underscored for the same reason as `_DEBUG` above.
-_QUIET = False
 
 
 def diag(message: str, *, essential: bool = False, **kwargs) -> None:

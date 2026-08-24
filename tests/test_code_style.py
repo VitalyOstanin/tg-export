@@ -297,18 +297,6 @@ def test_logger_declared_after_all_module_imports():
     assert not offenders, f"логгер объявлен не по правилу: {offenders}"
 
 
-def test_timedelta_imported_at_module_level_in_exporter():
-    """from datetime import timedelta должен быть на уровне модуля, не внутри функции."""
-    tree = _tree("exporter.py")
-    at_module_level = any(
-        isinstance(node, ast.ImportFrom)
-        and node.module == "datetime"
-        and any(alias.name == "timedelta" for alias in node.names)
-        for node in tree.body
-    )
-    assert at_module_level, "from datetime import timedelta должен стоять в шапке exporter.py"
-
-
 def test_standard_library_is_imported_at_module_level():
     """Отложенный импорт оправдан только для тяжёлых модулей.
 

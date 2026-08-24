@@ -199,7 +199,7 @@ def _check_date(section_date: str, tag_date: str) -> None:
         )
 
 
-def main() -> None:
+def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("tag", help="release tag, with or without the leading 'v'")
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parent.parent)
@@ -246,6 +246,7 @@ def main() -> None:
         f"release notes for {version} ({date}): {len(body.splitlines())} lines -> {where}",
         file=sys.stderr,
     )
+    return 0
 
 
 if __name__ == "__main__":

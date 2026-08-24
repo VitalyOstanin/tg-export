@@ -1,9 +1,12 @@
 [build-system]
-# setuptools below 83.0.0 carries three OSV entries: command injection through
-# a package URL, path traversal in PackageIndex.download, and -- the one that
-# touches this project directly -- Unicode normalisation letting a file past
-# the MANIFEST.in exclusions of an sdist, which is built from a working tree
-# holding an export and coverage files.
+# setuptools is held at 83.0.0 or newer. Two of the three OSV entries below it
+# (command injection through a package URL, path traversal in
+# PackageIndex.download) are already closed at 82.0.0; the one that remains
+# there -- GHSA-h35f-9h28-mq5c, Unicode normalisation letting a file past the
+# MANIFEST.in exclusions of an sdist -- needs a case-insensitive filesystem
+# (macOS APFS/HFS+), while the sdist of this project is built on ubuntu-24.04.
+# The bound stays as the plain choice of a release with none of them, not as a
+# fix for something this pipeline is exposed to.
 requires = ["setuptools>=83.0.0"]
 build-backend = "setuptools.build_meta"
 
@@ -67,7 +70,11 @@ dependencies = [
     # network/connection/connection.py. That branch only runs when `local_addr`
     # is set, which this project never does, so the break is telethon's rather
     # than ours -- but it is a concrete removal of something telethon relies
-    # on, and the bound stays until telethon states support for 3.x.
+    # on, and the bound stays until telethon states support for 3.x. Since the
+    # package moved into the main dependencies, this ceiling applies to every
+    # installation, not only to the one that uses a proxy: a comparison of the
+    # 2.8.2 and 3.0.0 wheels shows that everything else telethon 1.44 reaches
+    # for is still there.
     "python-socks[asyncio]>=2.0,<3",
 ]
 
