@@ -428,7 +428,10 @@ def _safe_href(url: str) -> str:
     # thing by Chromium-based browsers -- on Windows that is a request to an
     # SMB share. The sender of the message chooses the address in full, so
     # neither shape is a relative link inside the export.
-    if stripped.startswith("//") or stripped.startswith("\\\\"):
+    # Both slashes, in any mix: for the `file:` scheme a browser reads `/` and
+    # `\` alike, so `/\host\share` and `\/host/share` resolve to the same
+    # remote address as the two even shapes.
+    if len(stripped) >= 2 and stripped[0] in "/\\" and stripped[1] in "/\\":
         return "#"
     if stripped.startswith(("/", "#", "?")):
         return url

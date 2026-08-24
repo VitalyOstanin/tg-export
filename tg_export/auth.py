@@ -109,7 +109,11 @@ class AccountManager:
             try:
                 os.chmod(directory, 0o700)
             except OSError as e:
-                logger.debug("ensure_dirs: cannot chmod %s: %s", directory, e)
+                # A warning, not a debug line: these directories hold the
+                # sessions and the credentials, and a refused change leaves
+                # them open to every local user -- the same event
+                # `privacy.restrict_file` reports for a file.
+                logger.warning("cannot restrict %s to owner-only: %s", directory, e)
 
     @property
     def sessions_dir(self) -> Path:
@@ -142,13 +146,18 @@ class AccountManager:
             if path.suffix == ".session" and not path.name.startswith(".")
         )
 
+    # What SQLite may leave beside a session file. The write-ahead log and the
+    # shared-memory file hold pages of the database that have not been merged
+    # into it yet -- that is, the authorisation key material -- so removing the
+    # account without them left the key on disk.
+    _SESSION_SIDE_FILES = ("-journal", "-wal", "-shm")
+
     def remove_account(self, name: str) -> None:
         path = self.session_path(name)
-        if path.exists():
-            path.unlink()
-        journal = path.with_suffix(".session-journal")
-        if journal.exists():
-            journal.unlink()
+        for side in ("", *self._SESSION_SIDE_FILES):
+            beside = path.with_name(path.name + side)
+            if beside.exists():
+                beside.unlink()
 
     def set_default_account(self, name: str) -> None:
         """Set default account alias."""

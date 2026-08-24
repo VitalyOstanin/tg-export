@@ -298,3 +298,43 @@ def test_the_text_tg_download_saves_is_private(tmp_path):
 
     assert path.read_text(encoding="utf-8") == "секрет"
     assert _mode(path) == 0o600, oct(_mode(path))
+
+
+def test_removing_an_account_takes_the_write_ahead_log_with_it(tmp_path):
+    """Удалялись `.session` и `-journal`, но не `-wal`/`-shm`.
+
+    В этих файлах лежат ещё не слитые страницы базы сессии, то есть материал
+    ключа авторизации: после явного удаления аккаунта он оставался на диске.
+    """
+    from tg_export.auth import AccountManager
+
+    mgr = AccountManager(config_dir=tmp_path)
+    mgr.ensure_dirs()
+    session = mgr.session_path("acc")
+    session.write_bytes(b"key")
+    leftovers = [session.with_name(session.name + suffix) for suffix in ("-journal", "-wal", "-shm")]
+    for path in leftovers:
+        path.write_bytes(b"pages")
+
+    mgr.remove_account("acc")
+
+    assert not session.exists()
+    assert [path for path in leftovers if path.exists()] == []
+
+
+def test_a_refused_chmod_on_a_directory_is_said_out_loud(tmp_path, monkeypatch, caplog):
+    """Отказ гасился без записи, хотя для файла тот же отказ -- событие WARNING."""
+    import logging
+    import os as os_module
+
+    from tg_export.privacy import ensure_private_dir
+
+    def refuse(*_args, **_kwargs):
+        raise OSError("read-only filesystem")
+
+    monkeypatch.setattr(os_module, "chmod", refuse)
+
+    with caplog.at_level(logging.WARNING):
+        ensure_private_dir(tmp_path / "new")
+
+    assert any("owner-only" in record.getMessage() for record in caplog.records), caplog.text

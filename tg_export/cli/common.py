@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any, NoReturn
 
 import click
 
-from tg_export.auth import AccountManager
+from tg_export.auth import AccountManager, validate_account_name
 from tg_export.errors import EXIT_FAILURE, EXIT_OK
 
 if TYPE_CHECKING:
@@ -202,6 +202,10 @@ def account_output_dir(base: Path, account: str) -> Path:
     directory itself, and appending the alias there would silently restart the
     export in an empty ``{path}/{alias}/{alias}``.
     """
+    # The alias reaches the path here as well, and by another road than the
+    # session and config file names: those go through validate_account_name,
+    # this one did not, so `--account ../elsewhere` wrote outside the base.
+    account = validate_account_name(account)
     if base.name == account or (base / STATE_DB_NAME).exists():
         return base
     return base / account

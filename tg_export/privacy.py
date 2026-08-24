@@ -10,7 +10,6 @@ system leaves them world-readable.
 
 from __future__ import annotations
 
-import contextlib
 import logging
 import os
 import stat
@@ -98,5 +97,10 @@ def ensure_private_dir(path: Path) -> None:
     if path.exists():
         return
     path.mkdir(parents=True, exist_ok=True)
-    with contextlib.suppress(OSError):
+    try:
         os.chmod(path, PRIVATE_DIR_MODE)
+    except OSError as e:
+        # Said out loud, as `restrict_file` says it for a file: the directory
+        # holds sessions and exported messages, and a refused change leaves
+        # them readable by every local user.
+        logger.warning("cannot restrict %s to owner-only: %s", path, e)

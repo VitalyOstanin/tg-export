@@ -358,3 +358,18 @@ def test_a_link_that_leaves_the_export_tree_is_dropped():
     assert _safe_href("/photos/file.jpg") == "/photos/file.jpg"
     assert _safe_href("#anchor") == "#anchor"
     assert _safe_href("https://example.com/x") == "https://example.com/x"
+
+
+def test_a_mixed_pair_of_slashes_is_not_a_link_out_of_the_export():
+    """Отбрасывались только однородные `//` и `\\\\`.
+
+    Для схемы `file:` браузер читает прямой и обратный слэш одинаково, поэтому
+    смешанные пары вели на тот же удалённый адрес, что и однородные.
+    """
+    from tg_export.html.renderer import _safe_href
+
+    for href in ("//host/share", "\\\\host\\share", "/\\host\\share", "\\/host/share"):
+        assert _safe_href(href) == "#", href
+
+    assert _safe_href("photos/file.jpg") == "photos/file.jpg"
+    assert _safe_href("/index.html") == "/index.html"

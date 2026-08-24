@@ -12,6 +12,10 @@ venv/
 *.session
 *.session-journal
 api_credentials.yaml
+*.session-wal
+*.session-shm
+# The global config holds the proxy login and password.
+config.yaml
 
 # Export state database
 .tg-export-state.db
