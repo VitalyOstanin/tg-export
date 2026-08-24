@@ -34,8 +34,15 @@ uv run ruff format --check .
 echo "==> pyright"
 uv run pyright
 
+# The same ceiling CI puts on the job (timeout-minutes: 15). pytest-timeout
+# bounds a single test at 60 s, which says nothing about a run that crawls or
+# hangs between tests; `timeout` is skipped where it is not installed.
 echo "==> pytest with coverage"
-uv run python -m pytest --cov-report=term
+if command -v timeout >/dev/null 2>&1; then
+    timeout 900 uv run python -m pytest --cov-report=term
+else
+    uv run python -m pytest --cov-report=term
+fi
 
 echo "==> per-module coverage floors"
 uv run python scripts/coverage_gate.py

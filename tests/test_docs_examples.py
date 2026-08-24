@@ -73,14 +73,20 @@ def test_a_config_example_from_the_documentation_loads(where: str, block: str, t
         config_dir.mkdir(parents=True)
         (config_dir / "config.yaml").write_text(block, encoding="utf-8")
         mgr = AccountManager(config_dir=config_dir)
-        mgr.load_global_config()
+        loaded = mgr.load_global_config()
         mgr.load_proxy()
-        mgr.load_min_free_space()
+        # The loader answers with what it read: an example that parses into
+        # nothing would otherwise pass as "did not raise".
+        assert set(loaded) <= _KNOWN_GLOBAL_KEYS, loaded
+        assert mgr.load_min_free_space() > 0
         return
 
     path = tmp_path / "account.yaml"
     path.write_text(block, encoding="utf-8")
-    load_config(path)
+    config = load_config(path)
+
+    assert config.defaults.media.types, f"{where}: пример не задал ни одного типа медиа"
+    assert config.output.path, f"{where}: пример не задал каталог выгрузки"
 
 
 def test_every_place_that_names_the_log_level_chain_names_the_prefixed_variable():

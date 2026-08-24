@@ -995,3 +995,43 @@ def test_tg_info_counts_the_failed_chats_apart_from_the_saved_ones(tmp_path):
     result = _invoke_tg_info(["--output-file", str(out)], chat_ids=("123", "456"), fail_on=(456,))
 
     assert "1 of them failed" in result.output, result.output
+
+
+def test_tg_download_json_puts_a_document_on_stdout(tmp_path):
+    """Единственная запросная команда, чей `--json` не проверялся ни разу."""
+    import json as json_mod
+
+    from click.testing import CliRunner
+
+    from tg_export.cli import main
+
+    message = MagicMock()
+    message.text = "привет"
+    message.media = None
+    message.grouped_id = None
+
+    mock_api = AsyncMock()
+    mock_api.client.get_messages = AsyncMock(return_value=message)
+    mock_api.connect = AsyncMock()
+    mock_api.disconnect = AsyncMock()
+
+    with (
+        patch("tg_export.cli.common.account_manager") as mock_mgr,
+        patch("tg_export.api.TgApi", return_value=mock_api),
+    ):
+        mgr = MagicMock()
+        mgr.resolve_account.return_value = "test"
+        mgr.load_credentials.return_value = ("id", "hash")
+        mgr.load_proxy.return_value = None
+        mgr.session_path.return_value = "/tmp/test.session"
+        mock_mgr.return_value = mgr
+
+        result = CliRunner().invoke(
+            main, ["tg", "download", "123", "42", "--output", str(tmp_path), "--json"]
+        )
+
+    assert result.exit_code == 0, result.output
+    payload = json_mod.loads(result.stdout)
+    assert payload["chat_id"] == 123 and payload["msg_id"] == 42, payload
+    assert payload["text_file"] is not None, payload
+    assert Path(payload["text_file"]).read_text(encoding="utf-8") == "привет"

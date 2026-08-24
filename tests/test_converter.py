@@ -269,3 +269,193 @@ def test_a_plain_video_is_still_a_video():
 
     assert media_type is MediaType.video
     assert (duration, w, h) == (3, 320, 240)
+
+
+# ---------------------------------------------------------------------------
+# Классификация документов: каждая ветка отдельно
+# ---------------------------------------------------------------------------
+
+
+def _classify(attrs: dict, mime_type: str | None = None):
+    from tg_export.converter import _classify_document
+
+    return _classify_document(attrs, mime_type)
+
+
+def test_a_round_message_is_a_video_note():
+    from tg_export.models import MediaType
+
+    attrs = {"DocumentAttributeVideo": MagicMock(duration=5, w=240, h=240, round_message=True)}
+
+    assert _classify(attrs, "video/mp4")[0] is MediaType.video_note
+
+
+def test_a_voice_message_is_told_apart_from_an_audio_file():
+    from tg_export.models import MediaType
+
+    voice = {"DocumentAttributeAudio": MagicMock(duration=7, voice=True)}
+    music = {"DocumentAttributeAudio": MagicMock(duration=180, voice=False)}
+
+    assert _classify(voice, "audio/ogg")[0] is MediaType.voice
+    assert _classify(music, "audio/mpeg")[0] is MediaType.document
+
+
+def test_a_sticker_is_classified_by_its_attribute():
+    from tg_export.models import MediaType
+
+    assert _classify({"DocumentAttributeSticker": MagicMock(alt="🙂")}, None)[0] is MediaType.sticker
+
+
+def test_a_gif_mime_type_alone_is_enough():
+    from tg_export.models import MediaType
+
+    assert _classify({}, "image/gif")[0] is MediaType.gif
+
+
+def test_a_document_without_telling_attributes_stays_a_document():
+    from tg_export.models import MediaType
+
+    attrs = {"DocumentAttributeFilename": MagicMock(file_name="отчёт.pdf")}
+    media_type, name, *_ = _classify(attrs, "application/pdf")
+
+    assert media_type is MediaType.document
+    assert name == "отчёт.pdf"
+
+
+# ---------------------------------------------------------------------------
+# Медиа сообщения
+# ---------------------------------------------------------------------------
+
+
+def _photo_with(size_obj) -> MagicMock:
+    photo = MagicMock(id=11)
+    photo.sizes = [size_obj] if size_obj is not None else []
+    return MagicMock(photo=photo, spoiler=False)
+
+
+def test_the_size_of_a_photo_is_taken_from_the_largest_variant():
+    from tg_export.converter import _photo_media
+
+    progressive = type("PhotoSizeProgressive", (), {"w": 1280, "h": 720, "sizes": [100, 5000, 900]})()
+
+    media = _photo_media(_photo_with(progressive))
+
+    assert media is not None and media.file is not None
+    assert (media.width, media.height) == (1280, 720)
+    assert media.file.size == 5000
+
+
+def test_a_cached_photo_reports_the_length_of_its_bytes():
+    from tg_export.converter import _photo_media
+
+    cached = type("PhotoCachedSize", (), {"w": 90, "h": 90, "bytes": b"1234567890"})()
+
+    media = _photo_media(_photo_with(cached))
+
+    assert media is not None and media.file is not None
+    assert media.file.size == 10
+
+
+def test_a_photo_without_variants_is_still_converted():
+    from tg_export.converter import _photo_media
+
+    media = _photo_media(_photo_with(None))
+
+    assert media is not None and media.file is not None
+    assert (media.width, media.height, media.file.size) == (0, 0, 0)
+
+
+def test_a_media_without_its_object_converts_to_nothing():
+    from tg_export.converter import _document_media, _photo_media
+
+    assert _photo_media(MagicMock(photo=None)) is None
+    assert _document_media(MagicMock(document=None)) is None
+
+
+def test_a_poll_carries_the_votes_of_every_answer():
+    from tg_export.converter import _poll_media
+
+    option_a, option_b = b"a", b"b"
+    poll = MagicMock(
+        question=MagicMock(text="Идём?"),
+        answers=[
+            MagicMock(text=MagicMock(text="Да"), option=option_a),
+            MagicMock(text=MagicMock(text="Нет"), option=option_b),
+        ],
+    )
+    results = MagicMock(results=[MagicMock(option=option_a, voters=3), MagicMock(option=option_b, voters=1)])
+
+    media = _poll_media(MagicMock(poll=poll, results=results))
+
+    assert media is not None
+    assert [answer.voters for answer in media.answers] == [3, 1]
+
+
+# ---------------------------------------------------------------------------
+# Ответы, пересылки и кнопки
+# ---------------------------------------------------------------------------
+
+
+def test_a_reply_inside_a_forum_topic_reports_the_topic():
+    from tg_export.converter import _convert_reply
+
+    tl_msg = MagicMock()
+    tl_msg.reply_to = MagicMock(reply_to_msg_id=15, reply_to_peer_id=None, forum_topic=True)
+
+    reply_to_msg_id, reply_to_peer_id, topic_id = _convert_reply(tl_msg)
+
+    assert (reply_to_msg_id, reply_to_peer_id, topic_id) == (15, None, 15)
+
+
+def test_a_message_without_a_reply_reports_nothing():
+    from tg_export.converter import _convert_reply
+
+    tl_msg = MagicMock()
+    tl_msg.reply_to = None
+
+    assert _convert_reply(tl_msg) == (None, None, None)
+
+
+def test_a_forward_keeps_the_name_when_the_sender_is_hidden():
+    from tg_export.converter import _convert_forward
+
+    tl_msg = MagicMock()
+    tl_msg.fwd_from = MagicMock(from_id=None, from_name="Аноним", date=datetime(2026, 1, 2))
+
+    forward = _convert_forward(tl_msg)
+
+    assert forward is not None
+    assert (forward.from_id, forward.from_name) == (None, "Аноним")
+
+
+def test_a_message_that_was_not_forwarded_has_no_forward_info():
+    from tg_export.converter import _convert_forward
+
+    tl_msg = MagicMock()
+    tl_msg.fwd_from = None
+
+    assert _convert_forward(tl_msg) is None
+
+
+def test_inline_buttons_keep_their_rows():
+    from tg_export.converter import _convert_inline_buttons
+
+    url_button = type("KeyboardButtonUrl", (), {"text": "Открыть", "url": "https://example.org"})()
+    data_button = type("KeyboardButtonCallback", (), {"text": "Да", "data": b"yes"})()
+    tl_msg = MagicMock()
+    tl_msg.reply_markup = MagicMock(rows=[MagicMock(buttons=[url_button, data_button])])
+
+    rows = _convert_inline_buttons(tl_msg)
+
+    assert rows is not None
+    assert [button.text for button in rows[0]] == ["Открыть", "Да"]
+    assert rows[0][0].data == "https://example.org"
+
+
+def test_a_message_without_a_keyboard_has_no_buttons():
+    from tg_export.converter import _convert_inline_buttons
+
+    tl_msg = MagicMock()
+    tl_msg.reply_markup = None
+
+    assert _convert_inline_buttons(tl_msg) is None

@@ -1,3 +1,4 @@
+import contextlib
 import logging
 from unittest.mock import AsyncMock, MagicMock
 
@@ -969,3 +970,53 @@ def test_account_default_speaks_json_after_setting_it_too(account_env):
 
     assert result.exit_code == 0, result.output
     assert json_mod.loads(result.stdout) == {"default": "acc"}
+
+
+def test_account_list_json_puts_a_document_on_stdout(account_env):
+    """README обещает «в stdout только JSON» девяти командам; проверялись пять."""
+    import json as json_mod
+
+    result = CliRunner().invoke(main, ["account", "list", "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json_mod.loads(result.stdout)
+    assert [entry["name"] for entry in payload] == ["acc"], payload
+    assert payload[0]["default"] is True, payload
+
+
+def test_auth_check_json_puts_a_document_on_stdout(account_env, monkeypatch):
+    """Ветки ok/not_authorized и сам json.dumps не выполнялись ни разу."""
+    import json as json_mod
+    from unittest.mock import AsyncMock, MagicMock
+
+    api = MagicMock()
+    api.__aenter__ = AsyncMock(side_effect=RuntimeError("cannot connect"))
+    api.__aexit__ = AsyncMock(return_value=False)
+    monkeypatch.setattr("tg_export.api.TgApi", lambda *a, **k: api)
+
+    result = CliRunner().invoke(main, ["auth", "check", "--json"])
+
+    payload = json_mod.loads(result.stdout)
+    assert [entry["account"] for entry in payload] == ["acc"], payload
+    assert payload[0]["status"] == "error", payload
+
+
+def test_state_show_json_puts_a_document_on_stdout(tmp_path, monkeypatch, account_env):
+    import json as json_mod
+
+    from tg_export.cli import common as cli_common
+    from tg_export.state import ExportState
+
+    state_db = tmp_path / "state.db"
+
+    @contextlib.asynccontextmanager
+    async def opened(account, config_override, output_override):
+        async with ExportState(state_db) as st:
+            yield st, tmp_path, "acc"
+
+    monkeypatch.setattr(cli_common, "opened_state", opened)
+
+    result = CliRunner().invoke(main, ["state", "show", "--json"])
+
+    assert result.exit_code == 0, result.output
+    assert json_mod.loads(result.stdout) == []
