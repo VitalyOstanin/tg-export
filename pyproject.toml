@@ -62,20 +62,19 @@ dependencies = [
     # 380 KB and nothing transitively; older releases within the bound do pull
     # `async-timeout` on every Python version -- the marker limiting it to
     # 3.10 and below appeared later in the 2.x line.
-    # The `[asyncio]` extra is what Telethon's async client needs. Upper bound:
-    # python-socks 3.0.0 (2026-08-11) drops the public `proxy_host` /
-    # `proxy_port` properties of `AsyncioProxy` (2.8.2 defines them in
-    # python_socks/async_/asyncio/_proxy.py; 3.0.0 defines them nowhere), while
-    # telethon 1.44 reads `proxy.proxy_host` / `proxy.proxy_port` in
-    # network/connection/connection.py. That branch only runs when `local_addr`
-    # is set, which this project never does, so the break is telethon's rather
-    # than ours -- but it is a concrete removal of something telethon relies
-    # on, and the bound stays until telethon states support for 3.x. Since the
-    # package moved into the main dependencies, this ceiling applies to every
-    # installation, not only to the one that uses a proxy: a comparison of the
-    # 2.8.2 and 3.0.0 wheels shows that everything else telethon 1.44 reaches
-    # for is still there.
-    "python-socks[asyncio]>=2.0,<3",
+    # The `[asyncio]` extra is what Telethon's async client needs. Upper bound
+    # `<4`: everything telethon 1.44 touches survived the 3.0.0 release
+    # (2026-08-11) -- `ProxyType`, the `_errors` module it monkey-patches,
+    # `Proxy.create()` with the same six leading parameters, and `connect()`
+    # with the same signature. The one removal is the public `proxy_host` /
+    # `proxy_port` of `AsyncioProxy`, read in network/connection/connection.py
+    # only when `local_addr` is set -- which this project never does. Telethon
+    # declares no dependency on python-socks at all, so waiting for it to state
+    # support for 3.x would mean waiting for a statement that has no reason to
+    # come, while 2.x stops receiving fixes. The bound stays at the next major
+    # because the package now sits in the main dependencies: the ceiling
+    # applies to every installation, not only to the one that uses a proxy.
+    "python-socks[asyncio]>=2.0,<4",
 ]
 
 [project.urls]
