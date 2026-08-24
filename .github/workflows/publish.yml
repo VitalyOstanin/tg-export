@@ -4,6 +4,17 @@ on:
   push:
     tags:
       - "v*"
+  # Rehearsal: the pipeline is rebuilt far more often than it runs, and until
+  # now it ran only on a real tag -- that is, the first execution of any change
+  # to it was the release itself. A manual run goes through the whole build job
+  # on the current branch and stops before the irreversible steps, so artifact
+  # hand-over, the gate and the wheel smoke test are exercised beforehand.
+  workflow_dispatch:
+
+env:
+  # A rehearsal starts from a branch, where the tag does not exist yet, so the
+  # number comes from the manifest that branch carries.
+  IS_REHEARSAL: ${{ github.event_name == 'workflow_dispatch' }}
 
 # Permissions are handed out per task rather than to the whole pipeline:
 # GitHub puts ACTIONS_ID_TOKEN_REQUEST_URL and ACTIONS_ID_TOKEN_REQUEST_TOKEN
@@ -30,6 +41,7 @@ jobs:
           fetch-depth: 0
 
       - name: Verify the tag sits on master
+        if: env.IS_REHEARSAL != 'true'
         # The workflow fires on any v* tag, and the checks know nothing about
         # branches: a tag left on a work branch, on a commit before the merge
         # or on a reverted state would publish a version whose contents never
@@ -76,9 +88,17 @@ jobs:
         # renaming the unreleased section invites -- becomes the heading of
         # the release notes.
         run: |
-          uv run python scripts/release_notes.py "$GITHUB_REF_NAME" \
-            --tag-date "$(git log -1 --format=%cs "$GITHUB_REF_NAME")" \
-            --output release_notes.md
+          set -euo pipefail
+          if [[ "$IS_REHEARSAL" == "true" ]]; then
+            # No tag yet: the number under rehearsal is the one the branch
+            # declares, and there is no tag date to compare the section with.
+            TAG="v$(sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml | head -1)"
+            uv run python scripts/release_notes.py "$TAG" --output release_notes.md
+          else
+            uv run python scripts/release_notes.py "$GITHUB_REF_NAME" \
+              --tag-date "$(git log -1 --format=%cs "$GITHUB_REF_NAME")" \
+              --output release_notes.md
+          fi
 
       - name: Build package
         run: uv build
@@ -117,6 +137,8 @@ jobs:
 
   publish:
     needs: build
+    # A rehearsal stops here: an upload to PyPI cannot be undone.
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     # Without an environment the OIDC credential is issued to any run of this
@@ -158,6 +180,7 @@ jobs:
 
   github-release:
     needs: publish
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

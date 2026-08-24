@@ -1,0 +1,10 @@
+# Version updates. Actions are pinned by commit SHA, which never moves on its
+# own: without this file a fix released in any of them -- the PyPI uploader
+# included -- would reach the project only if someone went looking for it.
+# Dependabot rewrites the SHA and the tag comment next to it.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

@@ -246,65 +246,57 @@ def test_main_progress_never_mixes_a_new_chat_with_the_previous_snapshot():
     потом снимок предыдущих значений. Между этими присваиваниями поток
     обновления Live читал новое число уже выгруженных сообщений вместе со
     снимком прошлого чата и показывал `completed` в разы больше `total`.
+
+    Смена чата воспроизводится ровно в окне гонки — между двумя чтениями
+    снимка внутри `chat_view` — вместо перебора наудачу в течение двух секунд:
+    вердикт перебора зависел от планировщика, а на исправной сборке он всегда
+    стоил полные две секунды и занятое ядро.
     """
-    import threading
-    import time
-    from unittest.mock import AsyncMock, MagicMock
+    from tg_export.exporter import ChatCounters, ChatStart, ExportStats
 
-    from rich.progress import Progress, TaskID
+    class _StatsSwitchingChatMidRead(ExportStats):
+        """Счётчики, у которых чат сменяется между чтениями снимка.
 
-    from tg_export.exporter import Exporter, ExportStats, StatusView
+        Первое чтение отдаёт снимок прошлого чата, каждое следующее -- снимок
+        нового: это и есть состояние, которое поток отрисовки застаёт, попав
+        между публикацией снимка и чтением счётчиков.
+        """
 
-    exporter = Exporter(
-        api=AsyncMock(),
-        state=AsyncMock(),
-        config=MagicMock(),
-        renderer=MagicMock(),
-        downloader=MagicMock(),
-        account="test",
-    )
-    exporter.downloader.snapshot_active_downloads = lambda: {}
+        def arm(self, following: ChatStart) -> None:
+            self._following = following
+            self._reads = 0
 
-    progress = Progress()
-    main_task = progress.add_task("test", total=100)
-    file_progress = Progress()
-    file_tasks: dict[int, TaskID] = {}
+        # Поле dataclass подменяется свойством намеренно: именно так
+        # воспроизводится смена снимка между двумя его чтениями.
+        @property
+        def _chat_start(self) -> ChatStart:
+            following = getattr(self, "_following", None)
+            if following is None:
+                return self._published
+            self._reads += 1
+            return self._published if self._reads == 1 else following
 
-    stats = ExportStats()
+        @_chat_start.setter
+        def _chat_start(self, value: ChatStart) -> None:  # pyright: ignore[reportIncompatibleVariableOverride]
+            self._published = value
+
+    stats = _StatsSwitchingChatMidRead()
     stats.begin_chat(messages_in_db=0, messages_total=1000)
+    stats.messages_exported = 1000
+    stats.arm(
+        ChatStart(
+            counters=ChatCounters(messages_exported=1000),
+            messages_in_db=0,
+            messages_total=10,
+            started_at=time.monotonic(),
+        )
+    )
 
-    stop = threading.Event()
-    overshoot: list[tuple[float, float]] = []
+    view = stats.chat_view()
 
-    def export_chats():
-        """Как event loop: выгружает чат из 1000 сообщений и берётся за следующий."""
-        while not stop.is_set():
-            for _ in range(1000):
-                stats.messages_exported += 1
-            stats.begin_chat(messages_in_db=0, messages_total=1000)
-            time.sleep(0)
-
-    worker = threading.Thread(target=export_chats, daemon=True)
-    worker.start()
-    try:
-        deadline = time.monotonic() + 2
-        while time.monotonic() < deadline and not overshoot:
-            exporter._build_status_table(
-                progress=progress,
-                main_task=main_task,
-                file_progress=file_progress,
-                file_tasks=file_tasks,
-                stats=stats,
-                status=StatusView(stats, start_time=time.monotonic()),
-            )
-            task = progress.tasks[0]
-            if task.total is not None and task.completed > task.total:
-                overshoot.append((task.completed, task.total))
-    finally:
-        stop.set()
-        worker.join(timeout=1)
-
-    assert not overshoot, f"completed больше total: {overshoot[:3]}"
+    assert (view.messages_total, view.counters.messages_exported) == (10, 0), (
+        f"в одном виде смешаны разные чаты: {view}"
+    )
 
 
 def test_one_frame_of_the_live_display_reads_one_snapshot_of_the_chat():

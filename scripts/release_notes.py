@@ -53,11 +53,34 @@ FEATURE_HEADING = "Добавлено"
 _ORDER = ("patch", "minor", "major")
 
 
+# Released numbers are X.Y.Z and nothing else. A pre-release number parsed as
+# neither a step up nor a step down, so it went past the bump check untouched
+# and reached GitHub marked --latest, that is, presented as the current
+# release. The convention is stated in RELEASING.md.
+_RELEASE_VERSION_RE = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+$")
+
+
+def _check_version_shape(version: str) -> None:
+    """Refuse a number that is not X.Y.Z, pre-releases included."""
+    if _RELEASE_VERSION_RE.fullmatch(version) is None:
+        raise SystemExit(
+            f"version {version} is not of the form X.Y.Z: the size of the bump cannot be checked "
+            f"against the section below it, and pre-release numbers are not published by this "
+            f"pipeline. See RELEASING.md."
+        )
+
+
 def _previous_version(changelog: str, version: str) -> str | None:
     """Version of the section right below ``version``; None when it is the first one."""
     versions = re.findall(r"^## \[([0-9]+\.[0-9]+\.[0-9]+)\]", changelog, re.MULTILINE)
     if version not in versions:
-        return None
+        # The shape of the number is checked before this, and the section for
+        # it is known to exist, so this means the headings disagree with the
+        # section this run works on -- not "the first release ever".
+        raise SystemExit(
+            f"CHANGELOG.md has a section for {version}, but its heading does not read "
+            f"'## [{version}] -- DATE': the size of the bump cannot be checked."
+        )
     below = versions[versions.index(version) + 1 :]
     return below[0] if below else None
 
@@ -171,6 +194,7 @@ def main() -> None:
             f"Bump the manifest (and uv.lock) in the commit the tag points at."
         )
 
+    _check_version_shape(version)
     changelog = (args.root / "CHANGELOG.md").read_text(encoding="utf-8")
     date, body = _section(changelog, version)
     _check_bump(changelog, version, body)

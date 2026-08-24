@@ -82,6 +82,38 @@ FEATURE = (
 )
 
 
+def test_a_version_that_is_not_semver_stops_the_release(tmp_path):
+    """Номер не вида X.Y.Z обходил сверку размера бампа целиком.
+
+    Размер бампа считался только когда номер нашёлся в списке разделов,
+    собранном по образцу `X.Y.Z`; номер иной формы в список не попадал, и гейт
+    -- то самое место, которое должно было это остановить, -- выпускал релиз
+    без единой проверки размера. Номер `1.6` вдобавок меньше того, что требует
+    раздел с ломающими изменениями.
+    """
+    result, _ = _run("v1.6", tmp_path, pyproject_version="1.6", changelog=BREAKING.format(version="1.6"))
+
+    assert result.returncode != 0
+    assert "1.6" in result.stderr, result.stderr
+
+
+def test_a_pre_release_version_stops_the_release(tmp_path):
+    """Pre-release-теги конвейером не поддержаны, и молча пропускать их нельзя.
+
+    Номер `2.0.0rc1` не разбирался как `X.Y.Z`, обходил сверку размера бампа и
+    попадал на GitHub помеченным `--latest`, то есть выдавался за очередной
+    выпуск. Решение записано в RELEASING.md: выпускаются только номера вида
+    `X.Y.Z`.
+    """
+    result, _ = _run(
+        "v2.0.0rc1", tmp_path, pyproject_version="2.0.0rc1", changelog=BREAKING.format(version="2.0.0rc1")
+    )
+
+    assert result.returncode != 0
+    assert "2.0.0rc1" in result.stderr, result.stderr
+    assert "pre-release" in result.stderr, result.stderr
+
+
 def test_a_breaking_section_without_a_major_bump_stops_the_release(tmp_path):
     """Смена контракта под номером 1.6.0 доходит до пользователя без предупреждения."""
     result, _ = _run(
@@ -453,3 +485,129 @@ def test_the_repository_ignores_the_agent_and_explore_output_on_its_own():
 
     assert ".claude/" in ignored
     assert "docs/__explore/" in ignored
+
+
+def test_every_action_of_every_workflow_is_pinned_by_commit():
+    """Тег доезжает до нового коммита, SHA -- никогда.
+
+    Шаги обоих workflow закреплены по полному SHA, но соглашение держалось
+    практикой: шаг, добавленный как `uses: some/action@v1`, проходил весь
+    набор проверок, при том что публикация выпускает пакет в PyPI с правом
+    доверенного издателя. Локальные действия (`./.github/...`) ссылаются на
+    сам репозиторий, и коммит для них -- тот, на котором идёт прогон.
+    """
+    import re
+
+    import yaml
+
+    workflows = sorted((Path(__file__).resolve().parent.parent / ".github" / "workflows").glob("*.yml"))
+    assert workflows, "не найдено ни одного workflow"
+
+    unpinned = []
+    for path in workflows:
+        workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
+        for job_name, job in workflow["jobs"].items():
+            for step in job.get("steps", []):
+                uses = step.get("uses")
+                if not uses or uses.startswith("./"):
+                    continue
+                ref = uses.partition("@")[2]
+                if not re.fullmatch(r"[0-9a-f]{40}", ref):
+                    unpinned.append(f"{path.name}:{job_name} {uses}")
+
+    assert not unpinned, f"действие закреплено не по коммиту: {unpinned}"
+
+
+def test_the_actions_are_kept_up_to_date_by_dependabot():
+    """SHA-пин по построению не обновляется сам.
+
+    Пины совпадали с последними выпусками только потому, что их поднимали
+    руками: выход исправления в любом из действий -- включая загрузчик в PyPI
+    -- не порождал ни PR, ни красного прогона, и расхождение обнаруживалось
+    только новым походом в API. Экосистема `github-actions` объявлена
+    Dependabot, чтобы обновление приходило само.
+    """
+    import yaml
+
+    path = Path(__file__).resolve().parent.parent / ".github" / "dependabot.yml"
+    assert path.exists(), "нет .github/dependabot.yml: обновлять SHA-пины нечем"
+
+    config = yaml.safe_load(path.read_text(encoding="utf-8"))
+    ecosystems = {entry["package-ecosystem"] for entry in config["updates"]}
+    assert "github-actions" in ecosystems, f"экосистема действий не объявлена: {sorted(ecosystems)}"
+
+
+def test_the_tag_is_checked_against_master_before_anything_is_built():
+    """Единственный шаг гейта, не выраженный командой `uv`, и потому без сверки.
+
+    Workflow срабатывает на любой тег `v*`, а проверки о ветках не знают: тег,
+    оставленный на рабочей ветке, на коммите до вливания или на откаченном
+    состоянии, опубликовал бы версию, содержимое которой не попадало в
+    `master`. Ветка не защищена, так что этот шаг -- единственное, что
+    отделяет такой релиз от обычного, и стоять он обязан до всякой работы.
+    """
+    from parity import job_with_step, jobs_before, workflow
+
+    jobs = workflow("publish.yml")["jobs"]
+    building = jobs_before(jobs, job_with_step(jobs, "gh-action-pypi-publish"))
+    assert building, "у job'а публикации нет предшественников"
+
+    steps = [step for name in building for step in jobs[name].get("steps", [])]
+    checked_at = [i for i, step in enumerate(steps) if "merge-base --is-ancestor" in (step.get("run") or "")]
+    assert checked_at, "тег не сверяется с master до публикации"
+
+    first_command = next(
+        (i for i, step in enumerate(steps) if any(_keys_of(step))),
+        len(steps),
+    )
+    assert checked_at[0] < first_command, "сверка с master идёт после первой проверки"
+
+
+def _keys_of(step) -> list[str]:
+    """Ключи команд одного шага workflow."""
+    from parity import command_key
+
+    return [key for line in (step.get("run") or "").splitlines() for key in [command_key(line)] if key]
+
+
+def test_the_release_is_created_only_after_the_upload():
+    """Release на GitHub создаётся из артефакта, загруженного публикацией.
+
+    Job с правом `contents: write` идёт последним по рёбрам `needs`: собранный
+    им release объявляет версию выпущенной, а выпущена она загрузкой на PyPI.
+    Порядком записи в YAML это не задаётся.
+    """
+    from parity import job_with_step, jobs_before, workflow
+
+    jobs = workflow("publish.yml")["jobs"]
+    writers = [name for name, job in jobs.items() if job.get("permissions", {}).get("contents") == "write"]
+    assert writers, "не найден job, создающий release"
+
+    publishing = job_with_step(jobs, "gh-action-pypi-publish")
+    for name in writers:
+        assert publishing in jobs_before(jobs, name), f"{name} не ждёт публикации на PyPI"
+
+
+def test_the_pipeline_can_be_rehearsed_without_publishing():
+    """Конвейер существовал только как текст: единственный триггер -- push тега.
+
+    Переписанный конвейер впервые исполнялся бы на настоящем релизе, причём
+    непроверенными оставались как раз механизмы, отказ которых виден только в
+    прогоне: передача артефактов между job'ами, имя окружения на стороне PyPI,
+    поведение сверки с `master` при аннотированном теге. Репетиция запускается
+    вручную и проходит сборку целиком, а необратимые шаги пропускает.
+    """
+    from parity import job_with_step, workflow
+
+    published = workflow("publish.yml")
+    triggers = published[True] if True in published else published["on"]
+    assert "workflow_dispatch" in triggers, "конвейер нечем отрепетировать до постановки тега"
+
+    jobs = published["jobs"]
+    irreversible = {job_with_step(jobs, "gh-action-pypi-publish")}
+    irreversible |= {
+        name for name, job in jobs.items() if job.get("permissions", {}).get("contents") == "write"
+    }
+    for name in sorted(irreversible):
+        condition = str(jobs[name].get("if", ""))
+        assert "push" in condition, f"{name} выполняется и на репетиции: if={condition!r}"
