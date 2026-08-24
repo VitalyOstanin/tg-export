@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from unittest.mock import MagicMock
 
 import pytest
@@ -287,3 +288,44 @@ def test_the_live_display_takes_over_the_reporting_of_waits(monkeypatch):
     with exporter._live_display(lambda: None):
         assert WAITS.status_visible is True
     assert WAITS.status_visible is False
+
+
+def test_a_wait_held_by_a_block_outlives_its_estimate():
+    """Расчётный срок снимал с доски запись, которой владеет незакрытый блок.
+
+    Сон может идти дольше оценки -- именно на загруженном цикле событий, --
+    и отсчёт исчезал с экрана, а прогон снова выглядел просто замершим.
+    """
+    from tg_export.waits import WaitBoard
+
+    board = WaitBoard()
+    with board.waiting(reason="flood wait", what="msg 7", seconds=10):
+        # Момент за пределами оценки: блок ещё не вышел.
+        still_there = board.pending(now=time.monotonic() + 1000)
+
+    assert [w.what for w in still_there] == ["msg 7"]
+    assert board.pending(now=time.monotonic() + 1000) == []
+
+
+def test_a_wait_nobody_holds_still_expires_by_its_deadline():
+    """Сон внутри telethon не сообщает о пробуждении -- его снимает только срок."""
+    from tg_export.waits import WaitBoard
+
+    board = WaitBoard()
+    started = time.monotonic()
+    board.note(reason="flood wait", what="msg 8", seconds=10, now=started)
+
+    assert board.pending(now=started + 5)
+    assert board.pending(now=started + 11) == []
+
+
+def test_a_nested_live_display_does_not_clear_the_flag_of_the_outer_one():
+    """Вложенный вход снимал признак показа у внешнего блока."""
+    from tg_export.waits import WaitBoard
+
+    board = WaitBoard()
+    with board.shown_in_status():
+        with board.shown_in_status():
+            assert board.status_visible is True
+        assert board.status_visible is True, "внутренний блок снял признак у внешнего"
+    assert board.status_visible is False

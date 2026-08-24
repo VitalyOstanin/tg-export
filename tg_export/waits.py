@@ -43,6 +43,13 @@ class Wait:
     what: str
     seconds: float
     started_at: float
+    # Whether the deadline is what ends this wait. True for a sleep somebody
+    # else performs -- telethon does not report waking up, so the only way to
+    # drop such a record is its own time. False while a block of this process
+    # holds the wait: there the estimate may run long, and dropping the record
+    # by it took the countdown off the screen while the export was still
+    # standing -- exactly the "looks hung" the module exists to prevent.
+    self_expiring: bool = True
 
     @property
     def until(self) -> float:
@@ -60,19 +67,42 @@ class WaitBoard:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._waits: list[Wait] = []
-        # True while the live status counts the waits down on screen. A line in
-        # the log would then say the same thing a second time, and say it in a
-        # place that scrolls the display: rich prints log records above the
+        # How many live displays are counting the waits down on screen. A line
+        # in the log would then say the same thing a second time, and say it in
+        # a place that scrolls the display: rich prints log records above the
         # Live panel, so every flood wait pushed the progress up by a line.
-        self.status_visible = False
+        # Counted rather than switched: a nested block used to clear the flag
+        # of the outer one on its way out, and the count is read from the
+        # display thread, so it lives under the same lock as the waits.
+        self._shown_in_status = 0
 
-    def note(self, *, reason: str, what: str, seconds: float, now: float | None = None) -> Wait:
+    @property
+    def status_visible(self) -> bool:
+        """Whether a live display is showing the waits right now."""
+        with self._lock:
+            return self._shown_in_status > 0
+
+    def note(
+        self,
+        *,
+        reason: str,
+        what: str,
+        seconds: float,
+        now: float | None = None,
+        self_expiring: bool = True,
+    ) -> Wait:
         """Record a wait somebody else is already sleeping through.
 
         Used for the sleep telethon performs inside itself: the end of it is
         not reported, so the wait is dropped by its own deadline.
         """
-        wait = Wait(reason=reason, what=what, seconds=seconds, started_at=self._now(now))
+        wait = Wait(
+            reason=reason,
+            what=what,
+            seconds=seconds,
+            started_at=self._now(now),
+            self_expiring=self_expiring,
+        )
         with self._lock:
             self._waits.append(wait)
         return wait
@@ -85,7 +115,7 @@ class WaitBoard:
         long -- so the wait is removed when the block ends rather than when its
         time is up.
         """
-        wait = self.note(reason=reason, what=what, seconds=seconds)
+        wait = self.note(reason=reason, what=what, seconds=seconds, self_expiring=False)
         if seconds >= MIN_LOGGED_WAIT_SECONDS and not self.status_visible:
             logger.warning("waiting %ds on %s: %s", int(seconds), what, reason)
         try:
@@ -96,11 +126,13 @@ class WaitBoard:
     @contextlib.contextmanager
     def shown_in_status(self) -> Iterator[None]:
         """Hold the waits reported by the live status for as long as it runs."""
-        self.status_visible = True
+        with self._lock:
+            self._shown_in_status += 1
         try:
             yield
         finally:
-            self.status_visible = False
+            with self._lock:
+                self._shown_in_status -= 1
 
     def forget(self, wait: Wait) -> None:
         """Drop one wait, whether or not its deadline has passed."""
@@ -111,7 +143,7 @@ class WaitBoard:
         """Waits still in force, the one with the most time left first."""
         moment = self._now(now)
         with self._lock:
-            self._waits = [w for w in self._waits if w.remaining(moment) > 0]
+            self._waits = [w for w in self._waits if not w.self_expiring or w.remaining(moment) > 0]
             live = list(self._waits)
         return sorted(live, key=lambda w: w.remaining(moment), reverse=True)
 
