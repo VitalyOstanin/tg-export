@@ -320,13 +320,19 @@ class AccountManager:
             await client.connect()
 
             if not await client.is_user_authorized():
-                phone = ask("Phone number (with +)", type=str)
+                phone = ask(
+                    "Phone number (with +)",
+                    type=str,
+                    without_an_answer="the number of an account already added",
+                )
                 sent = await client.send_code_request(phone)
                 _notify(f"Code type: {type(sent.type).__name__}")
                 _notify(f"Next type: {sent.next_type.__class__.__name__ if sent.next_type else 'none'}")
                 _notify(f"Timeout: {sent.timeout}s" if sent.timeout else "No timeout")
 
-                code = ask("Enter code", type=str)
+                code = ask(
+                    "Enter code", type=str, without_an_answer="a session file of an account already added"
+                )
                 try:
                     await client.sign_in(phone, code)
                 except SessionPasswordNeededError:
@@ -379,7 +385,12 @@ class AccountManager:
         from telethon.errors import PasswordHashInvalidError
 
         for attempt in range(_PASSWORD_ATTEMPTS):
-            password = ask("2FA password", hide_input=True, type=str)
+            password = ask(
+                "2FA password",
+                hide_input=True,
+                type=str,
+                without_an_answer="a session file of an account already added",
+            )
             try:
                 await client.sign_in(password=password)
                 return

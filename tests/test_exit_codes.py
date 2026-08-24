@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
+import click
 import pytest
 from click.testing import CliRunner
 
@@ -257,3 +258,63 @@ def test_a_refusal_over_the_call_shape_gives_code_two_with_usage():
         result = CliRunner().invoke(main, args)
         assert result.exit_code == EXIT_USAGE, (args, result.output)
         assert "Usage:" in result.output, (args, result.output)
+
+
+def test_a_question_with_nothing_to_read_is_a_refusal_not_an_interruption(monkeypatch, capsys):
+    """Пустой stdin -- это не Ctrl+C, и код 130 о нём лжёт.
+
+    `click.Abort` поднимается и при прерывании, и при конце ввода, поэтому
+    любой запуск без терминала на входе (cron, systemd, CI, `< /dev/null`)
+    отчитывался строкой «Interrupted.» и кодом 130, который супервизор читает
+    как «процесс убит сигналом». Настоящего сигнала при этом не было, а выход
+    из положения -- флаг, которым вопрос обходится, -- не назывался.
+    """
+    from tg_export import cli
+    from tg_export.console import confirm
+
+    def unanswered(*args, **kwargs):
+        raise click.Abort
+
+    monkeypatch.setattr(click, "confirm", unanswered)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+
+    with pytest.raises(click.ClickException) as excinfo:
+        confirm("Delete everything?", without_an_answer="--yes")
+
+    assert excinfo.value.exit_code == 1
+    assert "--yes" in excinfo.value.message
+    assert cli.EXIT_SIGINT == 130
+
+
+def test_a_question_interrupted_at_a_terminal_is_still_an_interruption(monkeypatch):
+    """Ctrl+C у настоящего терминала остаётся прерыванием с кодом 130."""
+    from tg_export.console import ask, confirm
+
+    def interrupted(*args, **kwargs):
+        raise click.Abort
+
+    monkeypatch.setattr(click, "confirm", interrupted)
+    monkeypatch.setattr(click, "prompt", interrupted)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+
+    with pytest.raises(click.Abort):
+        confirm("Delete everything?", without_an_answer="--yes")
+    with pytest.raises(click.Abort):
+        ask("Account alias", without_an_answer="--name")
+
+
+def test_a_value_with_nothing_to_read_names_the_option_that_supplies_it(monkeypatch):
+    """То же для вопроса о значении: отказ называет опцию, а не «Interrupted.»."""
+    from tg_export.console import ask
+
+    def unanswered(*args, **kwargs):
+        raise click.Abort
+
+    monkeypatch.setattr(click, "prompt", unanswered)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+
+    with pytest.raises(click.ClickException) as excinfo:
+        ask("Account alias", without_an_answer="--name")
+
+    assert excinfo.value.exit_code == 1
+    assert "--name" in excinfo.value.message

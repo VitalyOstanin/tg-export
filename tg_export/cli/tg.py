@@ -162,6 +162,11 @@ def tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_file, as_
 
     Accepts one or more CHAT_IDS, or use --from-catalog with --type to batch query.
     """
+    if chat_type and not catalog_file:
+        # The filter picks chats out of a catalog; without one there is nothing
+        # to pick from, and the call used to run over every id named on the
+        # command line as if no filter had been asked for.
+        raise click.UsageError("--type applies to the chats of --from-catalog; pass --from-catalog.")
     if not chat_ids and not catalog_file:
         # A call there is nothing to build from is a refusal to parse it, not
         # a successful run: the branch used to print a hint and return None,

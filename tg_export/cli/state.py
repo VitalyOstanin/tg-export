@@ -181,7 +181,7 @@ async def _state_reset(
                 if delete_messages
                 else ("Rewind export progress of all chats?")
             )
-            if not skip_confirm and not confirm(what):
+            if not skip_confirm and not confirm(what, without_an_answer="--yes"):
                 common.diag("Cancelled.", essential=True)
                 return EXIT_OK
             await st.reset_chat_progress(delete_messages=delete_messages)
@@ -198,7 +198,9 @@ async def _state_reset(
                 counts = await st.count_chat_rows(chat_id)
                 common.diag(f"Chat: {chat_id}", essential=True)
                 common.diag(common.db_rows_line(counts), essential=True)
-                if not skip_confirm and not confirm("Delete every message and file record of this chat?"):
+                if not skip_confirm and not confirm(
+                    "Delete every message and file record of this chat?", without_an_answer="--yes"
+                ):
                     common.diag("Cancelled.", essential=True)
                     return EXIT_OK
             await st.reset_chat_progress(chat_id, delete_messages=delete_messages)

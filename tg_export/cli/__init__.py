@@ -38,6 +38,7 @@ from.
 from __future__ import annotations
 
 import logging
+import sys
 
 import click
 
@@ -48,6 +49,25 @@ from tg_export.cli.common import STATE_DB_NAME, quiet_third_party_loggers, resol
 from tg_export.errors import EXIT_FAILURE, EXIT_OK, EXIT_SIGINT, TgExportError
 
 logger = logging.getLogger(__name__)
+
+
+def log_handler(*, is_terminal: bool, show_path: bool = False) -> logging.Handler:
+    """Where the log goes, chosen by who reads it.
+
+    `RichHandler` lays a record out in columns -- time, logger name, message --
+    and the columns take the width away from the message, which then wraps.
+    In a file that turns one record into several lines. Outside a terminal the
+    log is written by the plain handler: one record, one line, of any length.
+    """
+    if not is_terminal:
+        return logging.StreamHandler()
+
+    from rich.logging import RichHandler
+
+    from tg_export.console import console as export_console
+
+    return RichHandler(console=export_console, rich_tracebacks=True, show_path=show_path)
+
 
 # Re-exports: the names above are addressed as tg_export.cli.<name> by the rest
 # of the project and by the tests, though each is owned by the module it comes
@@ -91,16 +111,12 @@ __all__ = [
 )
 def main(debug, log_level, quiet):
     """tg-export: Flexible Telegram data export tool."""
-    from rich.logging import RichHandler
-
-    from tg_export.console import console as export_console
-
     level, include_libraries = resolve_log_level(debug, log_level)
 
     logging.basicConfig(
         level=level,
         format="%(name)s %(message)s",
-        handlers=[RichHandler(console=export_console, rich_tracebacks=True, show_path=debug)],
+        handlers=[log_handler(is_terminal=sys.stderr.isatty(), show_path=debug)],
     )
     quiet_third_party_loggers(level, include_libraries=include_libraries)
     # One home for the two flags. They used to be written here twice -- into

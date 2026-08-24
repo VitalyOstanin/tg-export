@@ -875,3 +875,37 @@ def test_the_text_option_says_it_goes_through_the_command_line():
     assert isinstance(option, click.Option)
 
     assert "command line" in (option.help or "").lower()
+
+
+def test_a_type_filter_without_a_catalog_is_a_refusal_to_parse_the_call():
+    """`--type` отбирает чаты каталога, и без каталога отбирать нечего.
+
+    Справка опции говорит «(with --from-catalog)», но вызов с
+    идентификаторами и `--type` принимался: команда опрашивала все
+    перечисленные чаты, как если бы отбора не просили, и ничем об этом не
+    сообщала.
+    """
+    from click.testing import CliRunner
+
+    from tg_export.cli import main
+
+    result = CliRunner().invoke(main, ["tg", "info", "123", "--type", "personal"])
+
+    assert result.exit_code == 2, result.output
+    assert "--from-catalog" in result.output
+
+
+def test_two_ways_to_ask_for_a_format_at_once_are_a_refusal_to_parse_the_call():
+    """`--json` -- краткая форма `--format json`, а `--format yaml --json` требует обе.
+
+    Побеждал `--json`, и YAML пользователь не получал -- без единого признака
+    того, что его `--format` отброшен.
+    """
+    from click.testing import CliRunner
+
+    from tg_export.cli import main
+
+    result = CliRunner().invoke(main, ["list", "--format", "yaml", "--json"])
+
+    assert result.exit_code == 2, result.output
+    assert "--format" in result.output

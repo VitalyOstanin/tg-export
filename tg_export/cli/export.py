@@ -20,6 +20,7 @@ from pathlib import Path
 import aiosqlite
 import click
 import yaml
+from click import ParameterSource
 
 from tg_export.cli import common
 from tg_export.cli.common import (
@@ -392,8 +393,14 @@ def _save_catalog(path: Path, text: str) -> None:
     help="Output format (default: yaml); --json is the short form of --format json",
 )
 @click.option("--include-left", is_flag=True, help="Include left channels")
-def list_chats(account, output, as_json, fmt, include_left):
+@click.pass_context
+def list_chats(ctx, account, output, as_json, fmt, include_left):
     """Export chat/folder catalog."""
+    if as_json and ctx.get_parameter_source("fmt") is not ParameterSource.DEFAULT:
+        # `--json` is the short form of `--format json`, so the two together
+        # name two formats. The flag used to win silently, and a run asking for
+        # YAML got JSON with nothing to tell it apart.
+        raise click.UsageError("--json and --format name the format twice; pass one of them.")
     asyncio.run(_list_chats(account, output, "json" if as_json else fmt, include_left))
 
 
@@ -1105,7 +1112,7 @@ async def _purge_chat(chat_arg, account, config_override, output_override, skip_
         else:
             common.diag("  Dir: not found", essential=True)
 
-        if not skip_confirm and not confirm("Delete all data for this chat?"):
+        if not skip_confirm and not confirm("Delete all data for this chat?", without_an_answer="--yes"):
             common.diag("Cancelled.", essential=True)
             return
 

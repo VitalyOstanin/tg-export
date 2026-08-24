@@ -48,6 +48,11 @@ def account_default(name, as_json):
             fail(f"Account '{name}' not found.")
         mgr.set_default_account(name)
         common.diag(f"Default account set to '{name}'.")
+        if as_json:
+            # The only place the flag used to leave stdout empty: `account
+            # default acc --json | jq -r .default` failed on an empty input,
+            # while the reference promises the object with no exceptions.
+            click.echo(json.dumps({"default": name}, ensure_ascii=False, indent=2))
         return
     default = mgr.get_default_account()
     if as_json:

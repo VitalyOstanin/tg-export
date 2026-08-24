@@ -35,11 +35,11 @@ def auth():
 def auth_credentials(api_id, api_hash):
     """Set Telegram API credentials (api_id and api_hash)."""
     if api_id is None:
-        api_id = ask("API ID (from https://my.telegram.org)", type=int)
+        api_id = ask("API ID (from https://my.telegram.org)", type=int, without_an_answer="--api-id")
     if api_hash is None:
         # hide_input: the hash authenticates the application the same way a
         # password does; typed in the open it stays in the shell history.
-        api_hash = ask("API Hash", hide_input=True)
+        api_hash = ask("API Hash", hide_input=True, without_an_answer="--api-hash")
     mgr = common.account_manager()
     mgr.save_credentials(api_id=api_id, api_hash=api_hash)
     common.diag("Credentials saved.")
@@ -50,7 +50,7 @@ def auth_credentials(api_id, api_hash):
 def auth_add(name):
     """Add a new Telegram account (interactive login)."""
     if name is None:
-        name = ask("Account alias")
+        name = ask("Account alias", without_an_answer="--name")
     mgr = common.account_manager()
     cred_path = mgr.config_dir / "api_credentials.yaml"
     if not cred_path.exists():

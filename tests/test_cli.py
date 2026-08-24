@@ -961,3 +961,18 @@ def test_the_state_table_rule_matches_its_header(tmp_path, account_env):
     assert set(rule) == {"-"}, rule
     assert len(rule) == len(header), f"шапка {len(header)}, линейка {len(rule)}"
     assert all(len(line) <= len(rule) or line.startswith(header[:7]) for line in data)
+
+
+def test_account_default_speaks_json_after_setting_it_too(account_env):
+    """Единственное место, где `--json` не давал документа.
+
+    Ветка задания аккаунта возвращалась раньше разбора флага, печатая
+    пояснение в stderr: `tg-export account default acc --json | jq -r .default`
+    падал разбором пустого входа, хотя справочник обещает объект без оговорок.
+    """
+    import json as json_mod
+
+    result = CliRunner().invoke(main, ["account", "default", "acc", "--json"])
+
+    assert result.exit_code == 0, result.output
+    assert json_mod.loads(result.stdout) == {"default": "acc"}

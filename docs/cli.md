@@ -126,12 +126,13 @@ tg-export auth check --account myaccount  # то же самое
 подстановка вида `NAME=$(tg-export account default)` даёт alias без разбора
 строки. Когда аккаунт по умолчанию не задан, stdout пуст, пояснение приходит в
 stderr, а код возврата остаётся `0` -- как у `account list` без аккаунтов.
-С `--json` печатается объект `{"default": <alias или null>}`.
+С `--json` печатается объект `{"default": <alias или null>}` -- и при показе, и после задания.
 
 ```bash
 tg-export account default            # показать
 tg-export account default --json     # {"default": "myaccount"}
 tg-export account default myaccount  # задать
+tg-export account default myaccount --json  # задать и напечатать {"default": "myaccount"}
 ```
 
 ### account remove
@@ -163,7 +164,7 @@ tg-export list --json --include-left --output-file catalog.json
 |---|-----------------------|------------------------------------------------------------------------|
 | 1 | `--account ALIAS`     | Аккаунт; по умолчанию -- аккаунт по умолчанию.                          |
 | 2 | `--output-file FILE`  | Записать в файл. Без опции каталог печатается в stdout. Прежнее написание `--output` принимается. |
-| 3 | `--json`              | Плоский JSON вместо YAML; краткая форма `--format json`.                 |
+| 3 | `--json`              | Плоский JSON вместо YAML; краткая форма `--format json`. Вместе с явным `--format` -- ошибка формы вызова (код `2`): формат назван дважды. |
 | 4 | `--format yaml\|json` | Формат: YAML с разделами `folders`/`unfiled`/`archived`/`left` (по умолчанию) либо плоский JSON. |
 | 5 | `--include-left`      | Включить покинутые каналы и группы.                                     |
 
@@ -346,7 +347,7 @@ tg-export tg info --from-catalog catalog.json --type personal -n 3 --output-file
 |---|-----------------------|-------------------------------------------------------------------|
 | 1 | `--account ALIAS`     | Аккаунт.                                                          |
 | 2 | `--from-catalog FILE` | Каталог в JSON (`list --json`) вместо перечня идентификаторов.     |
-| 3 | `--type TYPE`         | Отбор по типу чата, применяется вместе с `--from-catalog`.         |
+| 3 | `--type TYPE`         | Отбор по типу чата; только вместе с `--from-catalog`, иначе ошибка формы вызова (код `2`). |
 | 4 | `--limit N`, `-n N`   | Дополнительно показать последние N сообщений каждого чата. Прежнее написание `--last` принимается. |
 | 5 | `--output-file FILE`  | Записать результат в JSON-файл. Прежнее написание `--output` принимается. |
 | 6 | `--json`              | Машиночитаемый вывод: в stdout только JSON-документ.                |

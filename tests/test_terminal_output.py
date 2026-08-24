@@ -349,3 +349,47 @@ def test_one_frame_of_the_live_display_reads_one_snapshot_of_the_chat():
     )
 
     assert len(views) == 1, f"кадр собран из {len(views)} снимков чата"
+
+
+def test_a_long_line_stays_one_line_when_the_output_is_not_a_terminal():
+    """Вне терминала rich брал ширину 80 и всё равно переносил строки.
+
+    Диагностика и журнал идут в stderr, а штатный запуск по расписанию --
+    `tg-export run 2>> export.log`. Путь в сообщении рвался по границе 80
+    колонок посередине имени файла, строка добивалась пробелами и превращалась
+    в четыре: `grep` по пути ничего не находил, а сборщик журналов получал
+    четыре записи вместо одной.
+    """
+    import io
+
+    from tg_export.console import make_console
+
+    buffer = io.StringIO()
+    console = make_console(buffer, is_terminal=False)
+    path = "/home/user/.config/tg-export/" + "sub/" * 20 + "account.yaml"
+
+    console.print(f"{path} has too-permissive mode 664")
+
+    printed = buffer.getvalue()
+    assert printed.count("\n") == 1, f"строка разбита на части: {printed!r}"
+    assert path in printed, f"путь разорван переносом: {printed!r}"
+
+
+def test_the_log_outside_a_terminal_is_written_line_per_record():
+    """`RichHandler` вне терминала оформляет запись журнала в колонки.
+
+    Колонки времени и имени логгера съедают ширину, остаток переносится, и
+    одна запись журнала занимает несколько строк файла. Вне терминала журнал
+    пишется обычным обработчиком: запись -- одна строка любой длины.
+    """
+    import logging
+
+    from rich.logging import RichHandler
+
+    from tg_export.cli import log_handler
+
+    assert isinstance(log_handler(is_terminal=True), RichHandler)
+
+    plain = log_handler(is_terminal=False)
+    assert isinstance(plain, logging.StreamHandler)
+    assert not isinstance(plain, RichHandler)
