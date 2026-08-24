@@ -145,12 +145,23 @@ async def fetch_broken_messages(api, numbered, *, should_stop=None):
             answered = await api.client.get_messages(chat_id, ids=msg_ids)
             if not isinstance(answered, list):
                 answered = [answered]
+            # Keyed by the id the message itself carries: pairing the answer
+            # with the request by position holds only while Telegram returns
+            # exactly one slot per asked id, and a shift there would attach the
+            # file of one message to the record of another -- silently, since
+            # both sides are of the same chat.
             found: dict[tuple[int, int], Any] = {
-                (chat_id, msg_id): tl_msg
-                for msg_id, tl_msg in zip(msg_ids, answered, strict=False)
-                if tl_msg is not None
+                (chat_id, tl_msg.id): tl_msg for tl_msg in answered if tl_msg is not None
             }
             yield batch, found
+
+
+# How many downloads may wait for a free slot per unit of concurrency. The
+# semaphore bounds what runs, not what is created: a task per broken file was
+# started as soon as its batch arrived, and each holds the Telethon message it
+# downloads from, so a chat with tens of thousands of broken files held them
+# all at once.
+TASKS_PER_SLOT = 4
 
 
 @dataclass
@@ -196,10 +207,25 @@ async def redownload_broken_files(
             return RedownloadOutcome(entry, result=result, path=final_path)
 
     started: list[tuple[int, asyncio.Task]] = []
-    async for batch, messages in fetch_broken_messages(api, numbered, should_stop=should_stop):
-        for index, entry in batch:
-            task = asyncio.create_task(one(entry, messages.get((entry["chat_id"], entry["msg_id"]))))
-            started.append((index, task))
+    waiting: set[asyncio.Task] = set()
+    window = max(1, concurrency) * TASKS_PER_SLOT
+    try:
+        async for batch, messages in fetch_broken_messages(api, numbered, should_stop=should_stop):
+            for index, entry in batch:
+                while len(waiting) >= window:
+                    _, waiting = await asyncio.wait(waiting, return_when=asyncio.FIRST_COMPLETED)
+                task = asyncio.create_task(one(entry, messages.get((entry["chat_id"], entry["msg_id"]))))
+                started.append((index, task))
+                waiting.add(task)
+    except BaseException:
+        # The request for the next batch failed, or the pass was cancelled.
+        # The downloads already started keep writing to the state, and the
+        # caller closes it in its own `finally` -- so they are stopped and
+        # awaited here, before the exception leaves this function.
+        for _, task in started:
+            task.cancel()
+        await asyncio.gather(*(task for _, task in started), return_exceptions=True)
+        raise
 
     outcomes: list[RedownloadOutcome] = [RedownloadOutcome(entry) for _, entry in numbered]
     if started:

@@ -5,6 +5,7 @@
 статусом partial.
 """
 
+import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -188,7 +189,7 @@ async def test_broken_files_are_asked_for_in_batches_per_chat(tmp_path):
 
     async def get_messages(chat_id, ids: list[int]):
         calls.append((chat_id, ids))
-        return [MagicMock(media=object()) for _ in ids]
+        return [MagicMock(media=object(), id=msg_id) for msg_id in ids]
 
     api = MagicMock()
     api.client.get_messages = get_messages
@@ -222,7 +223,7 @@ async def test_downloading_starts_before_every_message_has_been_fetched(tmp_path
     async def get_messages(chat_id, ids):
         events.append("fetch")
         await asyncio.sleep(0.01)
-        return [MagicMock(media=object()) for _ in ids]
+        return [MagicMock(media=object(), id=msg_id) for msg_id in ids]
 
     async def download_media(tl_msg, staging):
         events.append("download")
@@ -264,7 +265,9 @@ async def test_broken_files_are_downloaded_with_the_configured_parallelism(tmp_p
         return None
 
     api = MagicMock()
-    api.client.get_messages = AsyncMock(return_value=[MagicMock(media=object()) for _ in entries])
+    api.client.get_messages = AsyncMock(
+        return_value=[MagicMock(media=object(), id=e["msg_id"]) for e in entries]
+    )
     api.download_media = download_media
 
     await redownload_broken_files(api, AsyncMock(), entries, concurrency=3)
@@ -557,3 +560,145 @@ async def test_the_verify_command_fails_when_a_file_stays_broken(tmp_path, monke
     monkeypatch.setattr("tg_export.cli.export.redownload_broken_files", AsyncMock(return_value=[repaired]))
 
     assert await cli_export._verify_files("acc", None, None) == EXIT_OK
+
+
+@pytest.mark.asyncio
+async def test_a_message_answered_under_another_id_is_not_attached_to_the_record(tmp_path):
+    """Ответ сопоставлялся с запросом по порядку, а не по идентификатору сообщения.
+
+    Сдвиг в ответе приписал бы файл одного сообщения записи другого -- молча:
+    оба из одного чата, и по типу медиа отличить их нечем.
+    """
+    from tg_export.verify import fetch_broken_messages
+
+    entries = [_broken(i, 100, 200 + i, tmp_path / f"f{i}.jpg") for i in range(2)]
+
+    async def get_messages(chat_id, ids):
+        # Telegram ответил одним сообщением из двух запрошенных.
+        return [MagicMock(media=object(), id=201)]
+
+    api = MagicMock()
+    api.client.get_messages = get_messages
+
+    found_all = {}
+    async for _, found in fetch_broken_messages(api, list(enumerate(entries))):
+        found_all.update(found)
+
+    assert set(found_all) == {(100, 201)}, found_all
+
+
+@pytest.mark.asyncio
+async def test_a_failed_batch_stops_the_downloads_it_already_started(tmp_path):
+    """Задачи переживали отказ запроса и продолжали писать в закрываемое состояние.
+
+    Вызывающий закрывает базу состояния в своём `finally`, поэтому загрузки,
+    оставшиеся работать после исключения, писали бы в закрытое соединение.
+    """
+    from tg_export.verify import redownload_broken_files
+
+    entries = [_broken(0, 100, 200, tmp_path / "a.jpg"), _broken(1, 101, 201, tmp_path / "b.jpg")]
+    for entry in entries:
+        Path(entry["local_path"]).write_bytes(b"partial")
+
+    calls = 0
+
+    async def get_messages(chat_id, ids):
+        nonlocal calls
+        calls += 1
+        if calls > 1:
+            # Пауза, чтобы загрузки первой пачки успели начаться: отменять
+            # нечего, пока задача не дошла до первого await.
+            await asyncio.sleep(0.01)
+            raise RuntimeError("сеть отказала на второй пачке")
+        return [MagicMock(media=object(), id=msg_id) for msg_id in ids]
+
+    cancelled = 0
+
+    async def download_media(tl_msg, staging):
+        nonlocal cancelled
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            cancelled += 1
+            raise
+
+    api = MagicMock()
+    api.client.get_messages = get_messages
+    api.download_media = download_media
+
+    with pytest.raises(RuntimeError):
+        await redownload_broken_files(api, AsyncMock(), entries, concurrency=2)
+
+    assert cancelled == 1, "загрузка первой пачки осталась работать после отказа второй"
+
+
+@pytest.mark.asyncio
+async def test_not_every_broken_file_gets_a_task_at_once(tmp_path):
+    """Задача заводилась на каждый битый файл сразу и держала своё сообщение.
+
+    Семафор ограничивает то, что выполняется, а не то, что создано: чат с
+    десятками тысяч битых файлов держал столько же задач одновременно.
+    """
+    from tg_export.verify import redownload_broken_files
+
+    entries = [_broken(i, 100, 200 + i, tmp_path / f"f{i}.jpg") for i in range(40)]
+    for entry in entries:
+        Path(entry["local_path"]).write_bytes(b"partial")
+
+    peak_tasks = 0
+
+    async def download_media(tl_msg, staging):
+        nonlocal peak_tasks
+        peak_tasks = max(peak_tasks, len(asyncio.all_tasks()))
+        await asyncio.sleep(0)
+        return None
+
+    api = MagicMock()
+    api.client.get_messages = AsyncMock(
+        return_value=[MagicMock(media=object(), id=e["msg_id"]) for e in entries]
+    )
+    api.download_media = download_media
+
+    await redownload_broken_files(api, AsyncMock(), entries, concurrency=1)
+
+    assert peak_tasks < len(entries), f"одновременно живых задач: {peak_tasks}"
+
+
+@pytest.mark.asyncio
+async def test_files_the_stopped_pass_never_touched_are_not_errors(tmp_path, monkeypatch):
+    """Ctrl+C во время `run --verify` давал по ложной ошибке на каждый нетронутый файл.
+
+    Исход «прохода не было» попадал в ветку неизвестного исхода, и сводка
+    сообщала «N files still have issues» про файлы, к которым не обращались.
+    """
+    import tg_export.verify as verify_module
+    from tg_export.exporter import Exporter, ExportStats
+
+    broken = tmp_path / "photo.jpg"
+    broken.write_bytes(b"partial")
+
+    async def stopped_pass(*_args, **_kwargs):
+        return [verify_module.RedownloadOutcome(_entry(broken))]
+
+    monkeypatch.setattr("tg_export.exporter.redownload_broken_files", stopped_pass)
+
+    state = MagicMock()
+    state.get_files_to_verify = AsyncMock(return_value=[_entry(broken)])
+
+    config = MagicMock()
+    config.defaults.media.concurrent_downloads = 2
+
+    exporter = Exporter(  # pyright: ignore[reportArgumentType]
+        api=MagicMock(),
+        state=state,
+        config=config,
+        renderer=MagicMock(),
+        downloader=MagicMock(),
+        account="acc",
+        quiet=True,
+    )
+    stats = ExportStats()
+
+    await exporter._verify_files(stats)
+
+    assert not stats.errors, stats.errors

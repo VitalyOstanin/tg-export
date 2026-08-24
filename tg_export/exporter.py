@@ -1869,6 +1869,7 @@ class Exporter:
         await asyncio.to_thread(clean_staging, Path(self.config.output.path))
         errors_before = len(stats.errors)
         redownloaded = 0
+        untouched = 0
         outcomes = await redownload_broken_files(
             self.api,
             self.state,
@@ -1889,6 +1890,13 @@ class Exporter:
                 stats.errors.append(f"Re-download failed: {local_path}")
             elif outcome.result is RedownloadResult.replaced:
                 redownloaded += 1
+            elif outcome.result is None:
+                # The pass stopped before this file was reached -- Ctrl+C is
+                # what does it. The file stays broken, but nothing was
+                # attempted on it, so reporting it as a failure turned every
+                # remaining file of an interrupted `run --verify` into an
+                # error line and into "N files still have issues".
+                untouched += 1
             else:
                 # Anything else is an outcome added to the enum and left
                 # unhandled here; counting it as re-downloaded would report a
@@ -1897,6 +1905,8 @@ class Exporter:
 
         if redownloaded:
             self._status_print(f"[green]Re-downloaded {redownloaded}/{len(broken)} files[/]")
+        if untouched:
+            self._status_print(f"[yellow]{untouched} files left unchecked -- the pass was stopped[/]")
         # Only the failures of this pass: the shared list already holds the
         # errors of the export itself, and printing its length reported "100
         # files still have issues" after a verification that found none.
