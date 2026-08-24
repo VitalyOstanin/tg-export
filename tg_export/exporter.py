@@ -1659,37 +1659,49 @@ class Exporter:
             f"  [green]exported[/]: {len(app_sessions)} app sessions, {len(web_sessions)} web sessions"
         )
 
+    async def _download_batch(self, items: list[tuple[Any, str]], *, what: str) -> list[Path | None]:
+        """Download the listed items within the window the configuration allows.
+
+        The global-data phase waited for each file before asking for the next,
+        while the export of chats runs the same work through a window of
+        `concurrent_downloads`: a hundred stories were a hundred round trips
+        one after another. The order of the results is the order of the items,
+        and a file that failed comes back as None -- with the reason in the
+        log, since one refused download must not lose the rest.
+        """
+        semaphore = asyncio.Semaphore(self._download_window())
+
+        async def download(index: int, media: Any, target: str) -> Path | None:
+            async with semaphore:
+                try:
+                    path = await self.api.client.download_media(media, file=target)
+                except Exception as e:
+                    logger.debug("Failed to download %s %d: %s", what, index, e)
+                    return None
+            return Path(str(path)) if path else None
+
+        return list(await asyncio.gather(*(download(i, m, t) for i, (m, t) in enumerate(items))))
+
     async def _export_userpics(self):
         """Fetch and render profile photos."""
         photos_dir = self.renderer.output_dir / "profile_photos"
         photos_dir.mkdir(parents=True, exist_ok=True)
 
-        photos = []
-        seq = 0
-        failed = 0
-        async for photo in self.api.iter_userpics():
-            # Use a separate per-iteration counter for the filename so a failed
-            # download does not cause the next photo to reuse the same name.
-            seq += 1
-            try:
-                path = await self.api.client.download_media(
-                    photo,
-                    file=str(photos_dir / f"photo_{seq}"),
-                )
-                if path:
-                    date_str = format_moment(getattr(photo, "date", None))
-                    photos.append(
-                        {
-                            "path": f"profile_photos/{Path(str(path)).name}",
-                            "date": date_str,
-                        }
-                    )
-            except Exception as e:
-                failed += 1
-                logger.debug("Failed to download userpic %d: %s", seq, e)
+        # A separate counter for the file name, so a failed download does not
+        # let the next photo reuse the same one.
+        userpics = [photo async for photo in self.api.iter_userpics()]
+        targets = [(photo, str(photos_dir / f"photo_{seq}")) for seq, photo in enumerate(userpics, 1)]
+        paths = await self._download_batch(targets, what="userpic")
+
+        photos = [
+            {"path": f"profile_photos/{path.name}", "date": format_moment(getattr(photo, "date", None))}
+            for photo, path in zip(userpics, paths, strict=True)
+            if path is not None
+        ]
+        failed = len(userpics) - len(photos)
 
         await asyncio.to_thread(self.renderer.render_userpics, photos)
-        self._report_exported("profile photos", considered=len(photos) + failed, failed=failed)
+        self._report_exported("profile photos", considered=len(userpics), failed=failed)
 
     async def _export_stories(self):
         """Fetch and render stories."""
@@ -1712,9 +1724,21 @@ class Exporter:
         for story_item in getattr(archived, "stories", []):
             all_stories.setdefault(story_item.id, story_item)
 
+        ordered = sorted(all_stories.items())
+        with_media = [
+            (idx, story_id, item)
+            for idx, (story_id, item) in enumerate(ordered)
+            if getattr(item, "media", None)
+        ]
+        paths = await self._download_batch(
+            [(item.media, str(stories_dir / f"story_{idx}")) for idx, _, item in with_media],
+            what="story",
+        )
+        downloaded = {story_id: path for (_, story_id, _), path in zip(with_media, paths, strict=True)}
+        failed = sum(1 for path in paths if path is None)
+
         stories = []
-        failed = 0
-        for idx, (story_id, item) in enumerate(sorted(all_stories.items())):
+        for story_id, item in ordered:
             photo_path = None
             video_path = None
             caption = ""
@@ -1724,32 +1748,20 @@ class Exporter:
             elif hasattr(item, "message") and item.message:
                 caption = item.message
 
-            media = getattr(item, "media", None)
-            if media:
-                try:
-                    path = await self.api.client.download_media(
-                        media,
-                        file=str(stories_dir / f"story_{idx}"),
-                    )
-                    if path:
-                        path_obj = Path(str(path))
-                        rel = f"stories/{path_obj.name}"
-                        if path_obj.suffix.lower() in STORY_VIDEO_EXTENSIONS:
-                            video_path = rel
-                        else:
-                            photo_path = rel
-                except Exception as e:
-                    failed += 1
-                    logger.debug("Failed to download story %d: %s", story_id, e)
-
-            date_str = format_moment(getattr(item, "date", None))
+            path = downloaded.get(story_id)
+            if path is not None:
+                rel = f"stories/{path.name}"
+                if path.suffix.lower() in STORY_VIDEO_EXTENSIONS:
+                    video_path = rel
+                else:
+                    photo_path = rel
 
             stories.append(
                 {
                     "photo_path": photo_path,
                     "video_path": video_path,
                     "caption": caption,
-                    "date": date_str,
+                    "date": format_moment(getattr(item, "date", None)),
                 }
             )
 

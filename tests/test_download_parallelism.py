@@ -322,3 +322,61 @@ async def test_the_window_is_measured_without_walking_the_queue(tmp_path):
     assert CountingDeque.visited <= 3 * messages, (
         f"обходов очереди {CountingDeque.visited} на {messages} сообщений"
     )
+
+
+@pytest.mark.asyncio
+async def test_profile_photos_are_downloaded_within_the_configured_window(monkeypatch):
+    """Профильные фото и истории качались строго по одному.
+
+    Экспорт чатов ради той же задачи держит окно `concurrent_downloads`, а
+    фаза общих данных ждала каждый файл до перехода к следующему: сотня
+    историй превращалась в сотню обменов подряд, хотя настройка разрешает
+    несколько сразу.
+    """
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock
+
+    from tg_export.exporter import Exporter
+
+    running = 0
+    peak = 0
+
+    async def download_media(media, file):
+        nonlocal running, peak
+        running += 1
+        peak = max(peak, running)
+        try:
+            await asyncio.sleep(0.01)
+            return f"{file}.jpg"
+        finally:
+            running -= 1
+
+    api = MagicMock()
+    api.client.download_media = download_media
+
+    async def userpics():
+        for _ in range(6):
+            yield MagicMock(date=None)
+
+    api.iter_userpics = userpics
+
+    config = MagicMock()
+    downloader = MagicMock()
+    downloader.config.concurrent_downloads = 3
+
+    exporter = Exporter(
+        api=api,
+        state=AsyncMock(),
+        config=config,
+        renderer=MagicMock(),
+        downloader=downloader,
+        account="acc",
+        quiet=True,
+    )
+    exporter.renderer.output_dir = Path("/tmp")
+    monkeypatch.setattr(Path, "mkdir", lambda *args, **kwargs: None)
+
+    await exporter._export_userpics()
+
+    assert peak > 1, "фото по-прежнему качаются по одному"
+    assert peak <= 3, f"окно шире настроенного: {peak}"

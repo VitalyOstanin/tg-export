@@ -565,14 +565,15 @@ async def _tg_send(account_name, recipients, text, files, as_document=False):
 @tg.command("download")
 @click.option("--account", default=None, help=common.ACCOUNT_HELP)
 @click.option("--output", "-o", type=click.Path(path_type=Path), default=".", help="Output directory")
+@click.option("--json", "as_json", is_flag=True, help="Output as machine-readable JSON")
 @click.argument("chat_id", type=int)
 @click.argument("msg_id", type=int)
-def tg_download(account, output, chat_id, msg_id):
+def tg_download(account, output, chat_id, msg_id, as_json):
     """Download message content: text and all media files.
 
     Saves message text to <msg_id>.txt and media files to the output directory.
     """
-    exit_code = asyncio.run(_tg_download(account, chat_id, msg_id, output))
+    exit_code = asyncio.run(_tg_download(account, chat_id, msg_id, output, as_json=as_json))
     if exit_code:
         fail(code=exit_code)
 
@@ -628,7 +629,15 @@ def _save_message_text(out: Path, msg_id: int, text: str) -> Path:
     return path
 
 
-async def _tg_download(account_name: str | None, chat_id: int, msg_id: int, out: Path) -> int:
+async def _tg_download(
+    account_name: str | None, chat_id: int, msg_id: int, out: Path, *, as_json: bool = False
+) -> int:
+    """Save the text and the media of one message; report what was saved.
+
+    The names of the files are chosen by Telethon, so the paths are the result
+    of the command: with `--json` they go to stdout as a document, and the
+    lines for the terminal stay in the diagnostic stream.
+    """
     ensure_private_dir(out)
     out.mkdir(parents=True, exist_ok=True)
     async with common.connected_api(account_name) as (api, _):
@@ -639,9 +648,11 @@ async def _tg_download(account_name: str | None, chat_id: int, msg_id: int, out:
             common.diag(f"Message {msg_id} not found in chat {chat_id}", essential=True)
             return EXIT_FAILURE
 
+        saved: dict[str, object] = {"chat_id": chat_id, "msg_id": msg_id, "text_file": None, "media": []}
         msg_text = getattr(tl_msg, "text", None)
         if msg_text:
             text_file = _save_message_text(out, msg_id, msg_text)
+            saved["text_file"] = str(text_file)
             common.diag(f"  text: {text_file}")
 
         # Only what this call downloaded: the set decides whether a new file is a
@@ -653,6 +664,7 @@ async def _tg_download(account_name: str | None, chat_id: int, msg_id: int, out:
         if tl_msg.media:
             path = await _download_if_new(api.client, tl_msg, out, downloaded)
             if path:
+                saved["media"].append(str(path))  # pyright: ignore[reportAttributeAccessIssue]
                 common.diag(f"  media: {path}")
 
         if tl_msg.grouped_id:
@@ -669,6 +681,7 @@ async def _tg_download(account_name: str | None, chat_id: int, msg_id: int, out:
                 ):
                     path = await _download_if_new(api.client, grouped_msg, out, downloaded)
                     if path:
+                        saved["media"].append(str(path))  # pyright: ignore[reportAttributeAccessIssue]
                         common.diag(f"  album media: {path}")
                         count += 1
             if count:
@@ -676,4 +689,6 @@ async def _tg_download(account_name: str | None, chat_id: int, msg_id: int, out:
 
         if not msg_text and not tl_msg.media:
             common.diag("  (empty message, no text or media)")
+        if as_json:
+            click.echo(json.dumps(saved, ensure_ascii=False, indent=2))
         return EXIT_OK

@@ -330,7 +330,7 @@ export_output/
 
 Потоки вывода: машиночитаемый вывод команд `list`, `state show`, `tg info`, `tg messages` идёт в stdout; прогресс, статусы, диагностика и ошибки — в stderr. Это позволяет безопасно использовать пайпинг, например `tg-export list --json | jq ...`.
 
-Флаг `--json` для машиночитаемого вывода поддерживают команды `list`, `config`, `account list`, `account default`, `auth check`, `state show`, `tg info` и `tg messages`. В этом режиме в stdout печатается только JSON.
+Флаг `--json` для машиночитаемого вывода поддерживают команды `list`, `config`, `account list`, `account default`, `auth check`, `state show`, `tg info`, `tg messages` и `tg download`. В этом режиме в stdout печатается только JSON.
 
 ### Коды возврата
 

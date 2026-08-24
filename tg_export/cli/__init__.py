@@ -38,6 +38,7 @@ from.
 from __future__ import annotations
 
 import logging
+import signal
 import sys
 
 import click
@@ -145,6 +146,21 @@ for _command in (
     main.add_command(_command)
 
 
+def _restore_default_sigpipe() -> None:
+    """Let a closed pipe end the process the way shells expect.
+
+    Python ignores SIGPIPE and turns the write into an exception; click
+    answers that by replacing the streams and calling `sys.exit(1)`, past
+    every branch below. `state show --json | head -20` therefore ended with
+    the code the table of README gives to a refusal, and printed nothing --
+    a wrapper with `set -o pipefail` read an ordinary early exit of the reader
+    as a failed export. With the default handler the process ends by the
+    signal (141 = 128 + SIGPIPE) instead.
+    """
+    if hasattr(signal, "SIGPIPE"):
+        signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+
+
 def run_cli() -> None:
     """Console-script entry point.
 
@@ -154,6 +170,7 @@ def run_cli() -> None:
     lives in tg_export.errors -- and the full traceback is shown only when
     --debug is passed.
     """
+    _restore_default_sigpipe()
     try:
         # standalone_mode=False: in standalone mode Click catches
         # KeyboardInterrupt itself, prints "Aborted!" and exits with 1, so the

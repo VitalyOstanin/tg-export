@@ -909,3 +909,39 @@ def test_two_ways_to_ask_for_a_format_at_once_are_a_refusal_to_parse_the_call():
 
     assert result.exit_code == 2, result.output
     assert "--format" in result.output
+
+
+@pytest.mark.asyncio
+async def test_tg_download_reports_what_it_saved_as_a_document(tmp_path, monkeypatch, capsys):
+    """Единственный результат команды -- пути, и прочитать их программой было нельзя.
+
+    Все три строки шли в поток диагностики, причём как неessential: под
+    `--quiet` они исчезали совсем, а stdout оставался пустым всегда. Имена
+    файлов выбирает Telethon, поэтому узнать, что именно скачано, можно было
+    только разбором прозы или повторным просмотром каталога.
+    """
+    import contextlib
+    import json as json_mod
+
+    from tg_export.cli import common as cli_common
+    from tg_export.cli import tg as cli_tg
+
+    content = b"B" * 10
+    api = MagicMock()
+    api.client = _make_client(tmp_path, "media.bin", content)
+    api.client.get_messages = AsyncMock(return_value=MagicMock(text="hi", grouped_id=None))
+
+    @contextlib.asynccontextmanager
+    async def fake(_account_name):
+        yield api, "me"
+
+    monkeypatch.setattr(cli_common, "connected_api", fake)
+
+    code = await cli_tg._tg_download("acc", 1, 2, tmp_path, as_json=True)
+
+    assert code == 0
+    document = json_mod.loads(capsys.readouterr().out)
+    assert document["chat_id"] == 1
+    assert document["msg_id"] == 2
+    assert document["text_file"].endswith("2.txt")
+    assert [Path(p).name for p in document["media"]] == ["media.bin"]

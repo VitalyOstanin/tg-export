@@ -314,3 +314,30 @@ def test_a_value_with_nothing_to_read_names_the_option_that_supplies_it(monkeypa
 
     assert excinfo.value.exit_code == 1
     assert "--name" in excinfo.value.message
+
+
+def test_a_closed_pipe_is_not_reported_as_a_refusal(monkeypatch):
+    """`state show --json | head -20` завершался кодом 1 и без единого слова.
+
+    Click отвечает на закрытый stdout подменой потоков и `sys.exit(1)`, минуя
+    разбор исходов: обёртка с `set -o pipefail` читала обычный ранний выход
+    читателя как отказ экспорта. Соглашение оболочек для этого случая --
+    завершение сигналом (`141` = 128 + SIGPIPE), а не код отказа.
+    """
+    import contextlib
+    import signal
+
+    from tg_export import cli
+
+    if not hasattr(signal, "SIGPIPE"):
+        pytest.skip("SIGPIPE есть только на POSIX")
+
+    previous = signal.getsignal(signal.SIGPIPE)
+    signal.signal(signal.SIGPIPE, signal.SIG_IGN)
+    monkeypatch.setattr(sys, "argv", ["tg-export", "--version"])
+    try:
+        with contextlib.suppress(SystemExit):
+            cli.run_cli()
+        assert signal.getsignal(signal.SIGPIPE) is signal.SIG_DFL
+    finally:
+        signal.signal(signal.SIGPIPE, previous)
