@@ -43,7 +43,8 @@ tg-export [ГЛОБАЛЬНЫЕ ОПЦИИ] КОМАНДА [ОПЦИИ КОМА�
 | 5 | `--help`, `-h`      | Справка по команде или группе команд.                                              |
 
 Приоритет уровня логирования по убыванию: `--debug` > `--log-level` > переменная
-окружения `LOG_LEVEL` > значение по умолчанию `WARNING`. Логи telethon и aiosqlite
+окружения `TG_EXPORT_LOG_LEVEL` > `LOG_LEVEL` > значение по умолчанию `WARNING`.
+Имя без префикса принимается ради совместимости и стоит ниже. Логи telethon и aiosqlite
 держатся на `WARNING` независимо от собственного уровня и включаются суффиксом
 `:all` (`--log-level DEBUG:all`).
 
@@ -423,7 +424,7 @@ tg-export tg download 123456789 4242 --output ./downloads
 | 2 | Файл конфигурации     | `--config` > `<каталог конфигурации>/<alias>.yaml`                                          |
 | 3 | Каталог конфигурации  | `TG_EXPORT_CONFIG_DIR` > `$XDG_CONFIG_HOME/tg-export` > `~/.config/tg-export`                |
 | 4 | Каталог экспорта      | `--output` (путь целиком) > `output.path` из конфигурации с добавлением alias аккаунта       |
-| 5 | Уровень логирования   | `--debug` > `--log-level` > `LOG_LEVEL` > `WARNING`                                          |
+| 5 | Уровень логирования   | `--debug` > `--log-level` > `TG_EXPORT_LOG_LEVEL` > `LOG_LEVEL` > `WARNING`                  |
 
 Подробности о каталоге экспорта и о том, когда alias не добавляется, -- в
 [configuration.md](configuration.md#output).

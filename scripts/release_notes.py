@@ -9,8 +9,13 @@ workflow -- and PyPI has no undo.
 Usage:
 
     uv run python scripts/release_notes.py "$GITHUB_REF_NAME" \\
-        --tag-date "$(git log -1 --format=%cs "$GITHUB_REF_NAME")" \\
+        --tag-date "$(git for-each-ref --format='%(creatordate:short)' "refs/tags/$GITHUB_REF_NAME")" \\
         --output release_notes.md
+
+The date is the tag's own, not that of the commit it points at: a release
+commit that sat in master for a day would otherwise ask the CHANGELOG for the
+date it was written rather than the date it was released. This is what
+publish.yml passes.
 """
 
 from __future__ import annotations

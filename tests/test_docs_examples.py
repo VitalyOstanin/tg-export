@@ -81,3 +81,28 @@ def test_a_config_example_from_the_documentation_loads(where: str, block: str, t
     path = tmp_path / "account.yaml"
     path.write_text(block, encoding="utf-8")
     load_config(path)
+
+
+def test_every_place_that_names_the_log_level_chain_names_the_prefixed_variable():
+    """`TG_EXPORT_LOG_LEVEL` был описан в одном файле из четырёх.
+
+    README, справочник команд и строка помощи называли прежнюю цепочку с одним
+    `LOG_LEVEL`, а две одноимённые таблицы «Порядок разрешения» давали разные
+    ответы на один вопрос.
+    """
+    root = Path(__file__).resolve().parent.parent
+    sources = [
+        root / "README.md",
+        root / "docs" / "cli.md",
+        root / "docs" / "configuration.md",
+        root / "tg_export" / "cli" / "__init__.py",
+    ]
+
+    missing = [
+        str(path.relative_to(root))
+        for path in sources
+        if "LOG_LEVEL" in path.read_text(encoding="utf-8")
+        and "TG_EXPORT_LOG_LEVEL" not in path.read_text(encoding="utf-8")
+    ]
+
+    assert not missing, missing

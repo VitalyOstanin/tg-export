@@ -100,7 +100,8 @@ __all__ = [
     "--log-level",
     default=None,
     help=(
-        "Log level (DEBUG/INFO/WARNING/ERROR/CRITICAL). Overrides the LOG_LEVEL env var; "
+        "Log level (DEBUG/INFO/WARNING/ERROR/CRITICAL). Overrides TG_EXPORT_LOG_LEVEL and "
+        "the older LOG_LEVEL env var; "
         "--debug overrides this. Append ':all' (DEBUG:all) to include telethon and aiosqlite."
     ),
 )

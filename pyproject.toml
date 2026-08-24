@@ -124,9 +124,12 @@ fail_under = 50
 # Per-module floors: the project-wide threshold on its own hides a large file
 # falling behind, carried by well covered small ones. Each floor sits five
 # points below the number the module actually reaches, so a regression fails
-# the run while ordinary variation between matrix entries does not, and no
-# floor is ever lowered. Revisit the table when a module gains coverage worth
-# holding on to. Checked by scripts/coverage_gate.py after a run with --cov.
+# the run while ordinary variation between matrix entries does not. A floor
+# goes down only together with the change that lowers the coverage, as a
+# deliberate step -- never to make a red run green. Revisit the table when a
+# module gains coverage worth holding on to; the gate names the modules whose
+# floor has fallen more than five points behind. Checked by
+# scripts/coverage_gate.py after a run with --cov.
 [tool.tg-export.coverage-floor]
 "tg_export/__init__.py" = 100
 "tg_export/html/__init__.py" = 100
