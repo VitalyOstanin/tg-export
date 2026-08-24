@@ -25,7 +25,7 @@ from tg_export.errors import (
     EXIT_FAILURE,
     EXIT_OK,
 )
-from tg_export.format import display_name, format_moment
+from tg_export.format import display_name, format_moment, strip_control_chars
 from tg_export.privacy import ensure_private_dir, write_private_text
 
 logger = logging.getLogger(__name__)
@@ -39,7 +39,9 @@ def tg():
 @tg.command("messages")
 @click.argument("chat_id", type=int)
 @click.option("--account", default=None, help=common.ACCOUNT_HELP)
-@click.option("--limit", "-n", default=10, help="Number of messages to show")
+# IntRange, not int: -5 messages is not a request the command can serve, and
+# it used to reach Telethon as a limit of its own.
+@click.option("--limit", "-n", type=click.IntRange(min=1), default=10, help="Number of messages to show")
 @click.option(
     "--truncate",
     type=int,
@@ -115,7 +117,12 @@ async def _tg_messages(chat_id, account, limit, truncate=DEFAULT_MESSAGE_TEXT_LE
                     }
                 )
             else:
-                click.echo(f"  {date_str}  [{msg.id}]  {sender}: {text}")
+                # Telegram controls both, and a terminal executes escape
+                # sequences it is handed: the same rule already applied to
+                # names on the way to the filesystem.
+                click.echo(
+                    f"  {date_str}  [{msg.id}]  {strip_control_chars(sender)}: {strip_control_chars(text)}"
+                )
         if as_json:
             click.echo(json.dumps(collected, ensure_ascii=False, indent=2))
 
@@ -144,7 +151,7 @@ def _entity_name(entity) -> str:
     "-n",
     "--last",
     "last_n",
-    type=int,
+    type=click.IntRange(min=0),
     default=0,
     help="Show the last N messages of each chat (0 = only the counters); --last is the old spelling",
 )
@@ -189,7 +196,12 @@ def _write_info_results(results: list[dict], output_file, as_json: bool) -> None
         # --last-n, the sender and text of the last messages -- the very data
         # the export directory is created 0700 for.
         write_private_text(output_file, json.dumps(results, ensure_ascii=False, indent=2))
-        common.diag(f"Saved {len(results)} entries to {output_file}")
+        # Failures are counted apart: a record of a chat that could not be
+        # queried carries an "error" key instead of its numbers, and "Saved 2
+        # entries" over one result and one failure read as two results.
+        failed = sum(1 for entry in results if "error" in entry)
+        saved = f"Saved {len(results)} entries to {output_file}"
+        common.diag(f"{saved} ({failed} of them failed)" if failed else saved)
 
 
 async def _resolve_entities(api, ids: list) -> dict:
@@ -286,13 +298,23 @@ def _report_info_lines(results: list[dict], *, output_file, as_json: bool) -> No
     for idx, entry in enumerate(results, 1):
         cid = entry["id"]
         if "error" in entry:
-            if not output_file:
-                common.diag(f"[{idx}/{total}] id={cid}: ERROR {entry['error']}", essential=True)
+            # Reported whatever the results are then done with: the line goes
+            # to stderr, so it competes neither with the JSON on stdout nor
+            # with the file. Skipping it when --output-file was given left the
+            # command exiting 1 without a word about what failed, and under
+            # --quiet with no output at all.
+            common.diag(
+                f"[{idx}/{total}] id={cid}: ERROR {strip_control_chars(str(entry['error']))}",
+                essential=True,
+            )
             continue
         if total > 1:
-            common.diag(f"  [{idx}/{total}] {entry['name']} (id={cid})")
+            common.diag(f"  [{idx}/{total}] {strip_control_chars(entry['name'])} (id={cid})")
         if not output_file and not as_json:
-            click.echo(f"{entry['name']} (id={cid}): {entry['messages']} msgs, last: {entry['last_date']}")
+            click.echo(
+                f"{strip_control_chars(entry['name'])} (id={cid}): "
+                f"{entry['messages']} msgs, last: {entry['last_date']}"
+            )
 
 
 async def _tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_file, as_json=False):

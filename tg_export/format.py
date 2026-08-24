@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Any
 
@@ -27,6 +28,23 @@ MONTH_LABEL_FORMAT = "%B %Y"
 
 # Clock alone, for the line that says when a run started.
 CLOCK_FORMAT = "%H:%M:%S"
+
+
+# Everything below the space plus DEL. Telegram controls the text of a message
+# and the title of a chat, and a terminal reads these bytes as commands: an
+# escape sequence repaints the line, moves the cursor or sets a colour that
+# stays after the command ends.
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def strip_control_chars(text: str) -> str:
+    """Text of a Telegram string with the control characters taken out.
+
+    For lines printed to a terminal. The machine-readable output needs none of
+    this -- `json.dumps` escapes what it writes -- and must not be touched: it
+    carries the message as it was sent.
+    """
+    return _CONTROL_CHARS_RE.sub("", text)
 
 
 def format_moment(

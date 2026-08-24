@@ -949,3 +949,49 @@ async def test_tg_download_reports_what_it_saved_as_a_document(tmp_path, monkeyp
     assert document["msg_id"] == 2
     assert document["text_file"].endswith("2.txt")
     assert [Path(p).name for p in document["media"]] == ["media.bin"]
+
+
+class TestTerminalOutputIsNotControlledByTelegram:
+    def test_escape_sequences_of_a_message_do_not_reach_the_terminal(self):
+        """Текст сообщения задаёт Telegram, а терминал исполняет escape-последовательности.
+
+        То же правило уже применялось к именам на пути к файловой системе, но
+        не к строкам, которые печатает `tg messages`.
+        """
+        text = "\x1b[2Kстёртая строка\x07"
+
+        result = _invoke_tg_messages(["-n", "1"], text=text)
+
+        assert "\x1b" not in result.output
+        assert "\x07" not in result.output
+        assert "стёртая строка" in result.output
+
+    def test_a_negative_limit_is_refused(self):
+        """`-n -5` уходил в Telethon как предел выборки."""
+        result = _invoke_tg_messages(["-n", "-5"])
+
+        assert result.exit_code == 2, result.output
+
+
+def test_tg_info_with_output_file_says_which_chat_failed(tmp_path):
+    """Команда завершалась кодом 1, не сказав об отказе ни слова.
+
+    Строка об ошибке печаталась только при отсутствии `--output-file`, а под
+    `--quiet` вывода не было вовсе: оставался код возврата без причины.
+    """
+    out = tmp_path / "info.json"
+
+    result = _invoke_tg_info(["--output-file", str(out)], chat_ids=("123", "456"), fail_on=(456,))
+
+    assert result.exit_code == 1, result.output
+    assert "ERROR" in result.output, result.output
+    assert "chat unavailable" in result.output
+
+
+def test_tg_info_counts_the_failed_chats_apart_from_the_saved_ones(tmp_path):
+    """«Saved 2 entries» считало и запись об отказе."""
+    out = tmp_path / "info.json"
+
+    result = _invoke_tg_info(["--output-file", str(out)], chat_ids=("123", "456"), fail_on=(456,))
+
+    assert "1 of them failed" in result.output, result.output

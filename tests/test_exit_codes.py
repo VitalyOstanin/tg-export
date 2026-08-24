@@ -341,3 +341,19 @@ def test_a_closed_pipe_is_not_reported_as_a_refusal(monkeypatch):
         assert signal.getsignal(signal.SIGPIPE) is signal.SIG_DFL
     finally:
         signal.signal(signal.SIGPIPE, previous)
+
+
+def test_state_reset_refuses_a_chat_id_together_with_all():
+    """`state reset --all 123` молча отбрасывал идентификатор и сбрасывал весь аккаунт.
+
+    Соседние команды такую пару отвергают кодом 2 с блоком usage; здесь запрос
+    читался как «сбросить один чат», а выполнялся как «сбросить все».
+    """
+    from click.testing import CliRunner
+
+    from tg_export.cli import main
+
+    result = CliRunner().invoke(main, ["state", "reset", "--all", "123"])
+
+    assert result.exit_code == 2, result.output
+    assert "not both" in result.output, result.output

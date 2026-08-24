@@ -1315,7 +1315,10 @@ class Exporter:
                     logger.debug("  %s: %s", chat.name, stored_line())
                     batch.clear()
                 now = time.monotonic()
-                if not self._use_live and now - last_progress_time >= LOG_INTERVAL:
+                # `--quiet` as well as the Live panel: without it the walk kept
+                # printing its progress line while the chat-level line next to
+                # it was already silent.
+                if not self._use_live and not self.quiet and now - last_progress_time >= LOG_INTERVAL:
                     _log(progress_line())
                     last_progress_time = now
             else:

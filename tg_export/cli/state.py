@@ -151,6 +151,12 @@ def state_reset(account, config, output, reset_all, delete_messages, yes, chat_i
     """Reset export state to force re-download. Specify chat_id or --all."""
     if chat_id is None and not reset_all:
         raise click.UsageError("Specify chat_id or --all")
+    if chat_id is not None and reset_all:
+        # The two ask for different things, and the chat_id used to be dropped
+        # without a word: `state reset --all 123` rewound the whole account
+        # while reading as a request about one chat. The neighbouring commands
+        # refuse such a pair the same way.
+        raise click.UsageError("Specify either chat_id or --all, not both")
     exit_code = asyncio.run(
         _state_reset(account, config, output, reset_all, delete_messages, chat_id, skip_confirm=yes)
     )
