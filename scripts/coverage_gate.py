@@ -76,7 +76,7 @@ def main() -> int:
         print(
             f"FAIL: modules without a declared floor: {undeclared}; "
             f"add them to [tool.tg-export.coverage-floor] in pyproject.toml "
-            f"(floor = current coverage minus 5)",
+            f"(floor = current coverage minus SLACK, that is {SLACK:g} points)",
             file=sys.stderr,
         )
         return 1

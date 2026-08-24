@@ -11,6 +11,7 @@ import contextlib
 import hashlib
 import json
 import logging
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -32,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 
 @click.group()
-def tg():
+def tg() -> None:
     """Direct Telegram API commands."""
 
 
@@ -50,7 +51,7 @@ def tg():
 )
 @click.option("--no-truncate", is_flag=True, default=False, help="Print message text in full")
 @click.option("--json", "as_json", is_flag=True, help="Output as machine-readable JSON")
-def tg_messages(chat_id, account, limit, truncate, no_truncate, as_json):
+def tg_messages(chat_id, account, limit, truncate, no_truncate, as_json) -> None:
     """Show recent messages from a chat."""
     if no_truncate:
         if truncate:
@@ -87,7 +88,7 @@ def _message_preview(msg, *, truncate: int = DEFAULT_MESSAGE_TEXT_LENGTH) -> tup
     return sender, text[:truncate] if truncate else text
 
 
-async def _tg_messages(chat_id, account, limit, truncate=DEFAULT_MESSAGE_TEXT_LENGTH, as_json=False):
+async def _tg_messages(chat_id, account, limit, truncate=DEFAULT_MESSAGE_TEXT_LENGTH, as_json=False) -> None:
     """Print the last messages of a chat: date, sender and the cut text."""
     async with common.connected_api(account) as (api, account):
         entity = await api.client.get_entity(chat_id)
@@ -164,7 +165,7 @@ def _entity_name(entity) -> str:
     help="Save results to this JSON file (--output is the old spelling)",
 )
 @click.option("--json", "as_json", is_flag=True, help="Output as machine-readable JSON")
-def tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_file, as_json):
+def tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_file, as_json) -> None:
     """Show chat info: message count, type, title.
 
     Accepts one or more CHAT_IDS, or use --from-catalog with --type to batch query.
@@ -317,7 +318,7 @@ def _report_info_lines(results: list[dict], *, output_file, as_json: bool) -> No
             )
 
 
-async def _tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_file, as_json=False):
+async def _tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_file, as_json=False) -> int:
     """Report the last activity of each chat named directly or taken from a catalog.
 
     The identifiers are resolved in one request and the histories are read with
@@ -343,7 +344,7 @@ async def _tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_fi
         entities = await _resolve_entities(api, ids)
         semaphore = asyncio.Semaphore(INFO_CONCURRENCY)
 
-        async def one(cid):
+        async def one(cid) -> dict:
             async with semaphore:
                 return await _one_chat_info(api, cid, entities.get(cid), last_n=last_n)
 
@@ -390,7 +391,7 @@ async def _tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_fi
     help="Send files as documents without compression (keeps original quality)",
 )
 @click.argument("recipients", nargs=-1, required=True)
-def tg_send(account, files, text, text_file, as_document, recipients):
+def tg_send(account, files, text, text_file, as_document, recipients) -> None:
     """Send message to one or more recipients.
 
     RECIPIENTS: chat IDs or usernames (multiple allowed).
@@ -425,7 +426,7 @@ def tg_send(account, files, text, text_file, as_document, recipients):
 
 
 @contextlib.contextmanager
-def _upload_progress(by_bytes: bool):
+def _upload_progress(by_bytes: bool) -> Iterator[Any]:
     """Progress bars for an upload: current file plus overall total.
 
     Yields None when there is nothing to draw on -- under --quiet, and when
@@ -476,7 +477,7 @@ def _upload_progress(by_bytes: bool):
         yield progress
 
 
-async def _send_files(client, recipient, file_paths, text, as_document):
+async def _send_files(client, recipient, file_paths, text, as_document) -> None:
     """Send attachments to one recipient, reporting upload progress.
 
     Documents never join an album, so with ``as_document`` files go one by one
@@ -496,7 +497,7 @@ async def _send_files(client, recipient, file_paths, text, as_document):
                 else None
             )
 
-            def album_progress(sent, total):
+            def album_progress(sent, total) -> None:
                 # `total` from Telethon is the tail of the album still to send:
                 # it slices the list into chunks of 10 and reports 25, then 15,
                 # then 5, while `sent` keeps counting from the start. Adopting
@@ -528,7 +529,7 @@ async def _send_files(client, recipient, file_paths, text, as_document):
                 else None
             )
 
-            def file_progress(sent, total, task=task, done=done_bytes):
+            def file_progress(sent, total, task=task, done=done_bytes) -> None:
                 if progress is None or task is None:
                     return
                 progress.update(task, completed=sent, total=total)
@@ -553,7 +554,7 @@ async def _send_files(client, recipient, file_paths, text, as_document):
                     )
 
 
-async def _tg_send(account_name, recipients, text, files, as_document=False):
+async def _tg_send(account_name, recipients, text, files, as_document=False) -> int:
     async with common.connected_api(account_name) as (api, _):
         file_paths = [Path(f) for f in files] if files else None
         sent_count = 0
@@ -590,7 +591,7 @@ async def _tg_send(account_name, recipients, text, files, as_document=False):
 @click.option("--json", "as_json", is_flag=True, help="Output as machine-readable JSON")
 @click.argument("chat_id", type=int)
 @click.argument("msg_id", type=int)
-def tg_download(account, output, chat_id, msg_id, as_json):
+def tg_download(account, output, chat_id, msg_id, as_json) -> None:
     """Download message content: text and all media files.
 
     Saves message text to <msg_id>.txt and media files to the output directory.

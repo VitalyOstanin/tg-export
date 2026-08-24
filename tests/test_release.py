@@ -512,7 +512,9 @@ def test_the_coverage_gate_names_where_a_floor_is_declared(tmp_path):
     gate = (SCRIPT.parent / "coverage_gate.py").read_text(encoding="utf-8")
 
     assert "[tool.tg-export.coverage-floor] in pyproject.toml" in gate
-    assert "minus 5" in gate
+    # Число берётся из константы, а не выписано словами рядом с ней.
+    assert "minus SLACK" in gate
+    assert "SLACK = " in gate
 
 
 def test_the_repository_ignores_the_agent_and_explore_output_on_its_own():

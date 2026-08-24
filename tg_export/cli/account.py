@@ -14,13 +14,13 @@ logger = logging.getLogger(__name__)
 
 
 @click.group()
-def account():
+def account() -> None:
     """Manage accounts: list, set default, remove."""
 
 
 @account.command("list")
 @click.option("--json", "as_json", is_flag=True, help="Output as machine-readable JSON")
-def account_list(as_json):
+def account_list(as_json) -> None:
     """List configured accounts."""
     mgr = common.account_manager()
     accounts = mgr.list_accounts()
@@ -40,7 +40,7 @@ def account_list(as_json):
 @account.command("default")
 @click.argument("name", required=False, default=None)
 @click.option("--json", "as_json", is_flag=True, help="Output as machine-readable JSON")
-def account_default(name, as_json):
+def account_default(name, as_json) -> None:
     """Set or show default account."""
     mgr = common.account_manager()
     if name:
@@ -70,7 +70,7 @@ def account_default(name, as_json):
 
 @account.command("remove")
 @click.argument("name")
-def account_remove(name):
+def account_remove(name) -> None:
     """Remove a Telegram account."""
     mgr = common.account_manager()
     if name not in mgr.list_accounts():

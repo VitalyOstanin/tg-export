@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 @click.group()
-def state():
+def state() -> None:
     """Manage export state (reset, show status, force re-export)."""
 
 
@@ -53,12 +53,12 @@ _STATE_TABLE_HEADER = _state_table_row([title for title, _ in _STATE_TABLE_COLUM
 @common.over_an_export
 @click.option("--json", "as_json", is_flag=True, help="Output as machine-readable JSON")
 @click.argument("chat_id", type=int, required=False)
-def state_show(account, config, output, as_json, chat_id):
+def state_show(account, config, output, as_json, chat_id) -> None:
     """Show export state for all chats or a specific chat."""
     asyncio.run(_state_show(account, config, output, chat_id, as_json))
 
 
-async def _state_show(account, config_override, output_override, chat_id, as_json=False):
+async def _state_show(account, config_override, output_override, chat_id, as_json=False) -> None:
     """Show the export state: one chat when it is named, the whole account otherwise."""
     async with common.opened_state(account, config_override, output_override) as (st, _, account):
         if chat_id:
@@ -128,7 +128,7 @@ async def _state_show(account, config_override, output_override, chat_id, as_jso
 @click.option("--delete-messages", is_flag=True, help="Also delete messages from DB")
 @click.option("--yes", is_flag=True, help="Skip confirmation for destructive resets")
 @click.argument("chat_id", type=int, required=False)
-def state_reset(account, config, output, reset_all, delete_messages, yes, chat_id):
+def state_reset(account, config, output, reset_all, delete_messages, yes, chat_id) -> None:
     """Reset export state to force re-download. Specify chat_id or --all."""
     if chat_id is None and not reset_all:
         raise click.UsageError("Specify chat_id or --all")
@@ -154,7 +154,7 @@ async def _state_reset(
     chat_id,
     *,
     skip_confirm: bool = False,
-):
+) -> int:
     async with common.opened_state(account, config_override, output_override) as (st, _, account):
         if reset_all:
             # essential: the question below authorises rewinding -- and with

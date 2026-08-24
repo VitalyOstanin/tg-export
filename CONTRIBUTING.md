@@ -226,33 +226,34 @@ uv run pyright
 | 15 | соединение и база состояния открываются только `async with`             | `test_cli_never_manages_connection_lifetime_by_hand`             |
 | 16 | помощники подключения не отдают ресурс наружу                           | `test_cli_helpers_are_context_managers`                          |
 | 17 | функция пакета не длиннее ста строк                                     | `test_no_function_is_longer_than_a_screenful`                    |
-| 18 | SQL знает только слой состояния                                         | `test_cli_does_not_run_sql_of_its_own`                           |
-| 19 | у каждого модуля `cli` есть строка назначения                           | `test_cli_has_a_module_docstring`                                |
-| 20 | форматирование берётся из `format.py`, без псевдонимов                  | `test_cli_takes_formatting_helpers_from_their_own_module`        |
-| 21 | текст читается в UTF-8, а не в кодировке локали                         | `test_every_text_file_is_read_as_utf8`                           |
-| 22 | новая команда описана в `docs/cli.md`                                   | `test_every_command_is_described_in_the_cli_reference`           |
-| 23 | `scripts/check.sh` покрывает все проверки CI                            | `test_one_command_runs_everything_ci_runs`                       |
-| 24 | команда завершается через `ctx.exit()`, не через внутренний класс click | `test_cli_does_not_use_click_private_exit_exception`             |
-| 25 | имя класса не дублируется строковым литералом рядом с ним               | `test_no_action_repeats_its_class_name_as_a_string`              |
-| 26 | в `models.py` не остаётся типов, которых никто не строит                | `test_models_do_not_keep_types_nobody_builds`                    |
-| 27 | имя не импортируется дважды -- в шапке и в теле функции                 | `test_no_module_imports_the_same_name_twice`                     |
-| 28 | код пакета и файлы сборки написаны по-английски                         | `test_the_package_and_its_build_files_speak_english`             |
-| 29 | команда, названная в строках кода, существует в интерфейсе              | `test_every_command_named_in_the_code_exists`                    |
-| 30 | тело функции не разрывается пустой строкой ни до docstring, ни после     | `test_no_function_body_starts_with_a_blank_line`                 |
-| 31 | файл не заканчивается баннером-разделителем                             | `test_no_module_ends_with_a_divider_banner`                      |
-| 32 | статус файла записывается членом `FileStatus`, не строкой               | `test_file_statuses_are_spelled_by_the_enum_not_as_free_strings` |
-| 33 | `FileStatus` и `DownloadStatus` совпадают там, где пересекаются         | `test_the_two_status_vocabularies_agree_where_they_overlap`      |
-| 34 | константа объявлена выше функции, которая её читает                     | `test_no_module_constant_is_read_above_its_declaration`          |
-| 35 | обход сообщений чата объявлен один раз на обе фазы экспорта              | `test_the_message_walk_is_written_once`                          |
-| 36 | docstring и сообщения проверок в `tests/` написаны по-русски            | `test_the_tests_speak_russian`                                   |
-| 37 | вопросы пользователю задаются помощниками `ask`/`confirm`, не в stdout   | `test_no_question_is_asked_on_stdout`                            |
-| 38 | объявленная константа модуля где-то читается                            | `test_no_module_constant_is_declared_and_never_read`             |
-| 39 | типы, записываемые через `vars()`, не содержат полей-dataclass          | `test_types_written_with_vars_stay_flat`                         |
-| 40 | формат даты и времени берётся из `format.py`, а не пишется литералом    | `test_no_time_format_is_spelled_as_a_literal`                    |
-| 41 | группы команд не зовут имён с подчёркиванием из соседних модулей        | `test_no_command_group_reaches_for_an_underscored_name_of_another_module` |
-| 42 | проверки стиля берут файлы из общих множеств, а не своим обходом        | `test_style_rules_take_their_files_from_the_shared_sets`         |
-| 43 | проверка внутри многострочного шага CI видна сверке с `scripts/check.sh` | `test_a_check_inside_a_multi_line_step_is_seen_by_the_parity_check` |
-| 44 | каждая опция команды описана в её разделе `docs/cli.md`                | `test_every_option_of_every_command_is_named_in_the_cli_reference` |
+| 18 | модуль пакета не длиннее 2100 строк, класс -- не больше 75 методов      | `test_no_module_or_class_grows_without_a_ceiling`                |
+| 19 | SQL знает только слой состояния                                         | `test_cli_does_not_run_sql_of_its_own`                           |
+| 20 | у каждого модуля `cli` есть строка назначения                           | `test_cli_has_a_module_docstring`                                |
+| 21 | форматирование берётся из `format.py`, без псевдонимов                  | `test_cli_takes_formatting_helpers_from_their_own_module`        |
+| 22 | текст читается в UTF-8, а не в кодировке локали                         | `test_every_text_file_is_read_as_utf8`                           |
+| 23 | новая команда описана в `docs/cli.md`                                   | `test_every_command_is_described_in_the_cli_reference`           |
+| 24 | `scripts/check.sh` покрывает все проверки CI                            | `test_one_command_runs_everything_ci_runs`                       |
+| 25 | команда завершается через `ctx.exit()`, не через внутренний класс click | `test_cli_does_not_use_click_private_exit_exception`             |
+| 26 | имя класса не дублируется строковым литералом рядом с ним               | `test_no_action_repeats_its_class_name_as_a_string`              |
+| 27 | в `models.py` не остаётся типов, которых никто не строит                | `test_models_do_not_keep_types_nobody_builds`                    |
+| 28 | имя не импортируется дважды -- в шапке и в теле функции                 | `test_no_module_imports_the_same_name_twice`                     |
+| 29 | код пакета и файлы сборки написаны по-английски                         | `test_the_package_and_its_build_files_speak_english`             |
+| 30 | команда, названная в строках кода, существует в интерфейсе              | `test_every_command_named_in_the_code_exists`                    |
+| 31 | тело функции не разрывается пустой строкой ни до docstring, ни после     | `test_no_function_body_starts_with_a_blank_line`                 |
+| 32 | файл не заканчивается баннером-разделителем                             | `test_no_module_ends_with_a_divider_banner`                      |
+| 33 | статус файла записывается членом `FileStatus`, не строкой               | `test_file_statuses_are_spelled_by_the_enum_not_as_free_strings` |
+| 34 | `FileStatus` и `DownloadStatus` совпадают там, где пересекаются         | `test_the_two_status_vocabularies_agree_where_they_overlap`      |
+| 35 | константа объявлена выше функции, которая её читает                     | `test_no_module_constant_is_read_above_its_declaration`          |
+| 36 | обход сообщений чата объявлен один раз на обе фазы экспорта              | `test_the_message_walk_is_written_once`                          |
+| 37 | docstring и сообщения проверок в `tests/` написаны по-русски            | `test_the_tests_speak_russian`                                   |
+| 38 | вопросы пользователю задаются помощниками `ask`/`confirm`, не в stdout   | `test_no_question_is_asked_on_stdout`                            |
+| 39 | объявленная константа модуля где-то читается                            | `test_no_module_constant_is_declared_and_never_read`             |
+| 40 | типы, записываемые через `vars()`, не содержат полей-dataclass          | `test_types_written_with_vars_stay_flat`                         |
+| 41 | формат даты и времени берётся из `format.py`, а не пишется литералом    | `test_no_time_format_is_spelled_as_a_literal`                    |
+| 42 | группы команд не зовут имён с подчёркиванием из соседних модулей        | `test_no_command_group_reaches_for_an_underscored_name_of_another_module` |
+| 43 | проверки стиля берут файлы из общих множеств, а не своим обходом        | `test_style_rules_take_their_files_from_the_shared_sets`         |
+| 44 | проверка внутри многострочного шага CI видна сверке с `scripts/check.sh` | `test_a_check_inside_a_multi_line_step_is_seen_by_the_parity_check` |
+| 45 | каждая опция команды описана в её разделе `docs/cli.md`                | `test_every_option_of_every_command_is_named_in_the_cli_reference` |
 
 ## Схема базы состояния
 

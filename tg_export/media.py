@@ -18,7 +18,7 @@ import sqlite3
 import tempfile
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable, Iterator
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -250,7 +250,7 @@ class TargetRegistry:
     @contextlib.contextmanager
     def claim(
         self, target_dir: Path, name: str, expected_size: int, *, reuse: bool, replacing: Path | None = None
-    ):
+    ) -> Iterator[tuple[Path, bool]]:
         """Yield `(path, reused)` -- a path only this claimant may write to.
 
         `reused` is True when the file is already there with the expected size
@@ -408,7 +408,7 @@ class DiskSpaceError(TgExportError):
 class _FileTooLargeError(TgExportError):
     """Raised inside progress callback when real file size exceeds limit."""
 
-    def __init__(self, size: int):
+    def __init__(self, size: int) -> None:
         self.size = size
         super().__init__(f"File too large: {size} bytes")
 
@@ -526,7 +526,7 @@ class MediaDownloader:
         min_free_bytes: int,
         tdesktop_indexes: list[TdesktopIndex] | None = None,
         sibling_db_paths: list[Path] | None = None,
-    ):
+    ) -> None:
         self.api = api
         self.state = state
         self.config = config
@@ -577,7 +577,7 @@ class MediaDownloader:
             self.active_downloads[msg_id] = progress
 
     @contextlib.asynccontextmanager
-    async def _file_lock(self, file_id: int):
+    async def _file_lock(self, file_id: int) -> AsyncIterator[None]:
         lock = self._file_id_locks.get(file_id)
         if lock is None:
             lock = asyncio.Lock()
@@ -730,7 +730,7 @@ class MediaDownloader:
             os.replace(downloaded, final_path)
             return final_path
 
-    async def _register_skip(self, tl_message, media: Media, chat_id: int, status: FileStatus | str):
+    async def _register_skip(self, tl_message, media: Media, chat_id: int, status: FileStatus | str) -> None:
         """Record a skipped file in DB (no actual file on disk)."""
         if media.file is None or not media.file.id:
             return
@@ -744,7 +744,7 @@ class MediaDownloader:
             status=status,
         )
 
-    async def _register(self, tl_message, media: Media, local_path: Path, chat_id: int = 0):
+    async def _register(self, tl_message, media: Media, local_path: Path, chat_id: int = 0) -> None:
         """Register downloaded/imported file in state DB."""
         actual_size = local_path.stat().st_size if local_path.exists() else 0
         expected_size = media.file.size if media.file else 0
@@ -939,7 +939,7 @@ class MediaDownloader:
 
         # Determine filename for progress display
         filename = ""
-        if hasattr(tl_message, "file") and tl_message.file:
+        if getattr(tl_message, "file", None):
             filename = getattr(tl_message.file, "name", "") or ""
         if not filename and media and media.file:
             # Use file name from our model, or type + extension
@@ -947,7 +947,7 @@ class MediaDownloader:
         if not filename:
             # Fallback: media type + msg_id
             ext = ""
-            if hasattr(tl_message, "file") and tl_message.file:
+            if getattr(tl_message, "file", None):
                 ext = getattr(tl_message.file, "ext", "") or ""
             type_str = media.type.value if media else "file"
             filename = f"{type_str}_{msg_id}{ext}"
@@ -955,7 +955,7 @@ class MediaDownloader:
 
         self._publish_progress(msg_id, DownloadProgress(filename=filename))
 
-        def _progress_cb(received: int, total: int):
+        def _progress_cb(received: int, total: int) -> None:
             self._publish_progress(msg_id, DownloadProgress(filename, received, total))
             # Cancel download if real size exceeds limit (file.size was 0)
             if total > max_size:

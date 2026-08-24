@@ -772,7 +772,7 @@ def media_to_dict(media: Media) -> dict[str, Any]:
     return d
 
 
-def with_enum_type(cls, d: dict[str, Any], enum):
+def with_enum_type(cls, d: dict[str, Any], enum) -> Any:
     """Rebuild `cls` from a stored record whose `type` is an enum value.
 
     JSON keeps the enum as a plain string, so every reader turns it back and

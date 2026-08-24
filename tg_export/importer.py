@@ -55,13 +55,13 @@ class TdesktopIndex:
     Per-chat media index (msg_id -> file_path) is built on demand.
     """
 
-    def __init__(self, export_path: Path):
+    def __init__(self, export_path: Path) -> None:
         self.export_path = export_path
         self._chat_map: dict[str, Path] | None = None  # chat_name -> chat_dir
         self._current_chat_dir: Path | None = None
         self._current_index: dict[int, list[Path]] | None = None  # msg_id -> [file_paths]
 
-    def _ensure_chat_map(self):
+    def _ensure_chat_map(self) -> None:
         """Build chat_name -> chat_dir mapping from tdesktop export."""
         if self._chat_map is not None:
             return
@@ -110,7 +110,7 @@ class TdesktopIndex:
         logger.info("tdesktop index for '%s': %d messages with media", chat_name, len(self._current_index))
         return True
 
-    def unload_chat_index(self):
+    def unload_chat_index(self) -> None:
         """Free memory for current chat index."""
         self._current_chat_dir = None
         self._current_index = None
@@ -143,7 +143,6 @@ def _extract_chat_name(msg_html: Path) -> str | None:
                 if i > _CHAT_NAME_HEADER_LINES:
                     break
                 if "text bold" in line:
-                    # Next line contains the chat name
                     name_line = next(f, "").strip()
                     if name_line:
                         return name_line
@@ -196,7 +195,6 @@ def _parse_chat_media(chat_dir: Path) -> dict[int, list[Path]]:
                         if m:
                             subdir = m.group(1)
                             filename = m.group(2)
-                            # Skip thumbnails
                             if "_thumb" in filename:
                                 continue
                             file_path = chat_dir / subdir / filename

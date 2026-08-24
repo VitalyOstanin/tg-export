@@ -165,7 +165,6 @@ def convert_entities(text: str, entities: list[Any] | None) -> list[TextPart]:
         if ent_offset < offset or ent_length <= 0 or ent_offset + ent_length > total_units:
             continue
 
-        # Add plain text before this entity
         if ent_offset > offset:
             parts.append(TextPart(type=TextType.text, text=_utf16_slice(units, offset, ent_offset)))
 
@@ -176,7 +175,6 @@ def convert_entities(text: str, entities: list[Any] | None) -> list[TextPart]:
 
         offset = ent_offset + ent_length
 
-    # Remaining text
     if offset < total_units:
         parts.append(TextPart(type=TextType.text, text=_utf16_slice(units, offset, total_units)))
 
@@ -515,7 +513,7 @@ def _convert_forward(tl_msg: Any) -> ForwardInfo | None:
         return None
     fwd = tl_msg.fwd_from
     fwd_from_id = None
-    if hasattr(fwd, "from_id") and fwd.from_id:
+    if getattr(fwd, "from_id", None):
         fwd_from_id = peer_id(fwd.from_id)
     return ForwardInfo(
         from_id=fwd_from_id,

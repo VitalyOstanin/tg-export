@@ -12,6 +12,7 @@ from __future__ import annotations
 import contextlib
 import importlib.util
 import logging
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
@@ -44,7 +45,7 @@ _MAX_LEFT_CHANNEL_PAGES = 100
 _DEFAULT_PAGE_LIMIT = 100
 
 
-def one_message(result):
+def one_message(result) -> Any:
     """The single message `get_messages(..., ids=<one id>)` returned, or None.
 
     Telethon answers with the message itself for a single id and with a list
@@ -70,7 +71,9 @@ class TgApi:
     session file and the lock on it.
     """
 
-    def __init__(self, session_path: str | Path, api_id: int, api_hash: str, proxy: ProxyTuple | None = None):
+    def __init__(
+        self, session_path: str | Path, api_id: int, api_hash: str, proxy: ProxyTuple | None = None
+    ) -> None:
         kwargs = {}
         if proxy:
             # Telethon silently ignores `proxy=` when python-socks is missing
@@ -122,7 +125,7 @@ class TgApi:
     async def __aexit__(self, exc_type, exc, tb) -> None:
         await self.disconnect()
 
-    async def connect(self):
+    async def connect(self) -> None:
         # Already held since __init__; the call matters only for a client
         # reconnected after disconnect(), which releases it.
         self._session_lock.acquire()
@@ -132,7 +135,7 @@ class TgApi:
             self._session_lock.release()
             raise
 
-    async def disconnect(self):
+    async def disconnect(self) -> None:
         # Release the takeout context first: it must not outlive the connection
         # it is proxying. Releasing keeps the takeout session alive on the
         # server -- see stop_takeout.
@@ -150,7 +153,7 @@ class TgApi:
         finally:
             self._session_lock.release()
 
-    async def start_takeout(self, **kwargs):
+    async def start_takeout(self, **kwargs) -> None:
         """Open a Takeout session, reusing the one a previous run left behind.
 
         Telegram answers ``InitTakeoutSessionRequest`` with a cooldown of up to
@@ -196,7 +199,7 @@ class TgApi:
         logger.info("Reusing takeout session id=%s from a previous run.", stored_id)
         return True
 
-    async def _discard_takeout_id(self):
+    async def _discard_takeout_id(self) -> None:
         """Finish a takeout the server no longer honours, locally if need be."""
         try:
             await self.client.end_takeout(success=False)
@@ -205,7 +208,7 @@ class TgApi:
             if self.client.session is not None:
                 self.client.session.takeout_id = None
 
-    async def _enter_takeout(self, kwargs):
+    async def _enter_takeout(self, kwargs) -> None:
         """Create a takeout session with the export parameters.
 
         finalize=False keeps the session on the server once the context is
@@ -215,7 +218,7 @@ class TgApi:
         self.takeout = await stack.enter_async_context(self.client.takeout(finalize=False, **kwargs))
         self._takeout_stack = stack
 
-    async def stop_takeout(self, success: bool | None = None):
+    async def stop_takeout(self, success: bool | None = None) -> None:
         """Release the takeout context; finish the session only when asked.
 
         By default the session stays open on the server so the next run reuses
@@ -230,11 +233,11 @@ class TgApi:
             await self.client.end_takeout(success=success)
 
     @property
-    def _active_client(self):
+    def _active_client(self) -> Any:
         """Return takeout client if available, else regular client."""
         return self.takeout if self.takeout else self.client
 
-    async def iter_dialogs(self, archived: bool | None = None):
+    async def iter_dialogs(self, archived: bool | None = None) -> AsyncIterator[Any]:
         """Iterate dialogs. None=all, False=non-archived only, True=archived only."""
         kwargs = {} if archived is None else {"archived": archived}
         async for dialog in self.client.iter_dialogs(**kwargs):
@@ -298,27 +301,27 @@ class TgApi:
             )
         return folders
 
-    async def iter_messages(self, chat_id: int, **kwargs):
+    async def iter_messages(self, chat_id: int, **kwargs) -> AsyncIterator[Any]:
         client = self._active_client
         async for msg in client.iter_messages(chat_id, **kwargs):
             yield msg
 
-    async def download_media(self, message, path: Path, progress_cb=None):
+    async def download_media(self, message, path: Path, progress_cb=None) -> Any:
         client = self._active_client
         return await client.download_media(message, file=str(path), progress_callback=progress_cb)  # pyright: ignore[reportArgumentType]
 
-    async def get_personal_info(self):
+    async def get_personal_info(self) -> Any:
         return await self.client(GetFullUserRequest(InputUserSelf()))
 
-    async def get_contacts(self):
+    async def get_contacts(self) -> Any:
         return await self.client(GetContactsRequest(hash=0))
 
-    async def get_sessions(self):
+    async def get_sessions(self) -> tuple[Any, Any]:
         sessions = await self.client(GetAuthorizationsRequest())
         web_sessions = await self.client(GetWebAuthorizationsRequest())
         return sessions, web_sessions
 
-    async def get_top_peers(self):
+    async def get_top_peers(self) -> Any | None:
         try:
             result = await self.client(
                 GetTopPeersRequest(
@@ -347,11 +350,11 @@ class TgApi:
             )
             return None
 
-    async def iter_userpics(self):
+    async def iter_userpics(self) -> AsyncIterator[Any]:
         async for photo in self.client.iter_profile_photos("me"):
             yield photo
 
-    async def get_stories(self):
+    async def get_stories(self) -> tuple[Any, Any]:
         """Get pinned and archived stories."""
         from telethon.tl.functions.stories import (
             GetPinnedStoriesRequest,
@@ -374,7 +377,7 @@ class TgApi:
         )
         return pinned, archived
 
-    async def get_ringtones(self):
+    async def get_ringtones(self) -> Any:
         """Get saved ringtones."""
         result = await self.client(GetSavedRingtonesRequest(hash=0))
         return result

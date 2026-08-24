@@ -112,7 +112,7 @@ __all__ = [
     default=False,
     help="Suppress progress and status output (errors and the final summary are still shown).",
 )
-def main(debug, log_level, quiet):
+def main(debug, log_level, quiet) -> None:
     """tg-export: Flexible Telegram data export tool."""
     level, include_libraries = resolve_log_level(debug, log_level)
 

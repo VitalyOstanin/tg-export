@@ -96,10 +96,10 @@ ProxyTuple = tuple[str, str, int, bool, str | None, str | None]
 
 
 class AccountManager:
-    def __init__(self, config_dir: Path | None = None):
+    def __init__(self, config_dir: Path | None = None) -> None:
         self.config_dir = Path(config_dir) if config_dir else default_config_dir()
 
-    def ensure_dirs(self):
+    def ensure_dirs(self) -> None:
         # Why 0o700: api_credentials.yaml and the session files live here, and
         # other local users must not be able to enumerate accounts. Both
         # directories are treated alike -- a filesystem without permission bits
@@ -142,7 +142,7 @@ class AccountManager:
             if path.suffix == ".session" and not path.name.startswith(".")
         )
 
-    def remove_account(self, name: str):
+    def remove_account(self, name: str) -> None:
         path = self.session_path(name)
         if path.exists():
             path.unlink()
@@ -150,7 +150,7 @@ class AccountManager:
         if journal.exists():
             journal.unlink()
 
-    def set_default_account(self, name: str):
+    def set_default_account(self, name: str) -> None:
         """Set default account alias."""
         default_path = self.config_dir / "default_account"
         default_path.write_text(name, encoding="utf-8")
@@ -173,7 +173,7 @@ class AccountManager:
             "No --account specified and no default set. Use 'tg-export account default <name>' to set one."
         )
 
-    def save_credentials(self, api_id: int, api_hash: str):
+    def save_credentials(self, api_id: int, api_hash: str) -> None:
         cred_path = self.config_dir / "api_credentials.yaml"
         data = {"api_id": api_id, "api_hash": api_hash}
         write_private_text(cred_path, yaml.dump(data, default_flow_style=False))
@@ -274,7 +274,7 @@ class AccountManager:
         data = self.load_global_config()
         return parse_size(data.get("min_free_space", DEFAULT_MIN_FREE_SPACE))
 
-    async def add_account(self, name: str):
+    async def add_account(self, name: str) -> None:
         """Interactive Telethon login. Requires terminal interaction."""
         api_id, api_hash = self.load_credentials()
         target = self.session_path(name)

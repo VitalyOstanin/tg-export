@@ -62,7 +62,6 @@ async def fetch_contact_ids(api) -> set[int] | None:
 def _apply_folder_flags(chats: list[Chat], folders: list[dict], contact_ids: set[int] | None = None) -> None:
     """Assign folder to chats matched by flag-based filters (contacts, groups, etc.)."""
     for folder in folders:
-        # Collect chat types matched by this folder's flags
         matched_types: set[ChatType] = set()
         for flag, types in _FLAG_TO_TYPES.items():
             if folder.get(flag):
@@ -313,7 +312,6 @@ def generate_config_template(chats: list[Chat], account: str | None = None) -> s
         "# chats:",
     ]
 
-    # Add commented-out chat entries
     for chat in chats:
         lines.append(f"#   - id: {chat.id}")
         lines.append(f'#     name: "{chat.name}"')

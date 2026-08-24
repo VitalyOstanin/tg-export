@@ -462,7 +462,7 @@ def test_cli_helpers_are_context_managers():
     """
     src = _read("cli/common.py")
     tree = ast.parse(src)
-    for name in ("connected_api", "opened_state"):
+    for name in ("connected_api", "opened_state", "opened_state_if_any", "_opened_state"):
         fn = next(
             (n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef) and n.name == name),
             None,
@@ -495,6 +495,39 @@ def test_no_function_is_longer_than_a_screenful():
                 too_long.append((length, f"{path.name}:{node.lineno}", node.name))
     too_long.sort(reverse=True)
     assert not too_long, f"функции длиннее {limit} строк: {too_long}"
+
+
+def test_no_module_or_class_grows_without_a_ceiling():
+    """Предел стоял на функции, но не на модуле и не на классе.
+
+    `exporter.py` дорос до двух тысяч строк, а `Exporter` -- до семи десятков
+    методов: длина каждой функции при этом оставалась в норме, и разрастание
+    ничем не отмечалось. Пределы поставлены с небольшим запасом над текущими
+    значениями -- они ловят рост, а не требуют немедленного разбиения;
+    превышение означает, что пора выделять модуль или класс, а не поднимать
+    число.
+    """
+    module_limit = 2100
+    methods_limit = 75
+
+    too_big = [
+        (len(path.read_text(encoding="utf-8").splitlines()), path.name)
+        for path in _package_sources()
+        if len(path.read_text(encoding="utf-8").splitlines()) > module_limit
+    ]
+    assert not too_big, f"модули длиннее {module_limit} строк: {sorted(too_big, reverse=True)}"
+
+    crowded = []
+    for path, tree in _trees(_package_sources()):
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ClassDef):
+                continue
+            methods = sum(
+                1 for child in node.body if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef)
+            )
+            if methods > methods_limit:
+                crowded.append((methods, f"{path.name}:{node.name}"))
+    assert not crowded, f"классы с числом методов больше {methods_limit}: {sorted(crowded, reverse=True)}"
 
 
 def test_cli_does_not_run_sql_of_its_own():

@@ -547,7 +547,7 @@ async def test_the_verify_command_fails_when_a_file_stays_broken(tmp_path, monke
     async def fake_api(*_a, **_k):
         yield MagicMock(), "acc"
 
-    monkeypatch.setattr(cli_common, "opened_state", fake_state)
+    monkeypatch.setattr(cli_common, "opened_state_if_any", fake_state)
     monkeypatch.setattr(cli_common, "connected_api", fake_api)
     monkeypatch.setattr(cli_common, "resolve_output", lambda *_a, **_k: (None, MagicMock(), tmp_path))
 

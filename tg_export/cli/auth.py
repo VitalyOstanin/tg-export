@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 @click.group()
-def auth():
+def auth() -> None:
     """Telegram authentication: credentials, login, session check."""
 
 
@@ -32,7 +32,7 @@ def auth():
     default=None,
     help="Telegram API Hash (input is hidden; passing it as an option puts it in the shell history)",
 )
-def auth_credentials(api_id, api_hash):
+def auth_credentials(api_id, api_hash) -> None:
     """Set Telegram API credentials (api_id and api_hash)."""
     if api_id is None:
         api_id = ask("API ID (from https://my.telegram.org)", type=int, without_an_answer="--api-id")
@@ -47,7 +47,7 @@ def auth_credentials(api_id, api_hash):
 
 @auth.command("add")
 @click.option("--name", default=None, help="Account alias")
-def auth_add(name):
+def auth_add(name) -> None:
     """Add a new Telegram account (interactive login)."""
     if name is None:
         name = ask("Account alias", without_an_answer="--name")
@@ -63,7 +63,7 @@ def auth_add(name):
 @click.argument("name", required=False, default=None)
 @click.option("--account", default=None, help=common.ACCOUNT_HELP)
 @click.option("--json", "as_json", is_flag=True, help="Output as machine-readable JSON")
-def auth_check(name, account, as_json):
+def auth_check(name, account, as_json) -> None:
     """Check if account sessions are valid."""
     name = common.one_account(name, account)
     exit_code = asyncio.run(_auth_check(name, as_json))
@@ -71,7 +71,7 @@ def auth_check(name, account, as_json):
         fail(code=exit_code)
 
 
-async def _auth_check(name, as_json=False):
+async def _auth_check(name, as_json=False) -> int | None:
     """Connect as each account in turn and report whether it is usable."""
     from tg_export.api import TgApi
 

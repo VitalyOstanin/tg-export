@@ -92,7 +92,7 @@ _V7_COLUMN_COUNT = 5
 
 
 class FixedSQLiteSession(SQLiteSession):
-    def __init__(self, session_id=None, store_tmp_auth_key_on_disk: bool = False):
+    def __init__(self, session_id=None, store_tmp_auth_key_on_disk: bool = False) -> None:
         # The file carries the authorisation key, and Telethon creates it with
         # the process umask: an empty private file made first takes that
         # decision away from the umask, leaving no window in which another

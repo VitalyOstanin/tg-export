@@ -15,6 +15,7 @@ import logging
 import os
 import tempfile
 from collections import defaultdict
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -121,7 +122,7 @@ async def redownload_broken_file(
 MESSAGE_BATCH = 100
 
 
-async def fetch_broken_messages(api, numbered, *, should_stop=None):
+async def fetch_broken_messages(api, numbered, *, should_stop=None) -> AsyncIterator[Any]:
     """Yield each request's entries together with the messages it answered.
 
     A file used to cost a round-trip of its own, while the list of broken files

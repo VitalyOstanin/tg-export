@@ -11,7 +11,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NoReturn
 
@@ -134,7 +134,7 @@ STATE_DB_NAME = ".tg-export-state.db"
 
 
 @contextlib.asynccontextmanager
-async def connected_api(account_name):
+async def connected_api(account_name) -> AsyncIterator[tuple[Any, str]]:
     """Connect to Telegram for one account; yield ``(api, account)``.
 
     Every command needs the same prologue -- resolve the account, load the
@@ -263,7 +263,7 @@ DEFAULT_MESSAGE_TEXT_LENGTH = 200
 ACCOUNT_HELP = "Account alias (default: the one set by 'account default')"
 
 
-def over_an_export(func):
+def over_an_export(func: Callable[..., Any]) -> Callable[..., Any]:
     """The three options of every command that works over an existing export.
 
     `--account`, `--config` and `--output` were written out at five call sites

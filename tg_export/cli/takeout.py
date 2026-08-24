@@ -15,14 +15,14 @@ logger = logging.getLogger(__name__)
 
 
 @click.group()
-def takeout():
+def takeout() -> None:
     """Manage Telegram Takeout sessions."""
 
 
 @takeout.command("clear")
 @click.argument("name", required=False, default=None)
 @click.option("--account", default=None, help=common.ACCOUNT_HELP)
-def takeout_clear(name, account):
+def takeout_clear(name, account) -> None:
     """Finish the takeout session on the server and clear its local id.
 
     The server side is the point: an export keeps the session alive on purpose,
@@ -40,7 +40,7 @@ def takeout_clear(name, account):
 _UNREACHABLE_SERVER = (ConnectionError, TimeoutError, OSError)
 
 
-async def _takeout_clear(name):
+async def _takeout_clear(name) -> int:
     async with common.connected_api(name) as (api, account):
         session = api.client.session
         if session is None:

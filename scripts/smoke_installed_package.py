@@ -22,7 +22,7 @@ from pathlib import Path
 
 def main() -> int:
     from tg_export.config import OutputConfig
-    from tg_export.html.renderer import STATIC_DIR, TEMPLATES_DIR, HtmlRenderer
+    from tg_export.html.renderer import CSS_PATH, JS_PATH, STATIC_DIR, TEMPLATES_DIR, HtmlRenderer
 
     templates = sorted(TEMPLATES_DIR.glob("*.j2"))
     if not templates:
@@ -48,7 +48,7 @@ def main() -> int:
         if not index.is_file() or not index.read_text(encoding="utf-8").strip():
             print("FAIL: index.html was not rendered", file=sys.stderr)
             return 1
-        for asset in ("css/style.css", "js/script.js"):
+        for asset in (CSS_PATH, JS_PATH):
             if not (out / asset).is_file():
                 print(f"FAIL: static asset missing after setup(): {asset}", file=sys.stderr)
                 return 1

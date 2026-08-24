@@ -74,12 +74,12 @@ LOG_INTERVAL = 3  # seconds
 FORCE_SHUTDOWN_WINDOW_SECONDS = 3
 
 
-def _log(msg: str):
+def _log(msg: str) -> None:
     """Print with immediate flush (works in non-TTY / redirected output)."""
     console.print(msg, markup=False, highlight=False, soft_wrap=True)
 
 
-def _forget_cancellation() -> None:
+def forget_cancellation() -> None:
     """Declare a cancellation request answered, so the task stops counting as cancelling.
 
     Catching CancelledError does not clear the request: the task keeps a
@@ -229,7 +229,7 @@ class ExportStats:
     # What the current chat started from; replaced whole, never edited in place.
     _chat_start: ChatStart = field(default_factory=ChatStart)
 
-    def begin_chat(self, messages_in_db: int, messages_total: int):
+    def begin_chat(self, messages_in_db: int, messages_total: int) -> None:
         """Fix what the next chat starts from, in one publication.
 
         started_at is part of it: the rates on the status line divide per-chat
@@ -318,6 +318,13 @@ _BIDI_REMOVE_RE = re.compile("[" + re.escape(_BIDI_CONTROL_CHARS) + "]")
 _CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
 
 
+# Bytes of a name a path component may keep. ext4 and HFS+ stop at 255 bytes,
+# and `_<chat_id>` is appended to what this returns; the number was written out
+# twice, so a change to one of the copies would have cut at one length and
+# tested the other.
+NAME_BYTES = 200
+
+
 def sanitize_name(name: str) -> str:
     """Make a Telegram-controlled string safe to use as a path component.
 
@@ -333,11 +340,9 @@ def sanitize_name(name: str) -> str:
     name = name.replace(" ", "_")
     if name in ("", ".", ".."):
         return "_"
-    # Limit length so result fits ext4/HFS+ limit (255 bytes); reserve some
-    # bytes for the appended _<chat_id>.
     encoded = name.encode("utf-8")
-    if len(encoded) > 200:
-        encoded = encoded[:200]
+    if len(encoded) > NAME_BYTES:
+        encoded = encoded[:NAME_BYTES]
         # Avoid splitting a multi-byte UTF-8 sequence
         try:
             name = encoded.decode("utf-8")
@@ -421,7 +426,7 @@ class _MediaPipeline:
         chat_id: int,
         limit: int,
         media_config: MediaConfig,
-    ):
+    ) -> None:
         self._exporter = exporter
         self._chat_dir = chat_dir
         self._stats = stats
@@ -569,7 +574,7 @@ class StatusView:
     and the start time can be rendered and checked without running an export.
     """
 
-    def __init__(self, stats: ExportStats, start_time: float, waits: WaitBoard | None = None):
+    def __init__(self, stats: ExportStats, start_time: float, waits: WaitBoard | None = None) -> None:
         self.stats = stats
         self.start_time = start_time
         # The waits currently holding the export. Passed in by the tests; the
@@ -699,7 +704,7 @@ class Exporter:
         downloader: MediaDownloader,
         account: str,
         quiet: bool = False,
-    ):
+    ) -> None:
         self.api = api
         self.state = state
         self.config = config
@@ -880,7 +885,7 @@ class Exporter:
             self._status_print(f"[dim]date range: {date_from} — {date_to}[/]")
         self._status_print(f"[dim]started at {format_moment(datetime.now(), fmt=CLOCK_FORMAT)}[/]\n")
 
-    def _make_progress_widgets(self):
+    def _make_progress_widgets(self) -> tuple[Any, Any, Any, Any]:
         """Build the two Progress widgets of the live display."""
         progress = Progress(
             SpinnerColumn(),
@@ -1087,7 +1092,7 @@ class Exporter:
             # cancelling: a task left with a pending cancellation makes every
             # enclosing asyncio.timeout and TaskGroup -- including those inside
             # Telethon -- behave as if the cancellation were still on its way.
-            _forget_cancellation()
+            forget_cancellation()
 
         if not dry_run and not self._force_shutdown and not self._shutdown:
             await self._run_global_data_phase(stats)
@@ -1103,7 +1108,7 @@ class Exporter:
         chat_config: ChatExportConfig,
         chat_dir: Path,
         stats: ExportStats,
-    ):
+    ) -> ExportStats:
         """Export a single chat with batch processing.
 
         Updates stats in-place so Live widget reflects real-time progress.
@@ -1460,7 +1465,7 @@ class Exporter:
         db_path = self.state.db_path
         chat_id = chat.id
 
-        def _render():
+        def _render() -> None:
             from tg_export.state import month_reader
 
             # One read-only connection for the whole chat: see month_reader.
@@ -1493,7 +1498,7 @@ class Exporter:
         stats: ExportStats,
         chat_id: int = 0,
         media_config: MediaConfig | None = None,
-    ):
+    ) -> None:
         """Download media for a message, updating stats.
 
         `media_config` is what the rules resolved for this chat; without it the
@@ -1621,7 +1626,7 @@ class Exporter:
                 logger.warning("Failed to export %s: %s", label, e, exc_info=True)
                 stats.errors.append(f"{label}: {describe_error(e)}")
 
-    async def _export_personal_info(self):
+    async def _export_personal_info(self) -> None:
         """Fetch and render personal info."""
         # cast(Any): Telethon get_personal_info() returns a Union without stubs,
         # so Pyright rejects the .full_user/.users attributes. Access is safe --
@@ -1660,7 +1665,7 @@ class Exporter:
         await asyncio.to_thread(self.renderer.render_personal_info, user_data)
         self._status_print("  [green]exported[/]: personal info")
 
-    async def _export_contacts(self):
+    async def _export_contacts(self) -> None:
         """Fetch and render contacts list."""
         result = await self.api.get_contacts()
         users_by_id = {u.id: u for u in getattr(result, "users", [])}
@@ -1697,7 +1702,7 @@ class Exporter:
         await asyncio.to_thread(self.renderer.render_contacts, contacts, frequent)
         self._status_print(f"  [green]exported[/]: {len(contacts)} contacts, {len(frequent)} frequent")
 
-    async def _export_sessions(self):
+    async def _export_sessions(self) -> None:
         """Fetch and render active sessions."""
         sessions_result, web_result = await self.api.get_sessions()
 
@@ -1762,7 +1767,7 @@ class Exporter:
 
         return list(await asyncio.gather(*(download(i, m, t) for i, (m, t) in enumerate(items))))
 
-    async def _export_userpics(self):
+    async def _export_userpics(self) -> None:
         """Fetch and render profile photos."""
         photos_dir = self.renderer.output_dir / "profile_photos"
         photos_dir.mkdir(parents=True, exist_ok=True)
@@ -1783,7 +1788,7 @@ class Exporter:
         await asyncio.to_thread(self.renderer.render_userpics, photos)
         self._report_exported("profile photos", considered=len(userpics), failed=failed)
 
-    async def _export_stories(self):
+    async def _export_stories(self) -> None:
         """Fetch and render stories."""
         stories_dir = self.renderer.output_dir / "stories"
         stories_dir.mkdir(parents=True, exist_ok=True)
@@ -1823,9 +1828,9 @@ class Exporter:
             video_path = None
             caption = ""
 
-            if hasattr(item, "caption") and item.caption:
+            if getattr(item, "caption", None):
                 caption = item.caption
-            elif hasattr(item, "message") and item.message:
+            elif getattr(item, "message", None):
                 caption = item.message
 
             path = downloaded.get(story_id)
@@ -1848,7 +1853,7 @@ class Exporter:
         await asyncio.to_thread(self.renderer.render_stories, stories)
         self._report_exported("stories", considered=len(stories), failed=failed)
 
-    async def _export_other_data(self):
+    async def _export_other_data(self) -> None:
         """Fetch and render ringtones and other data."""
         ringtones_dir = self.renderer.output_dir / "ringtones"
         ringtones = []
@@ -1897,7 +1902,7 @@ class Exporter:
         if ringtones or failed:
             self._report_exported("ringtones", considered=len(ringtones), failed=failed)
 
-    async def _verify_files(self, stats: ExportStats):
+    async def _verify_files(self, stats: ExportStats) -> None:
         """Verify integrity of downloaded files and re-download broken ones."""
         broken = await self.state.get_files_to_verify()
         if not broken:
@@ -1958,7 +1963,7 @@ class Exporter:
         if failed_here:
             console.print(f"[red]{failed_here} files still have issues[/]")
 
-    async def _cleanup_orphaned_files(self, chat_id: int, chat_dir: Path):
+    async def _cleanup_orphaned_files(self, chat_id: int, chat_dir: Path) -> None:
         """Remove media files on disk that have no record in DB.
 
         These are typically partial downloads from interrupted exports.
@@ -1986,7 +1991,7 @@ class Exporter:
         subdir_names: list[str],
         chat_dir: Path,
         known_paths_raw: set[str],
-    ):
+    ) -> None:
         # Normalise DB paths: Telethon stores cwd-relative paths; resolve to
         # absolute against the original cwd or chat_dir as a fallback.
         known_resolved: set[Path] = set()
@@ -2039,7 +2044,7 @@ class Exporter:
         if removed:
             logger.info("removed %d orphaned files in %s", removed, chat_dir.name)
 
-    def _handle_shutdown(self, signum: int | None = None):
+    def _handle_shutdown(self, signum: int | None = None) -> None:
         now = time.monotonic()
         if signum is not None:
             self._shutdown_signal = signum

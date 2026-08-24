@@ -12,7 +12,7 @@ and rich, not on the exporter with all its imports.
 from __future__ import annotations
 
 import sys
-from typing import NoReturn
+from typing import Any, NoReturn
 
 import click
 from rich.console import Console
@@ -50,7 +50,7 @@ def _no_answer_is_coming(without_an_answer: str) -> NoReturn:
     )
 
 
-def ask(question: str, *, without_an_answer: str, **kwargs):
+def ask(question: str, *, without_an_answer: str, **kwargs) -> Any:
     """Ask for a value, with the question on stderr.
 
     `click.prompt` writes the prompt to stdout by default, so a command whose

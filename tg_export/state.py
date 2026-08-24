@@ -12,6 +12,7 @@ import contextlib
 import json
 import logging
 import sqlite3
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -252,7 +253,7 @@ def _load_month(db: sqlite3.Connection, chat_id: int, month_key: str) -> list[Me
 
 
 @contextlib.contextmanager
-def month_reader(db_path: Path, chat_id: int):
+def month_reader(db_path: Path, chat_id: int) -> Iterator[Any]:
     """Yield a `load_month(month_key)` reading through one connection.
 
     Why a connection of its own: render_chat_streaming runs in a thread to keep
@@ -284,7 +285,7 @@ class StateLockError(ProcessLockError):
     """Raised when another process already holds the state DB lock."""
 
 
-async def _shielded(coro):
+async def _shielded(coro) -> Any:
     """Run `coro` to completion even if the caller is cancelled, and wait for it.
 
     asyncio.shield alone protects the operation but not the caller: the caller
@@ -422,7 +423,7 @@ class ExportState:
     - removal: `purge_chat`, `count_chat_rows`, `count_all_rows`.
     """
 
-    def __init__(self, db_path: Path):
+    def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
         self._db: aiosqlite.Connection | None = None
         self._lock = ProcessLock(
@@ -438,7 +439,7 @@ class ExportState:
             raise RuntimeError("ExportState not opened, call open() first")
         return self._db
 
-    def _acquire_lock(self):
+    def _acquire_lock(self) -> None:
         """Take the advisory lock that keeps a second export off this database."""
         try:
             self._lock.acquire()
@@ -453,7 +454,7 @@ class ExportState:
     async def __aexit__(self, exc_type, exc, tb) -> None:
         await self.close()
 
-    async def open(self):
+    async def open(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._acquire_lock()
         try:
@@ -484,7 +485,7 @@ class ExportState:
             self._lock.release()
             raise
 
-    async def _apply_pragmas(self):
+    async def _apply_pragmas(self) -> None:
         # WAL allows concurrent readers and one writer without escalation.
         # synchronous=NORMAL avoids fsync on every commit (durable enough with WAL).
         # cache_size negative = KiB; mmap_size in bytes.
@@ -499,7 +500,7 @@ class ExportState:
         ):
             await self.db.execute(pragma)
 
-    async def close(self):
+    async def close(self) -> None:
         """Close the connection and release the lock, in that order.
 
         The lock is released even when closing fails: leaving it taken makes
@@ -520,13 +521,13 @@ class ExportState:
         finally:
             self._lock.release()
 
-    async def commit(self):
+    async def commit(self) -> None:
         # Why: a second SIGINT cancels the export task, including the one
         # running commit(); without shield, a partially-applied batch may be
         # lost.
         await _shielded(self.db.commit())
 
-    async def _create_tables(self):
+    async def _create_tables(self) -> None:
         # Columns are reconciled before the script runs: an index declared over
         # a column an older database lacks would fail on CREATE INDEX before any
         # ALTER had a chance to add it.
@@ -536,7 +537,7 @@ class ExportState:
         await self.db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         await self.commit()
 
-    async def _add_missing_columns(self):
+    async def _add_missing_columns(self) -> None:
         """Bring a database created by an earlier version up to the current shape.
 
         ``CREATE TABLE IF NOT EXISTS`` is a no-op on an existing file, so a
@@ -585,7 +586,7 @@ class ExportState:
                 declared[table] = columns
         return declared
 
-    async def _drop_unused_schema(self):
+    async def _drop_unused_schema(self) -> None:
         """Remove schema objects nothing reads.
 
         `takeout` was a second, parallel store for takeout_id next to the one
@@ -615,7 +616,7 @@ class ExportState:
     # passed via **fields and against SQL injection through a column name.
     _UPSERT_COLS = frozenset({"last_msg_id", "oldest_msg_id", "full_history", "messages_count"})
 
-    async def _upsert_chat_state(self, chat_id: int, **fields):
+    async def _upsert_chat_state(self, chat_id: int, **fields) -> None:
         """UPSERT into export_state.
 
         Why: there used to be 4 separate setters. set_oldest_msg_id's INSERT
@@ -686,10 +687,10 @@ class ExportState:
         await self.db.execute(sql, params)
         await self.commit()
 
-    async def set_last_msg_id(self, chat_id: int, msg_id: int):
+    async def set_last_msg_id(self, chat_id: int, msg_id: int) -> None:
         await self._upsert_chat_state(chat_id, last_msg_id=msg_id)
 
-    async def set_oldest_msg_id(self, chat_id: int, msg_id: int):
+    async def set_oldest_msg_id(self, chat_id: int, msg_id: int) -> None:
         """Record how far down the history the export descended.
 
         The mark only falls: a larger id, and the zero of "not descended yet",
@@ -697,7 +698,7 @@ class ExportState:
         """
         await self._upsert_chat_state(chat_id, oldest_msg_id=msg_id)
 
-    async def set_full_history(self, chat_id: int, full: bool = True):
+    async def set_full_history(self, chat_id: int, full: bool = True) -> None:
         """Record that the chat holds nothing older than what is exported.
 
         The flag only turns on; `full=False` writes nothing, because clearing
@@ -705,7 +706,7 @@ class ExportState:
         """
         await self._upsert_chat_state(chat_id, full_history=int(full))
 
-    async def update_messages_count(self, chat_id: int, count: int):
+    async def update_messages_count(self, chat_id: int, count: int) -> None:
         await self._upsert_chat_state(chat_id, messages_count=count)
 
     async def commit_phase_progress(
@@ -715,7 +716,7 @@ class ExportState:
         oldest_msg_id: int,
         full_history: bool,
         messages_count: int,
-    ):
+    ) -> None:
         """Atomically write phase-2 progress in a single UPSERT.
 
         Why: phase 2 used to do 4 separate commits (last/oldest/full_history/
@@ -731,7 +732,7 @@ class ExportState:
             messages_count=messages_count,
         )
 
-    async def reset_chat_progress(self, chat_id: int | None = None, *, delete_messages: bool = False):
+    async def reset_chat_progress(self, chat_id: int | None = None, *, delete_messages: bool = False) -> None:
         """Rewind export progress for one chat, or for every chat when chat_id is None.
 
         The regular writers may only move last_msg_id forward (see
@@ -769,7 +770,7 @@ class ExportState:
         actual_size: int | None,
         local_path: str,
         status: FileStatus | str = FileStatus.done,
-    ):
+    ) -> None:
         # The file is already in its place on disk by the time this runs, and
         # the media pipeline cancels the downloads still in flight when it
         # shuts down. Only the commit used to be shielded, so a cancellation
@@ -788,7 +789,7 @@ class ExportState:
         actual_size: int | None,
         local_path: str,
         status: FileStatus | str,
-    ):
+    ) -> None:
         now = _now()
         await self.db.execute(
             """INSERT INTO files (file_id, chat_id, msg_id, expected_size, actual_size, local_path, status, downloaded_at)
@@ -912,11 +913,11 @@ class ExportState:
                 inline_buttons=excluded.inline_buttons, topic_id=excluded.topic_id,
                 grouped_id=excluded.grouped_id"""
 
-    async def store_message(self, msg: Message):
+    async def store_message(self, msg: Message) -> None:
         """Store single message (no commit — caller should batch-commit)."""
         await self.db.execute(self._UPSERT_SQL, self._msg_to_params(msg))
 
-    async def store_messages_batch(self, messages: list[Message]):
+    async def store_messages_batch(self, messages: list[Message]) -> None:
         """Store a batch of messages in a single transaction."""
         params = [self._msg_to_params(msg) for msg in messages]
         await self.db.executemany(self._UPSERT_SQL, params)
@@ -1153,7 +1154,7 @@ class ExportState:
         is_archived: bool,
         is_forum: bool,
         is_monoforum: bool,
-    ):
+    ) -> None:
         now = _now()
         await self.db.execute(
             """INSERT INTO catalog_cache

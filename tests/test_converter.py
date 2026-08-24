@@ -360,7 +360,6 @@ def test_a_cached_photo_reports_the_length_of_its_bytes():
 
 def test_a_photo_without_variants_is_still_converted():
     from tg_export.converter import _photo_media
-
     from tg_export.models import PhotoMedia
 
     media = _photo_media(_photo_with(None))

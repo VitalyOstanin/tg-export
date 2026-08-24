@@ -40,8 +40,15 @@ STATIC_DIR = Path(__file__).parent / "static"
 JOIN_WITHIN_SECONDS = 900  # 15 minutes
 
 
+# Where the shared stylesheet and the script sit, relative to the root of the
+# export. Written out nine times before -- and a tenth time in
+# scripts/smoke_installed_package.py, which checks that both files are there.
+CSS_PATH = "css/style.css"
+JS_PATH = "js/script.js"
+
+
 class HtmlRenderer:
-    def __init__(self, output_dir: Path, config: OutputConfig):
+    def __init__(self, output_dir: Path, config: OutputConfig) -> None:
         self.output_dir = output_dir
         self.config = config
         self.env = Environment(
@@ -57,7 +64,7 @@ class HtmlRenderer:
         self.env.globals["format_size"] = format_size
         self.env.filters["safe_href"] = _safe_href
 
-    def setup(self):
+    def setup(self) -> None:
         """Copy static resources to output directory."""
         self.output_dir.mkdir(parents=True, exist_ok=True)
         for subdir in ("css", "js", "images"):
@@ -149,14 +156,14 @@ class HtmlRenderer:
         page_idx: int,
         rel: str,
         template,
-    ):
+    ) -> None:
         pinfo = pages_info[page_idx]
         prev_href = pages_info[page_idx - 1]["filename"] if page_idx > 0 else None
         next_href = pages_info[page_idx + 1]["filename"] if page_idx < len(pages_info) - 1 else None
         html = template.render(
             title=f"{chat.name} - {pinfo['label']} - tg-export",
-            css_path=f"{rel}/css/style.css",
-            js_path=f"{rel}/js/script.js",
+            css_path=f"{rel}/{CSS_PATH}",
+            js_path=f"{rel}/{JS_PATH}",
             chat_name=chat.name,
             chat_type=chat.type.value,
             chat_members=chat.members_count,
@@ -170,7 +177,7 @@ class HtmlRenderer:
         )
         (chat_dir / pinfo["filename"]).write_text(html, encoding="utf-8")
 
-    def render_chat(self, chat: Chat, messages: list[Message], chat_dir: Path):
+    def render_chat(self, chat: Chat, messages: list[Message], chat_dir: Path) -> None:
         """Render chat split by month with TOC and prev/next navigation.
 
         In-memory variant: requires the full message list.
@@ -224,7 +231,7 @@ class HtmlRenderer:
         load_month: Callable[[str], list[Message]],
         chat_dir: Path,
         should_stop: Callable[[], bool] | None = None,
-    ):
+    ) -> None:
         """Render chat month-by-month, loading each month on demand.
 
         Why: large chats (100k+ messages) consume hundreds of MB if all messages
@@ -283,7 +290,7 @@ class HtmlRenderer:
         folders_list: list[dict[str, Any]],
         unfiled: list[dict[str, Any]],
         sections: list[dict[str, Any]],
-    ):
+    ) -> None:
         """Render main index page.
 
         folders_list: list of {name, href, chats} dicts.
@@ -291,8 +298,8 @@ class HtmlRenderer:
         template = self.env.get_template("index.html.j2")
         html = template.render(
             title="Telegram Export - tg-export",
-            css_path="css/style.css",
-            js_path="js/script.js",
+            css_path=CSS_PATH,
+            js_path=JS_PATH,
             generated=format_moment(datetime.now()),
             folders_list=folders_list,
             unfiled=unfiled,
@@ -300,7 +307,7 @@ class HtmlRenderer:
         )
         (self.output_dir / "index.html").write_text(html, encoding="utf-8")
 
-    def render_folder_index(self, folder_name: str, chats: list[dict]):
+    def render_folder_index(self, folder_name: str, chats: list[dict]) -> None:
         """Render per-folder index page with chat list."""
         from tg_export.exporter import sanitize_name
 
@@ -311,87 +318,64 @@ class HtmlRenderer:
         template = self.env.get_template("folder_index.html.j2")
         html = template.render(
             title=f"{folder_name} - tg-export",
-            css_path=f"{rel}/css/style.css",
-            js_path=f"{rel}/js/script.js",
+            css_path=f"{rel}/{CSS_PATH}",
+            js_path=f"{rel}/{JS_PATH}",
             folder_name=folder_name,
             index_href=f"{rel}/index.html",
             chats=chats,
         )
         (folder_dir / "index.html").write_text(html, encoding="utf-8")
 
-    def render_personal_info(self, user_data: dict[str, Any]):
+    def render_personal_info(self, user_data: dict[str, Any]) -> None:
         """Render personal information page."""
-        template = self.env.get_template("personal_info.html.j2")
-        html = template.render(
-            title="Personal Information - tg-export",
-            css_path="css/style.css",
-            js_path="js/script.js",
-            index_href="index.html",
-            **user_data,
+        self._render_global_page(
+            "personal_info.html.j2", "personal_info.html", "Personal Information", **user_data
         )
-        (self.output_dir / "personal_info.html").write_text(html, encoding="utf-8")
 
-    def render_contacts(self, contacts: list[dict], frequent: list[dict]):
+    def render_contacts(self, contacts: list[dict], frequent: list[dict]) -> None:
         """Render contacts page."""
-        template = self.env.get_template("contacts.html.j2")
-        html = template.render(
-            title="Contacts - tg-export",
-            css_path="css/style.css",
-            js_path="js/script.js",
-            index_href="index.html",
-            contacts=contacts,
-            frequent=frequent,
+        self._render_global_page(
+            "contacts.html.j2", "contacts.html", "Contacts", contacts=contacts, frequent=frequent
         )
-        (self.output_dir / "contacts.html").write_text(html, encoding="utf-8")
 
-    def render_sessions(self, app_sessions: list[dict], web_sessions: list[dict]):
+    def render_sessions(self, app_sessions: list[dict], web_sessions: list[dict]) -> None:
         """Render sessions page."""
-        template = self.env.get_template("sessions.html.j2")
-        html = template.render(
-            title="Active Sessions - tg-export",
-            css_path="css/style.css",
-            js_path="js/script.js",
-            index_href="index.html",
+        self._render_global_page(
+            "sessions.html.j2",
+            "sessions.html",
+            "Active Sessions",
             app_sessions=app_sessions,
             web_sessions=web_sessions,
         )
-        (self.output_dir / "sessions.html").write_text(html, encoding="utf-8")
 
-    def render_userpics(self, photos: list[dict]):
+    def render_userpics(self, photos: list[dict]) -> None:
         """Render profile photos gallery page."""
-        template = self.env.get_template("userpics.html.j2")
-        html = template.render(
-            title="Profile Photos - tg-export",
-            css_path="css/style.css",
-            js_path="js/script.js",
-            index_href="index.html",
-            photos=photos,
-        )
-        (self.output_dir / "userpics.html").write_text(html, encoding="utf-8")
+        self._render_global_page("userpics.html.j2", "userpics.html", "Profile Photos", photos=photos)
 
-    def render_stories(self, stories: list[dict]):
+    def render_stories(self, stories: list[dict]) -> None:
         """Render stories page."""
-        template = self.env.get_template("stories.html.j2")
-        html = template.render(
-            title="Stories - tg-export",
-            css_path="css/style.css",
-            js_path="js/script.js",
-            index_href="index.html",
-            stories=stories,
-        )
-        (self.output_dir / "stories.html").write_text(html, encoding="utf-8")
+        self._render_global_page("stories.html.j2", "stories.html", "Stories", stories=stories)
 
-    def render_other_data(self, data: dict[str, Any]):
+    def render_other_data(self, data: dict[str, Any]) -> None:
         """Render other data page."""
-        template = self.env.get_template("other_data.html.j2")
+        self._render_global_page("other_data.html.j2", "other_data.html", "Other Data", **data)
+
+    def _render_global_page(self, template_name: str, filename: str, title: str, **payload) -> None:
+        """Render one page of the global data and write it into the export root.
+
+        The six pages differ in template, file name, title and payload; the
+        rest -- the asset paths, the link back to the index and the write --
+        was written out once per page, seven copies of the same five lines.
+        """
+        template = self.env.get_template(template_name)
         html = template.render(
-            title="Other Data - tg-export",
-            css_path="css/style.css",
-            js_path="js/script.js",
+            title=f"{title} - tg-export",
+            css_path=CSS_PATH,
+            js_path=JS_PATH,
             index_href="index.html",
-            **data,
+            **payload,
         )
-        (self.output_dir / "other_data.html").write_text(html, encoding="utf-8")
+        (self.output_dir / filename).write_text(html, encoding="utf-8")
 
     # -- Private rendering helpers --
 
@@ -572,7 +556,7 @@ class _PathAnchors(NamedTuple):
         return cls(Path.cwd(), chat_dir.resolve())
 
 
-def _fix_media_path(msg: Message, chat_dir: Path, anchors: _PathAnchors):
+def _fix_media_path(msg: Message, chat_dir: Path, anchors: _PathAnchors) -> None:
     """Make media local_path relative to chat_dir for correct HTML references."""
     media = msg.media
     if media is None:

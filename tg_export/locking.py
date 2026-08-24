@@ -33,7 +33,7 @@ class ProcessLock:
     before this existed.
     """
 
-    def __init__(self, path: Path, busy_message: str):
+    def __init__(self, path: Path, busy_message: str) -> None:
         self._path = Path(f"{path}.lock")
         self._busy_message = busy_message
         self._fd: int | None = None

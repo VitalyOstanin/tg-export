@@ -171,7 +171,7 @@ class FloodWaitNotices(logging.Filter):
     lowered logger does not turn the whole library log on.
     """
 
-    def __init__(self, board: WaitBoard, *, level: int):
+    def __init__(self, board: WaitBoard, *, level: int) -> None:
         super().__init__()
         self._board = board
         self._level = level

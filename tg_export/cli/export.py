@@ -8,6 +8,12 @@ work on its output (``purge``, ``verify``).
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from tg_export.media import MediaDownloader
+    from tg_export.models import Chat
+
 import asyncio
 import contextlib
 import json
@@ -45,7 +51,7 @@ logger = logging.getLogger(__name__)
 @click.command("config")
 @click.option("--verbose", "-v", is_flag=True, help="Verbose: show per-account filters")
 @click.option("--json", "as_json", is_flag=True, help="Output as machine-readable JSON")
-def show_config(verbose, as_json):
+def show_config(verbose, as_json) -> None:
     """Show current configuration (global + per-account)."""
     mgr = common.account_manager()
     if as_json:
@@ -144,7 +150,7 @@ def _config_payload(mgr, *, verbose: bool) -> dict:
     return payload
 
 
-def _credential_api_id(cred_path: Path):
+def _credential_api_id(cred_path: Path) -> Any:
     creds = yaml.safe_load(cred_path.read_text(encoding="utf-8")) or {}
     return creds.get("api_id")
 
@@ -317,7 +323,7 @@ def _global_data_summary(cfg) -> str:
     return ", ".join(f"{name}={'on' if getattr(cfg, name) else 'off'}" for name in GLOBAL_DATA_SECTIONS)
 
 
-def _show_account_config(config_path):
+def _show_account_config(config_path) -> None:
     """Show per-account config details (verbose mode)."""
     from tg_export.config import load_config
 
@@ -394,7 +400,7 @@ def _save_catalog(path: Path, text: str) -> None:
 )
 @click.option("--include-left", is_flag=True, help="Include left channels")
 @click.pass_context
-def list_chats(ctx, account, output, as_json, fmt, include_left):
+def list_chats(ctx, account, output, as_json, fmt, include_left) -> None:
     """Export chat/folder catalog."""
     if as_json and ctx.get_parameter_source("fmt") is not ParameterSource.DEFAULT:
         # `--json` is the short form of `--format json`, so the two together
@@ -404,7 +410,7 @@ def list_chats(ctx, account, output, as_json, fmt, include_left):
     asyncio.run(_list_chats(account, output, "json" if as_json else fmt, include_left))
 
 
-async def _list_chats(account, output, fmt, include_left):
+async def _list_chats(account, output, fmt, include_left) -> None:
     from tg_export.catalog import fetch_catalog, format_catalog_json, format_catalog_yaml
 
     async with common.connected_api(account) as (api, account):
@@ -440,12 +446,12 @@ async def _list_chats(account, output, fmt, include_left):
     is_flag=True,
     help="Overwrite an existing config, keeping the previous one as <name>.bak.",
 )
-def init_config(account, from_catalog, output, force):
+def init_config(account, from_catalog, output, force) -> None:
     """Generate config template from catalog. Saves to ~/.config/tg-export/<account>.yaml."""
     asyncio.run(_init_config(account, from_catalog, output, force))
 
 
-async def _init_config(account, from_catalog, output, force=False):
+async def _init_config(account, from_catalog, output, force=False) -> None:
     """Write a config template, either from a saved catalog or from the account.
 
     An existing config is not overwritten without --force: the chat list
@@ -488,7 +494,7 @@ async def _init_config(account, from_catalog, output, force=False):
     common.diag(f"Config template saved to {config_path}")
 
 
-def _chats_from_catalog_file(path: Path):
+def _chats_from_catalog_file(path: Path) -> list[Chat]:
     """Read the chat list out of a catalog written by ``list --format yaml``."""
     from tg_export.catalog import chats_from_catalog
     from tg_export.config import ConfigError
@@ -551,7 +557,7 @@ def _get_dir_size(path: Path) -> int | None:
     is_flag=True,
     help="Rebuild the HTML pages of every chat, including those with nothing new.",
 )
-def run_export(account, config, output, verify, dry_run, require_takeout, no_takeout, rerender):
+def run_export(account, config, output, verify, dry_run, require_takeout, no_takeout, rerender) -> None:
     """Run export according to config. Config resolved by account name convention."""
     if require_takeout and no_takeout:
         raise click.UsageError(
@@ -624,7 +630,7 @@ async def _start_takeout(api, cfg, *, require: bool) -> bool:
     return False
 
 
-def _build_downloader(api, state, cfg, output_base: Path):
+def _build_downloader(api, state, cfg, output_base: Path) -> MediaDownloader:
     """Assemble the media downloader together with its reuse sources.
 
     Files already present in a Telegram Desktop export or in a sibling account's
@@ -748,7 +754,7 @@ def _print_export_errors(errors) -> None:
         common.diag(f"    ... and {hidden} more (see the log)", essential=True)
 
 
-def _export_destination(account, config_override, output_override):
+def _export_destination(account, config_override, output_override) -> tuple[str, Any, Path, Path]:
     """Where this export writes: the account, its config, the tree and the state DB.
 
     The directory is created private -- the tree holds every exported message
@@ -775,9 +781,9 @@ async def _run_export(
     require_takeout=False,
     no_takeout=False,
     rerender=False,
-):
+) -> int:
     from tg_export.catalog import fetch_catalog
-    from tg_export.exporter import Exporter, _forget_cancellation
+    from tg_export.exporter import Exporter, forget_cancellation
     from tg_export.html.renderer import HtmlRenderer
     from tg_export.state import ExportState
 
@@ -837,7 +843,7 @@ async def _run_export(
         # Cancellation ends here: the command answers it with an exit code, so
         # the task must not keep a pending request that would turn the ordinary
         # return below into a cancellation for anything awaiting this one.
-        _forget_cancellation()
+        forget_cancellation()
     finally:
         # Releasing must not raise over the outcome of the export itself, and a
         # second Ctrl+C lands here as CancelledError. Silence, though, used to
@@ -876,7 +882,7 @@ async def _takeout_for_run(api, cfg, *, require_takeout: bool, no_takeout: bool)
 
 async def _report_export_result(
     exporter, stats, chats, cfg, state, renderer, output_base, *, dry_run, takeout_active
-):
+) -> None:
     """Render the index and print the summary of an export that has finished.
 
     A forced shutdown skips both: the index would describe a tree the run did
@@ -896,7 +902,7 @@ async def _report_export_result(
     )
 
 
-async def _group_chats_for_index(chats, cfg, state, should_stop):
+async def _group_chats_for_index(chats, cfg, state, should_stop) -> tuple[Any, Any] | None:
     """Split the exported chats into folders and unfiled, with message counts.
 
     Returns None when ``should_stop`` fires: the caller then skips the render.
@@ -963,7 +969,7 @@ def _index_sections(cfg) -> list[dict]:
     ]
 
 
-async def _render_index(renderer, chats, cfg, state, should_stop=None):
+async def _render_index(renderer, chats, cfg, state, should_stop=None) -> None:
     """Build and render the main index page.
 
     should_stop: optional callable. If returns True between chats or before
@@ -1024,7 +1030,7 @@ async def _render_index(renderer, chats, cfg, state, should_stop=None):
 @click.argument("chat", required=True)
 @common.over_an_export
 @click.option("--yes", is_flag=True, help="Skip confirmation")
-def purge_chat(chat, account, config, output, yes):
+def purge_chat(chat, account, config, output, yes) -> None:
     """Purge chat data: messages, files, state, and rendered HTML.
 
     CHAT can be a chat ID (number) or a name (substring search).
@@ -1032,7 +1038,7 @@ def purge_chat(chat, account, config, output, yes):
     asyncio.run(_purge_chat(chat, account, config, output, yes))
 
 
-async def _purge_chat(chat_arg, account, config_override, output_override, skip_confirm):
+async def _purge_chat(chat_arg, account, config_override, output_override, skip_confirm) -> None:
     """Delete one chat from the state database and from disk.
 
     The chat is named either by id or by name, the rows and the directories
@@ -1133,14 +1139,14 @@ async def _purge_chat(chat_arg, account, config_override, output_override, skip_
 
 @click.command("verify")
 @common.over_an_export
-def verify_files(account, config, output):
+def verify_files(account, config, output) -> None:
     """Verify integrity of previously downloaded files."""
     exit_code = asyncio.run(_verify_files(account, config, output))
     if exit_code:
         fail(code=exit_code)
 
 
-async def _verify_files(account, config_override, output_override):
+async def _verify_files(account, config_override, output_override) -> int:
     async with common.opened_state_if_any(account, config_override, output_override) as (
         state,
         output_base,
