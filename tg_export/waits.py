@@ -60,6 +60,11 @@ class WaitBoard:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._waits: list[Wait] = []
+        # True while the live status counts the waits down on screen. A line in
+        # the log would then say the same thing a second time, and say it in a
+        # place that scrolls the display: rich prints log records above the
+        # Live panel, so every flood wait pushed the progress up by a line.
+        self.status_visible = False
 
     def note(self, *, reason: str, what: str, seconds: float, now: float | None = None) -> Wait:
         """Record a wait somebody else is already sleeping through.
@@ -81,12 +86,21 @@ class WaitBoard:
         time is up.
         """
         wait = self.note(reason=reason, what=what, seconds=seconds)
-        if seconds >= MIN_LOGGED_WAIT_SECONDS:
+        if seconds >= MIN_LOGGED_WAIT_SECONDS and not self.status_visible:
             logger.warning("waiting %ds on %s: %s", int(seconds), what, reason)
         try:
             yield wait
         finally:
             self.forget(wait)
+
+    @contextlib.contextmanager
+    def shown_in_status(self) -> Iterator[None]:
+        """Hold the waits reported by the live status for as long as it runs."""
+        self.status_visible = True
+        try:
+            yield
+        finally:
+            self.status_visible = False
 
     def forget(self, wait: Wait) -> None:
         """Drop one wait, whether or not its deadline has passed."""
@@ -167,7 +181,10 @@ class FloodWaitNotices(logging.Filter):
         wait = flood_wait_of(record)
         if wait is not None:
             self._board.note(reason=wait.reason, what=wait.what, seconds=wait.seconds)
-            return True
+            # Kept out of the log while the countdown carries the same news:
+            # the record is what the user reads when there is no live display
+            # -- output redirected to a file, or --quiet.
+            return record.levelno >= self._level or not self._board.status_visible
         return record.levelno >= self._level
 
 

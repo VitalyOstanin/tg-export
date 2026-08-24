@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import logging
+from unittest.mock import MagicMock
 
 import pytest
 from rich.text import Text
@@ -216,3 +217,73 @@ def test_asking_for_the_library_log_still_gives_all_of_it():
         )
         is True
     )
+
+
+def test_the_log_line_is_dropped_while_the_countdown_is_on_screen():
+    """При живом статусе запись telethon о сне не дублирует отсчёт."""
+    from tg_export.waits import FloodWaitNotices, WaitBoard
+
+    board = WaitBoard()
+    notices = FloodWaitNotices(board, level=logging.WARNING)
+    with board.shown_in_status():
+        assert notices.filter(_flood_record(18, "GetHistoryRequest")) is False
+        assert len(board.pending()) == 1
+
+
+def test_the_log_line_returns_when_the_status_is_gone():
+    """Без живого статуса запись остаётся единственным следом паузы."""
+    from tg_export.waits import FloodWaitNotices, WaitBoard
+
+    board = WaitBoard()
+    notices = FloodWaitNotices(board, level=logging.WARNING)
+    with board.shown_in_status():
+        pass
+    assert notices.filter(_flood_record(18, "GetHistoryRequest")) is True
+
+
+def test_asking_for_the_library_log_keeps_the_line_even_with_a_countdown():
+    """Явно запрошенный журнал библиотеки живой статус не отменяет."""
+    from tg_export.waits import FloodWaitNotices, WaitBoard
+
+    board = WaitBoard()
+    notices = FloodWaitNotices(board, level=logging.INFO)
+    with board.shown_in_status():
+        assert notices.filter(_flood_record(18, "GetHistoryRequest")) is True
+
+
+def test_a_wait_of_the_package_is_not_logged_while_the_status_shows_it(caplog):
+    """Свою паузу пакет тоже не пишет в журнал, пока виден отсчёт."""
+    from tg_export.waits import WaitBoard
+
+    board = WaitBoard()
+    with caplog.at_level(logging.WARNING, logger="tg_export.waits"):
+        with board.shown_in_status(), board.waiting(reason="flood wait", what="msg 7", seconds=120):
+            pass
+        assert caplog.records == []
+        with board.waiting(reason="flood wait", what="msg 7", seconds=120):
+            pass
+        assert len(caplog.records) == 1
+
+
+def test_the_live_display_takes_over_the_reporting_of_waits(monkeypatch):
+    """Пока Live на экране, доска знает, что пауза уже показана."""
+    from rich.console import Console
+
+    from tg_export import exporter as exporter_module
+    from tg_export.waits import WAITS
+
+    fake_console = Console(quiet=True)
+    monkeypatch.setattr(type(fake_console), "is_terminal", property(lambda self: True))
+    monkeypatch.setattr(exporter_module, "console", fake_console)
+    exporter = exporter_module.Exporter(
+        api=MagicMock(),
+        state=MagicMock(),
+        config=MagicMock(),
+        renderer=MagicMock(),
+        downloader=MagicMock(),
+        account="acc",
+    )
+    assert WAITS.status_visible is False
+    with exporter._live_display(lambda: None):
+        assert WAITS.status_visible is True
+    assert WAITS.status_visible is False

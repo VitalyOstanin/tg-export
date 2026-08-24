@@ -18,7 +18,7 @@ import signal
 import time
 import unicodedata
 from collections import deque
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
 from dataclasses import dataclass, field, fields
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -973,7 +973,18 @@ class Exporter:
         self._use_live = console.is_terminal and not self.quiet
         if not self._use_live:
             return contextlib.nullcontext()
-        return Live(console=console, refresh_per_second=2, get_renderable=build_table)
+        return self._live_status(build_table)
+
+    @contextlib.contextmanager
+    def _live_status(self, build_table) -> Iterator[None]:
+        """The Live panel, and the waits it takes over reporting.
+
+        While the panel is on screen a flood wait shows as a countdown on the
+        status line, so the same wait is kept out of the log: rich prints
+        records above the panel, and each one pushed the progress up a line.
+        """
+        with Live(console=console, refresh_per_second=2, get_renderable=build_table), WAITS.shown_in_status():
+            yield
 
     async def run(
         self,
