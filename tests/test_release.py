@@ -5,6 +5,7 @@
 workflow краснел уже после. Сверки «тег = версия манифеста» не было вовсе.
 """
 
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -228,6 +229,27 @@ def test_without_an_output_path_the_notes_go_to_stdout_and_leave_no_file(tmp_pat
     assert result.returncode == 0, result.stderr
     assert "Что-то починено" in result.stdout
     assert not (tmp_path / "release_notes.md").exists(), "гейт создал файл без явного --output"
+
+
+def test_every_changelog_section_fits_a_github_release_body():
+    """Раздел CHANGELOG становится телом release на GitHub, а у него есть предел длины.
+
+    Раздел, накопленный к 2.0.0, дорос до 106 тысяч знаков при пределе в 125 тысяч:
+    ещё немного истории в записях -- и релиз упал бы на последнем шаге, уже после
+    необратимой загрузки на PyPI.
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("release_notes", SCRIPT)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    changelog = (Path(__file__).resolve().parent.parent / "CHANGELOG.md").read_text(encoding="utf-8")
+    sections = re.split(r"^## ", changelog, flags=re.MULTILINE)[1:]
+    too_long = {s.splitlines()[0]: len(s) for s in sections if len(s) > module.NOTES_LIMIT}
+
+    assert not too_long, too_long
 
 
 def test_the_release_notes_file_is_ignored_by_git():
