@@ -15,6 +15,11 @@ env:
   # A rehearsal starts from a branch, where the tag does not exist yet, so the
   # number comes from the manifest that branch carries.
   IS_REHEARSAL: ${{ github.event_name == 'workflow_dispatch' }}
+  # The interpreter of the release path is declared, not picked: `uv sync`
+  # chooses a suitable one itself, and its agreement with the version installed
+  # a step earlier was a consequence of the search order rather than a
+  # requirement.
+  UV_PYTHON: "3.12"
 
 # Permissions are handed out per task rather than to the whole pipeline:
 # GitHub puts ACTIONS_ID_TOKEN_REQUEST_URL and ACTIONS_ID_TOKEN_REQUEST_TOKEN
@@ -25,7 +30,10 @@ env:
 # artifact and upload it.
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # Pinned, unlike the floating label of ci.yml: there an incompatibility
+    # with a new image is exactly what should surface, here it would surface
+    # on the release. The same reasoning as for the version of uv.
+    runs-on: ubuntu-24.04
     # Larger than the 15 minutes of ci.yml: one matrix entry there runs the
     # same checks, this job adds uv build and a smoke test of the wheel in a
     # fresh environment that resolves dependencies past the project cache.
@@ -51,6 +59,13 @@ jobs:
           git fetch --no-tags origin master
           if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/master; then
             echo "::error::$GITHUB_REF_NAME points at a commit that is not on master" >&2
+            exit 1
+          fi
+          # An annotated tag carries the author and the date of the release,
+          # and the date of the CHANGELOG section is checked against it. The
+          # convention required one; nothing enforced it.
+          if [ "$(git cat-file -t "$GITHUB_REF_NAME")" != "tag" ]; then
+            echo "::error::$GITHUB_REF_NAME is a lightweight tag; release tags are annotated" >&2
             exit 1
           fi
 
@@ -95,8 +110,14 @@ jobs:
             TAG="v$(sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml | head -1)"
             uv run python scripts/release_notes.py "$TAG" --output release_notes.md
           else
+            # The date of the tag, not of the commit it points at: a
+            # release commit that waited in master before being tagged would
+            # otherwise have the gate demand the date of the commit in the
+            # CHANGELOG. `creatordate` falls back to the commit date for the
+            # three historical lightweight tags.
             uv run python scripts/release_notes.py "$GITHUB_REF_NAME" \
-              --tag-date "$(git log -1 --format=%cs "$GITHUB_REF_NAME")" \
+              --tag-date "$(git for-each-ref --format='%(creatordate:short)' \
+                "refs/tags/$GITHUB_REF_NAME")" \
               --output release_notes.md
           fi
 
@@ -115,11 +136,16 @@ jobs:
         run: |
           set -euo pipefail
           WHEEL=$(ls "$PWD"/dist/*.whl)
+          SDIST=$(ls "$PWD"/dist/*.tar.gz)
           SCRIPT="$PWD/scripts/smoke_installed_package.py"
           uv run --no-project --with "$WHEEL" tg-export --version
           uv run --no-project --with "$WHEEL" tg-export --help
           cd "$(mktemp -d)"
           uv run --no-project --with "$WHEEL" python "$SCRIPT"
+          # The whole dist/ goes to PyPI, so the sdist gets the same check:
+          # its contents are decided by the defaults of setuptools, and a
+          # change of the package layout would break it without a word.
+          uv run --no-project --with "$SDIST" python "$SCRIPT"
 
       - name: Upload distributions
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
@@ -139,7 +165,7 @@ jobs:
     needs: build
     # A rehearsal stops here: an upload to PyPI cannot be undone.
     if: github.event_name == 'push'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     # Without an environment the OIDC credential is issued to any run of this
     # workflow. Naming one narrows the trust on the PyPI side (the same name
@@ -181,7 +207,7 @@ jobs:
   github-release:
     needs: publish
     if: github.event_name == 'push'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       # contents: write is what gh release create needs; id-token is not.

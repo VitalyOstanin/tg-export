@@ -651,3 +651,85 @@ def test_the_coverage_gate_reports_a_floor_that_fell_behind(tmp_path):
     assert result.returncode != 0, result.stdout + result.stderr
     assert "tg_export/__init__.py" in result.stdout + result.stderr
     assert "95" in result.stdout + result.stderr, "не назван новый номинал границы"
+
+
+def test_the_publishing_pipeline_pins_the_runner_and_the_interpreter():
+    """Всё на необратимом пути объявлено, а не выбрано за нас.
+
+    Действия закреплены по коммиту, uv -- по версии, а метка раннера и
+    интерпретатор оставались плавающими: `ubuntu-latest` переводится на
+    следующий образ без правок в репозитории, а `uv sync` подбирал версию
+    Python сам -- совпадение с только что установленной 3.12 было следствием
+    порядка поиска, а не требованием. В `ci.yml` плавающая метка полезна тем
+    же, чем плавающий uv: несовместимость всплывает на CI, а не на релизе.
+    """
+    import re
+
+    from parity import workflow
+
+    published = workflow("publish.yml")
+    for name, job in published["jobs"].items():
+        runner = job["runs-on"]
+        assert re.fullmatch(r"ubuntu-\d+\.\d+", str(runner)), f"{name}: раннер не закреплён ({runner})"
+
+    assert re.fullmatch(r"3\.\d+", str(published["env"]["UV_PYTHON"])), "интерпретатор не закреплён"
+
+
+def test_the_tag_the_pipeline_publishes_is_annotated():
+    """Lightweight-тег не хранит ни автора, ни даты выпуска.
+
+    Конвенция требует аннотированных тегов, но держалась на памяти
+    выпускающего: конвейер сверял принадлежность коммита `master` и не смотрел
+    на тип объекта, а дата раздела CHANGELOG сверяется именно с датой тега.
+    """
+    from parity import workflow
+
+    steps = workflow("publish.yml")["jobs"]["build"]["steps"]
+    runs = "\n".join(step.get("run") or "" for step in steps)
+
+    assert "cat-file -t" in runs, "тип объекта тега не проверяется"
+
+
+def test_the_sdist_is_smoke_tested_like_the_wheel():
+    """На PyPI уходит весь каталог `dist/`, а проверялся один файл из него.
+
+    Состав sdist определяют умолчания setuptools: правка раскладки пакета или
+    смена backend'а сломает его молча, и увидит это тот, кто ставит с
+    `--no-binary`, -- уже после того, как номер версии израсходован.
+    """
+    from parity import workflow
+
+    steps = workflow("publish.yml")["jobs"]["build"]["steps"]
+    smoke = [step for step in steps if "smoke" in (step.get("name") or "").lower()]
+    assert smoke, "шаг smoke-теста не найден"
+
+    runs = "\n".join(step.get("run") or "" for step in smoke)
+    assert ".tar.gz" in runs, "sdist не проверяется"
+
+
+def test_the_declared_operating_systems_are_the_ones_ci_runs_on():
+    """Классификатор -- утверждение для установщика, и подкреплён должен быть прогоном.
+
+    Комментарий над блоком объявляет принцип «заявлено то, что прогоняет CI»,
+    а строка про macOS ему не отвечала: оба workflow идут только на Linux,
+    записи `os` в матрице нет. README при этом формулирует состояние честно --
+    «на macOS работа ожидается, но не проверяется».
+    """
+    import tomllib
+
+    from parity import workflow
+
+    root = Path(__file__).resolve().parent.parent
+    with (root / "pyproject.toml").open("rb") as fh:
+        classifiers = tomllib.load(fh)["project"]["classifiers"]
+
+    declared = {c for c in classifiers if c.startswith("Operating System ::")}
+    runners = {
+        str(job["runs-on"]).split("-")[0]
+        for name in ("ci.yml", "publish.yml")
+        for job in workflow(name)["jobs"].values()
+    }
+    for entry in ("macos", "windows"):
+        assert entry not in runners, f"матрица покрывает {entry}: классификатор можно заявить"
+    unbacked = {c for c in declared if "Linux" not in c}
+    assert not unbacked, f"заявлены системы, на которых ничего не прогоняется: {sorted(unbacked)}"

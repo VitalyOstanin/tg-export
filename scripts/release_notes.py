@@ -154,7 +154,7 @@ DATE_SLACK = dt.timedelta(days=1)
 
 
 def _check_date(section_date: str, tag_date: str) -> None:
-    """Refuse a section whose date is not the date the tag was cut.
+    """Refuse a section whose date is not the date the tag was created.
 
     The gate used to check the shape of the date and nothing else, so a date
     copied from the section above -- what renaming "Не выпущено" invites --
@@ -183,7 +183,7 @@ def main() -> None:
         default=None,
         help="write the notes here; without it they go to stdout and no file is left behind",
     )
-    parser.add_argument("--tag-date", default=None, help="date of the tagged commit, YYYY-MM-DD")
+    parser.add_argument("--tag-date", default=None, help="date the tag was created, YYYY-MM-DD")
     args = parser.parse_args()
 
     version = args.tag.removeprefix("v")
