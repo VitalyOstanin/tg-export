@@ -45,8 +45,8 @@ from tg_export.config import ChatExportConfig, Config
 # rest of the code and the tests reach for; the declaration is in
 # tg_export.console.
 from tg_export.console import console
-from tg_export.converter import convert_message
-from tg_export.format import CLOCK_FORMAT, format_moment, format_size, format_speed
+from tg_export.converter import convert_message, peer_id
+from tg_export.format import CLOCK_FORMAT, display_name, format_moment, format_size, format_speed
 from tg_export.html.renderer import HtmlRenderer
 from tg_export.media import (
     STORY_VIDEO_EXTENSIONS,
@@ -1589,9 +1589,7 @@ class Exporter:
         for c in getattr(result, "contacts", []):
             user = users_by_id.get(c.user_id)
             if user:
-                name = (
-                    f"{getattr(user, 'first_name', '') or ''} {getattr(user, 'last_name', '') or ''}".strip()
-                )
+                name = display_name(user)
                 contacts.append(
                     {
                         "name": name or str(c.user_id),
@@ -1606,20 +1604,12 @@ class Exporter:
         if top_result and hasattr(top_result, "categories"):
             for cat in top_result.categories:
                 for top_peer in cat.peers:
-                    peer_id = None
-                    if hasattr(top_peer.peer, "user_id"):
-                        peer_id = top_peer.peer.user_id
-                    elif hasattr(top_peer.peer, "chat_id"):
-                        peer_id = top_peer.peer.chat_id
-                    elif hasattr(top_peer.peer, "channel_id"):
-                        peer_id = top_peer.peer.channel_id
-                    user = users_by_id.get(peer_id)
-                    name = ""
-                    if user:
-                        name = f"{getattr(user, 'first_name', '') or ''} {getattr(user, 'last_name', '') or ''}".strip()
+                    found = peer_id(top_peer.peer)
+                    user = users_by_id.get(found)
+                    name = display_name(user) if user else ""
                     frequent.append(
                         {
-                            "name": name or str(peer_id),
+                            "name": name or str(found),
                             "rating": f"{top_peer.rating:.2f}",
                         }
                     )

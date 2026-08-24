@@ -640,7 +640,7 @@ class ExportState:
         if unknown:
             raise ValueError(f"Unknown export_state columns: {sorted(unknown)}")
         if not fields:
-            raise ValueError("commit_phase_progress requires at least one field")
+            raise ValueError("_upsert_chat_state requires at least one field")
 
         now = _now()
         # The INSERT branch must provide values for all NOT NULL columns.
@@ -805,21 +805,9 @@ class ExportState:
             """INSERT INTO files (file_id, chat_id, msg_id, expected_size, actual_size, local_path, status, downloaded_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(file_id, chat_id) DO UPDATE SET
-                   actual_size=?, local_path=?, status=?, downloaded_at=?""",
-            (
-                file_id,
-                chat_id,
-                msg_id,
-                expected_size,
-                actual_size,
-                local_path,
-                status,
-                now,
-                actual_size,
-                local_path,
-                status,
-                now,
-            ),
+                   actual_size=excluded.actual_size, local_path=excluded.local_path,
+                   status=excluded.status, downloaded_at=excluded.downloaded_at""",
+            (file_id, chat_id, msg_id, expected_size, actual_size, local_path, status, now),
         )
         # Why: kill -9 between download and the next batch-commit otherwise leaves
         # the file on disk but unregistered in DB; _cleanup_orphaned_files removes
@@ -880,7 +868,7 @@ class ExportState:
     # -- messages --
 
     def _msg_to_params(self, msg: Message) -> tuple[Any, ...]:
-        """Convert Message to SQL parameter tuple (insert + update values)."""
+        """Convert Message to the SQL parameter tuple of one upsert."""
         values = (
             msg.chat_id,
             msg.id,
@@ -906,9 +894,15 @@ class ExportState:
             msg.topic_id,
             msg.grouped_id,
         )
-        # UPDATE values are same as INSERT values minus chat_id and msg_id
-        return values + values[2:]
+        return values
 
+    # The UPDATE half reads the values SQLite already parsed for the INSERT
+    # (`excluded.<column>`), the way `cache_catalog` below does. Passing them a
+    # second time meant `_msg_to_params` returned `values + values[2:]`, and the
+    # whole thing rested on two unchecked assumptions: that the first two items
+    # are chat_id and msg_id, and that the column order of the two halves
+    # matches. Move a column in one half and a value lands in the wrong column
+    # without a single error.
     _UPSERT_SQL = """INSERT INTO messages (
                 chat_id, msg_id, date, edited, from_id, from_name,
                 text, text_parts, media_type, media, action_type, action,
@@ -917,12 +911,17 @@ class ExportState:
                 saved_from_chat_id, inline_buttons, topic_id, grouped_id
                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(chat_id, msg_id) DO UPDATE SET
-                date=?, edited=?, from_id=?, from_name=?,
-                text=?, text_parts=?, media_type=?, media=?,
-                action_type=?, action=?,
-                reply_to_msg_id=?, reply_to_peer_id=?, forwarded_from=?,
-                reactions=?, is_outgoing=?, signature=?, via_bot_id=?,
-                saved_from_chat_id=?, inline_buttons=?, topic_id=?, grouped_id=?"""
+                date=excluded.date, edited=excluded.edited, from_id=excluded.from_id,
+                from_name=excluded.from_name, text=excluded.text,
+                text_parts=excluded.text_parts, media_type=excluded.media_type,
+                media=excluded.media, action_type=excluded.action_type,
+                action=excluded.action, reply_to_msg_id=excluded.reply_to_msg_id,
+                reply_to_peer_id=excluded.reply_to_peer_id,
+                forwarded_from=excluded.forwarded_from, reactions=excluded.reactions,
+                is_outgoing=excluded.is_outgoing, signature=excluded.signature,
+                via_bot_id=excluded.via_bot_id, saved_from_chat_id=excluded.saved_from_chat_id,
+                inline_buttons=excluded.inline_buttons, topic_id=excluded.topic_id,
+                grouped_id=excluded.grouped_id"""
 
     async def store_message(self, msg: Message):
         """Store single message (no commit — caller should batch-commit)."""
@@ -1037,32 +1036,28 @@ class ExportState:
         - files_downloaded: files with status='done' in files table
         If chat_id is None, counts across all chats.
         """
-        if chat_id is not None:
-            msg_where = "WHERE chat_id=? AND"
-            file_where = "WHERE chat_id=? AND"
-            msg_args: tuple = (chat_id,)
-            file_args: tuple = (chat_id,)
-        else:
-            msg_where = "WHERE"
-            file_where = "WHERE"
-            msg_args = ()
-            file_args = ()
+        # One condition for all three queries: they differ by table and by what
+        # they count, not by whom they count it for. Two pairs of variables read
+        # as a place where the conditions may diverge -- they never do, and a
+        # fix to one half would silently leave the other behind.
+        where = "WHERE chat_id=? AND" if chat_id is not None else "WHERE"
+        args: tuple = (chat_id,) if chat_id is not None else ()
 
-        q_media = f"SELECT COUNT(*) FROM messages {msg_where} media_type IS NOT NULL AND media_type != ''"
+        q_media = f"SELECT COUNT(*) FROM messages {where} media_type IS NOT NULL AND media_type != ''"
         q_expected = (
-            f"SELECT COUNT(*) FROM messages {msg_where}"
+            f"SELECT COUNT(*) FROM messages {where}"
             " media_type IS NOT NULL AND media_type != ''"
             " AND json_extract(media, '$.file.id') IS NOT NULL"
         )
-        q_files = f"SELECT COUNT(*) FROM files {file_where} status='done'"
+        q_files = f"SELECT COUNT(*) FROM files {where} status='done'"
 
-        async with self.db.execute(q_media, msg_args) as cur:
+        async with self.db.execute(q_media, args) as cur:
             row = await cur.fetchone()
             media_messages = row[0] if row else 0
-        async with self.db.execute(q_expected, msg_args) as cur:
+        async with self.db.execute(q_expected, args) as cur:
             row = await cur.fetchone()
             expected_files = row[0] if row else 0
-        async with self.db.execute(q_files, file_args) as cur:
+        async with self.db.execute(q_files, args) as cur:
             row = await cur.fetchone()
             files_downloaded = row[0] if row else 0
         return {

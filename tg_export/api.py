@@ -23,6 +23,7 @@ from telethon.tl.functions.users import GetFullUserRequest
 from telethon.tl.types import InputPeerSelf, InputUserSelf
 
 from tg_export.auth import ProxyTuple
+from tg_export.converter import peer_id
 from tg_export.locking import ProcessLock
 from tg_export.session import FixedSQLiteSession
 
@@ -262,22 +263,12 @@ class TgApi:
                 continue
             raw_title = f.title
             title = raw_title.text if hasattr(raw_title, "text") else str(raw_title)
-            peer_ids = []
-            for peer in getattr(f, "include_peers", []):
-                if hasattr(peer, "channel_id"):
-                    peer_ids.append(peer.channel_id)
-                elif hasattr(peer, "chat_id"):
-                    peer_ids.append(peer.chat_id)
-                elif hasattr(peer, "user_id"):
-                    peer_ids.append(peer.user_id)
-            exclude_ids = []
-            for peer in getattr(f, "exclude_peers", []):
-                if hasattr(peer, "channel_id"):
-                    exclude_ids.append(peer.channel_id)
-                elif hasattr(peer, "chat_id"):
-                    exclude_ids.append(peer.chat_id)
-                elif hasattr(peer, "user_id"):
-                    exclude_ids.append(peer.user_id)
+            peer_ids = [
+                found for peer in getattr(f, "include_peers", []) if (found := peer_id(peer)) is not None
+            ]
+            exclude_ids = [
+                found for peer in getattr(f, "exclude_peers", []) if (found := peer_id(peer)) is not None
+            ]
             folders.append(
                 {
                     "name": title,

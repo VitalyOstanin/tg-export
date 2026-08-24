@@ -15,6 +15,7 @@ from tg_export.errors import (
     EXIT_FAILURE,
     EXIT_OK,
 )
+from tg_export.format import display_name
 
 logger = logging.getLogger(__name__)
 
@@ -97,19 +98,18 @@ async def _auth_check(name, as_json=False):
             async with TgApi(session, api_id, api_hash, proxy=proxy) as api:
                 if await api.client.is_user_authorized():
                     me = await api.client.get_me()
-                    first = getattr(me, "first_name", "")
-                    last = getattr(me, "last_name", None) or ""
                     me_id = getattr(me, "id", None)
+                    name = display_name(me)
                     results.append(
                         {
                             "account": acc,
                             "status": "ok",
-                            "name": f"{first} {last}".strip(),
+                            "name": name,
                             "id": me_id,
                         }
                     )
                     if not as_json:
-                        common.diag(f"  {acc}: OK - {first} {last} (id={me_id})")
+                        common.diag(f"  {acc}: OK - {name} (id={me_id})")
                 else:
                     results.append({"account": acc, "status": "not_authorized"})
                     if not as_json:

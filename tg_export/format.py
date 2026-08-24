@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
-# One wall-clock format for everything a person reads: message lists, session
-# tables, the "generated at" line. The seconds variant is what the chat pages
-# put into the title attribute of a timestamp.
+# The wall-clock format of everything a person reads as a moment in time:
+# message lists, session tables, the "generated at" line. The seconds variant
+# is what the chat pages put into the title attribute of a timestamp. The rest
+# of the file holds the other shapes a date takes -- a day, a clock, a month
+# key -- so that none of them is written out at a call site.
 MOMENT_FORMAT = "%Y-%m-%d %H:%M"
 MOMENT_WITH_SECONDS_FORMAT = "%Y-%m-%d %H:%M:%S"
 
@@ -60,3 +63,16 @@ def format_speed(bytes_count: float, elapsed_s: float) -> str:
     if elapsed_s <= 0:
         return "-- B/s"
     return f"{format_size(bytes_count / elapsed_s)}/s"
+
+
+def display_name(entity: Any, *, missing: str = "") -> str:
+    """The name of a person on one line: ``first last``.
+
+    Telethon keeps the two halves apart and either of them may be absent. The
+    expression was written out in five places -- the converter, two commands
+    and the exporter twice -- and the copies had already started to differ in
+    what they put in place of a missing name.
+    """
+    first = getattr(entity, "first_name", "") or ""
+    last = getattr(entity, "last_name", "") or ""
+    return f"{first} {last}".strip() or missing

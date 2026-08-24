@@ -7,6 +7,7 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
+from tg_export.format import display_name
 from tg_export.models import (
     ActionBotAllowed,
     ActionChannelCreate,
@@ -61,6 +62,21 @@ from tg_export.models import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def peer_id(peer: Any) -> int | None:
+    """The numeric id behind a Telethon ``Peer*`` object.
+
+    Each of PeerUser / PeerChat / PeerChannel carries its id under a name of
+    its own, and the chain telling them apart was written out five times -- in
+    two of them with the branches in a different order, which would answer
+    differently for an object carrying more than one of the attributes.
+    """
+    for attribute in ("channel_id", "chat_id", "user_id"):
+        value = getattr(peer, attribute, None)
+        if value is not None:
+            return value
+    return None
 
 
 def _to_str(val: Any) -> str | None:
@@ -482,12 +498,7 @@ def _convert_reply(tl_msg: Any) -> tuple[int | None, int | None, int | None]:
         reply_to_msg_id = getattr(tl_msg.reply_to, "reply_to_msg_id", None)
         reply_to_peer_id = getattr(tl_msg.reply_to, "reply_to_peer_id", None)
         if reply_to_peer_id is not None:
-            if hasattr(reply_to_peer_id, "channel_id"):
-                reply_to_peer_id = reply_to_peer_id.channel_id
-            elif hasattr(reply_to_peer_id, "chat_id"):
-                reply_to_peer_id = reply_to_peer_id.chat_id
-            elif hasattr(reply_to_peer_id, "user_id"):
-                reply_to_peer_id = reply_to_peer_id.user_id
+            reply_to_peer_id = peer_id(reply_to_peer_id)
         if getattr(tl_msg.reply_to, "forum_topic", False):
             topic_id = reply_to_msg_id
     return reply_to_msg_id, reply_to_peer_id, topic_id
@@ -500,10 +511,7 @@ def _convert_forward(tl_msg: Any) -> ForwardInfo | None:
     fwd = tl_msg.fwd_from
     fwd_from_id = None
     if hasattr(fwd, "from_id") and fwd.from_id:
-        if hasattr(fwd.from_id, "user_id"):
-            fwd_from_id = fwd.from_id.user_id
-        elif hasattr(fwd.from_id, "channel_id"):
-            fwd_from_id = fwd.from_id.channel_id
+        fwd_from_id = peer_id(fwd.from_id)
     return ForwardInfo(
         from_id=fwd_from_id,
         from_name=getattr(fwd, "from_name", None),
@@ -536,10 +544,7 @@ def convert_message(tl_msg: Any, chat_id: int) -> Message:
     from_id = None
     from_name = ""
     if tl_msg.from_id:
-        if hasattr(tl_msg.from_id, "user_id"):
-            from_id = tl_msg.from_id.user_id
-        elif hasattr(tl_msg.from_id, "channel_id"):
-            from_id = tl_msg.from_id.channel_id
+        from_id = peer_id(tl_msg.from_id)
 
     # Resolve sender name from cached entity
     sender = getattr(tl_msg, "sender", None)
@@ -703,6 +708,4 @@ def _classify_chat(entity: Any) -> ChatType:
 
 
 def _user_display_name(entity: Any) -> str:
-    first = getattr(entity, "first_name", "") or ""
-    last = getattr(entity, "last_name", "") or ""
-    return f"{first} {last}".strip() or "Unknown"
+    return display_name(entity, missing="Unknown")

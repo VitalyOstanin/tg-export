@@ -25,7 +25,7 @@ from tg_export.errors import (
     EXIT_FAILURE,
     EXIT_OK,
 )
-from tg_export.format import format_moment
+from tg_export.format import display_name, format_moment
 from tg_export.privacy import ensure_private_dir, write_private_text
 
 logger = logging.getLogger(__name__)
@@ -65,9 +65,7 @@ def tg_messages(chat_id, account, limit, truncate, no_truncate, as_json):
 
 def _sender_name(sender) -> str:
     """A name on one line: `first last`, empty when there is no name."""
-    first = getattr(sender, "first_name", "") or ""
-    last = getattr(sender, "last_name", "") or ""
-    return f"{first} {last}".strip()
+    return display_name(sender)
 
 
 def _message_preview(msg, *, truncate: int = DEFAULT_MESSAGE_TEXT_LENGTH) -> tuple[str, str]:

@@ -69,11 +69,6 @@ def error(message: str, **kwargs) -> None:
     diag(message, essential=True, **kwargs)
 
 
-# EXIT_OK / EXIT_FAILURE / EXIT_SIGINT come from tg_export.errors, where they
-# sit next to the exception classes they belong to; they are imported above and
-# re-exported here because commands read them by these names.
-
-
 def db_rows_line(counts: dict[str, int], label: str = "DB") -> str:
     """The row counts a destructive command is about to remove, as one line.
 
