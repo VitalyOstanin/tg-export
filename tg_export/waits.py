@@ -181,5 +181,11 @@ def watch_flood_waits(level: int, *, board: WaitBoard | None = None) -> FloodWai
     notices = FloodWaitNotices(board if board is not None else WAITS, level=level)
     telethon_logger = logging.getLogger(FLOOD_WAIT_LOGGER)
     telethon_logger.setLevel(min(level, logging.INFO))
+    # Filters of a logger are all consulted and a single "no" hides the record,
+    # so a second call would leave the stricter of the two in charge: asking
+    # for the library log after a default setup would raise the level of the
+    # logger and still see nothing.
+    for stale in [f for f in telethon_logger.filters if isinstance(f, FloodWaitNotices)]:
+        telethon_logger.removeFilter(stale)
     telethon_logger.addFilter(notices)
     return notices

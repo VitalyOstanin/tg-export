@@ -190,3 +190,29 @@ def test_the_default_run_lifts_the_flood_wait_notices_of_telethon():
         )
         is False
     )
+
+
+def test_asking_for_the_library_log_still_gives_all_of_it():
+    """С ':all' модуль telethon не остаётся придавленным до INFO."""
+    from click.testing import CliRunner
+
+    from tg_export.cli import main
+    from tg_export.waits import FLOOD_WAIT_LOGGER
+
+    CliRunner().invoke(main, ["--log-level", "DEBUG:all", "state"])
+    telethon_logger = logging.getLogger(FLOOD_WAIT_LOGGER)
+    assert telethon_logger.level == logging.DEBUG
+    assert (
+        telethon_logger.filter(
+            logging.LogRecord(
+                name=FLOOD_WAIT_LOGGER,
+                level=logging.DEBUG,
+                pathname=__file__,
+                lineno=1,
+                msg="Sending %s",
+                args=("GetHistoryRequest",),
+                exc_info=None,
+            )
+        )
+        is True
+    )
