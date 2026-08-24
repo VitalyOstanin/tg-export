@@ -521,14 +521,10 @@ dependencies = [
     { name = "aiosqlite" },
     { name = "click" },
     { name = "jinja2" },
+    { name = "python-socks" },
     { name = "pyyaml" },
     { name = "rich" },
     { name = "telethon" },
-]
-
-[package.optional-dependencies]
-proxy = [
-    { name = "python-socks" },
 ]
 
 [package.dev-dependencies]
@@ -546,7 +542,7 @@ requires-dist = [
     { name = "aiosqlite", specifier = ">=0.20" },
     { name = "click", specifier = ">=8.3.3" },
     { name = "jinja2", specifier = ">=3.1.6" },
-    { name = "python-socks", extras = ["asyncio"], marker = "extra == 'proxy'", specifier = ">=2.0,<3" },
+    { name = "python-socks", extras = ["asyncio"], specifier = ">=2.0,<3" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "rich", specifier = ">=15.0" },
     { name = "telethon", specifier = ">=1.43,<2" },

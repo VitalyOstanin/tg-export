@@ -51,6 +51,23 @@ dependencies = [
     # environment regardless.
     "click>=8.3.3",
     "rich>=15.0",
+    # A dependency of the tool rather than an option of it: Telethon ignores
+    # `proxy=` when python_socks is missing, so an installation without it
+    # cannot serve a configuration that names a proxy -- and which of the two
+    # a particular run needs is decided by the config file, not by the person
+    # installing the package. It costs one package of 380 KB and, on the
+    # supported Python versions, nothing transitively (`async-timeout` is
+    # required below 3.11 only).
+    # The `[asyncio]` extra is what Telethon's async client needs. Upper bound:
+    # python-socks 3.0.0 (2026-08-11) drops the public `proxy_host` /
+    # `proxy_port` properties of `AsyncioProxy` (2.8.2 defines them in
+    # python_socks/async_/asyncio/_proxy.py; 3.0.0 defines them nowhere), while
+    # telethon 1.44 reads `proxy.proxy_host` / `proxy.proxy_port` in
+    # network/connection/connection.py. That branch only runs when `local_addr`
+    # is set, which this project never does, so the break is telethon's rather
+    # than ours -- but it is a concrete removal of something telethon relies
+    # on, and the bound stays until telethon states support for 3.x.
+    "python-socks[asyncio]>=2.0,<3",
 ]
 
 [project.urls]
@@ -59,23 +76,12 @@ Repository = "https://github.com/VitalyOstanin/tg-export"
 Issues = "https://github.com/VitalyOstanin/tg-export/issues"
 
 [project.optional-dependencies]
-proxy = [
-    # Why python-socks: Telethon (1.43+) checks `python_socks` and silently
-    # ignores `proxy=` if it's missing (warns "proxy argument will be ignored
-    # because python-socks is not installed"). PySocks is a legacy fallback
-    # path in telethon and gated by the same check, so it never runs in
-    # practice. The `[asyncio]` extra is required by Telethon's async client.
-    # Upper bound: python-socks 3.0.0 (2026-08-11) drops the public
-    # `proxy_host` / `proxy_port` properties of `AsyncioProxy` (2.8.2 defines
-    # them in python_socks/async_/asyncio/_proxy.py; 3.0.0 defines them
-    # nowhere), while telethon 1.44 reads `proxy.proxy_host` /
-    # `proxy.proxy_port` in network/connection/connection.py. That branch only
-    # runs when `local_addr` is set, which this project never does, so the
-    # break is telethon's rather than ours -- but it is a concrete removal of
-    # something telethon relies on, and the bound stays until telethon states
-    # support for 3.x.
-    "python-socks[asyncio]>=2.0,<3",
-]
+# Kept, and empty: python-socks moved into the dependencies above, but
+# `pip install 'tg-export[proxy]'` and `uv tool install 'tg-export[proxy]'`
+# are written down in older instructions and in the messages of released
+# versions. An unknown extra is a warning at best and an error at worst, so
+# the name stays and now adds nothing.
+proxy = []
 
 # Development tools are a group (PEP 735), not an extra: an extra lands in the
 # wheel metadata and is offered to the installer, while a group exists only in

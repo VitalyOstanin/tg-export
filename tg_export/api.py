@@ -76,13 +76,15 @@ class TgApi:
             # Telethon silently ignores `proxy=` when python-socks is missing
             # (only warns), connecting directly and leaking the real IP. Fail
             # fast instead so a configured proxy is never bypassed unnoticed.
+            # python-socks is a dependency of the package, so getting here means
+            # the environment lost it rather than never had it.
             if importlib.util.find_spec("python_socks") is None:
                 raise RuntimeError(
-                    "Proxy is configured, but the 'python-socks' package is not "
-                    "installed. Telethon would ignore the proxy and connect "
-                    "directly, exposing the real IP. Install the proxy extra: "
-                    "`uv sync --extra proxy` in a checkout of this project, or "
-                    "`pip install 'tg-export[proxy]'` when tg-export comes from PyPI."
+                    "Proxy is configured, but the 'python-socks' package is missing from "
+                    "this environment. Telethon would ignore the proxy and connect "
+                    "directly, exposing the real IP. The package is a dependency of "
+                    "tg-export: restore the environment with `uv sync` in a checkout of "
+                    "this project, or reinstall tg-export when it comes from PyPI."
                 )
             kwargs["proxy"] = proxy
         # The state-database lock covers an output directory, not an account,

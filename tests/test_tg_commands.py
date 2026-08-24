@@ -291,12 +291,14 @@ def test_tgapi_raises_when_proxy_set_but_python_socks_missing(tmp_path):
         TgApi(str(tmp_path / "test.session"), 1, "hash", proxy=proxy)
 
 
-def test_the_missing_proxy_hint_names_an_extra_the_project_actually_declares(tmp_path):
-    """Подсказка в ошибке должна называть extra, который есть в pyproject.
+def test_the_missing_proxy_hint_names_a_dependency_of_the_package(tmp_path):
+    """Подсказка должна называть то, что действительно вернёт пакет.
 
-    Переименование или удаление extra оставляет текст ошибки прежним, и
-    пользователь выполняет команду, которая ничего не ставит. Тест сверяет имя
-    из подсказки с объявленными extras, а не с константой в тесте.
+    Пока прокси-зависимость была отдельным набором, подсказка звала поставить
+    его; теперь `python-socks` -- обычная зависимость, и та же команда ничего
+    бы не поставила. Отсутствие пакета означает урезанное окружение, поэтому
+    сообщение обязано называть сам пакет и способ восстановить окружение, а не
+    набор, которого больше нет.
     """
     import tomllib
 
@@ -304,8 +306,9 @@ def test_the_missing_proxy_hint_names_an_extra_the_project_actually_declares(tmp
 
     root = Path(__file__).resolve().parent.parent
     with (root / "pyproject.toml").open("rb") as fh:
-        extras = set(tomllib.load(fh)["project"]["optional-dependencies"])
-    assert extras, "в pyproject не объявлено ни одного extra — проверять нечего"
+        pyproject = tomllib.load(fh)
+    required = "\n".join(pyproject["project"]["dependencies"])
+    assert "python-socks" in required, "python-socks не в основных зависимостях -- подсказка о них лжёт"
 
     proxy = ("socks5", "127.0.0.1", 1080, True, None, None)
     with (
@@ -315,8 +318,9 @@ def test_the_missing_proxy_hint_names_an_extra_the_project_actually_declares(tmp
         TgApi(str(tmp_path / "test.session"), 1, "hash", proxy=proxy)
 
     message = str(excinfo.value)
-    named = {name for name in extras if f"--extra {name}" in message and f"tg-export[{name}]" in message}
-    assert named, f"подсказка не называет ни один объявленный extra {sorted(extras)}: {message}"
+    assert "python-socks" in message, message
+    assert "uv sync" in message, message
+    assert "--extra proxy" not in message, "подсказка зовёт набор, который ничего не ставит"
 
 
 def test_tgapi_passes_proxy_to_client_when_python_socks_available(tmp_path):
