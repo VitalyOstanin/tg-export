@@ -594,14 +594,26 @@ class MediaDownloader:
                 del self._file_id_locks[file_id]
 
     async def download(
-        self, tl_message, media: Media, chat_dir: Path, chat_id: int = 0
+        self,
+        tl_message,
+        media: Media,
+        chat_dir: Path,
+        chat_id: int = 0,
+        media_config: MediaConfig | None = None,
     ) -> tuple[Path | None, DownloadStatus]:
         """Download media file if needed. Returns (local_path, status).
 
         chat_id: canonical chat ID (positive, as used in messages table).
         The outcomes are the members of DownloadStatus.
+
+        media_config: the settings the rules resolved for this chat -- types
+        and size limit are read from it, not from `defaults.media`, so a
+        `media` section written for a chat, a type or a folder decides what is
+        downloaded there. Without it the defaults the downloader was built with
+        apply.
         """
-        skip = check_skip_reason(media, self.config)
+        config = media_config or self.config
+        skip = check_skip_reason(media, config)
         if skip:
             # Why: previously skipped files left no DB trace, so verify/count
             # could not distinguish "intentionally skipped" from "missing".
@@ -609,14 +621,14 @@ class MediaDownloader:
             return None, skip
 
         if media.file is None or not media.file.id:
-            return await self._download_inner(tl_message, media, chat_dir, chat_id)
+            return await self._download_inner(tl_message, media, chat_dir, chat_id, config)
 
         # Serialise concurrent downloads of the same file_id (across chats).
         async with self._file_lock(media.file.id):
-            return await self._download_inner(tl_message, media, chat_dir, chat_id)
+            return await self._download_inner(tl_message, media, chat_dir, chat_id, config)
 
     async def _download_inner(
-        self, tl_message, media: Media, chat_dir: Path, chat_id: int
+        self, tl_message, media: Media, chat_dir: Path, chat_id: int, config: MediaConfig | None = None
     ) -> tuple[Path | None, DownloadStatus]:
         # Already downloaded?
         if media.file:
@@ -649,6 +661,7 @@ class MediaDownloader:
             raise DiskSpaceError(f"Free space less than {self.min_free_bytes // 1024**3} GB")
 
         target_dir = self._media_target_dir(media, chat_dir)
+        max_size = (config or self.config).max_file_size_bytes
 
         self._clean_stale_staging(target_dir)
         try:
@@ -658,7 +671,9 @@ class MediaDownloader:
             # is a rename rather than a copy.
             with tempfile.TemporaryDirectory(dir=target_dir, prefix=STAGING_PREFIX) as staging:
                 async with self.semaphore:
-                    path = await self._download_with_retry(tl_message, Path(staging), media)
+                    path = await self._download_with_retry(
+                        tl_message, Path(staging), media, max_size=max_size
+                    )
 
                 if path is None:
                     return None, DownloadStatus.no_file
@@ -671,7 +686,7 @@ class MediaDownloader:
             logger.debug(
                 "file too large (real size %d > limit %d), msg %d",
                 e.size,
-                self.config.max_file_size_bytes,
+                max_size,
                 tl_message.id,
             )
             await self._register_skip(tl_message, media, chat_id, DownloadStatus.skipped_by_size)
@@ -916,10 +931,11 @@ class MediaDownloader:
         return None
 
     async def _download_with_retry(
-        self, tl_message, target_dir: Path, media: Media | None = None
+        self, tl_message, target_dir: Path, media: Media | None = None, *, max_size: int | None = None
     ) -> str | None:
         msg_id = tl_message.id
-        max_size = self.config.max_file_size_bytes
+        if max_size is None:
+            max_size = self.config.max_file_size_bytes
 
         # Determine filename for progress display
         filename = ""

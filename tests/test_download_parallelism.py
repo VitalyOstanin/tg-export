@@ -86,7 +86,9 @@ class _RecordingDownloader:
         self.peak = 0
         self.order = []
 
-    async def download(self, tl_msg, media, chat_dir, chat_id=0) -> tuple[Path | None, str]:
+    async def download(
+        self, tl_msg, media, chat_dir, chat_id=0, media_config=None
+    ) -> tuple[Path | None, str]:
         self.in_flight += 1
         self.peak = max(self.peak, self.in_flight)
         # Две уступки циклу событий: за это время соседние загрузки успевают
@@ -175,7 +177,9 @@ async def test_every_message_is_stored_despite_parallel_downloads(state, tmp_pat
     paths = []
 
     class _Downloader(_RecordingDownloader):
-        async def download(self, tl_msg, media, chat_dir, chat_id=0) -> tuple[Path | None, str]:
+        async def download(
+            self, tl_msg, media, chat_dir, chat_id=0, media_config=None
+        ) -> tuple[Path | None, str]:
             await asyncio.sleep(0)
             media.file.local_path = f"/tmp/p{tl_msg.id}.jpg"
             return Path(f"/tmp/p{tl_msg.id}.jpg"), "existing"
@@ -307,7 +311,9 @@ async def test_the_window_is_measured_without_walking_the_queue(tmp_path):
                 type(self).visited += 1
                 yield item
 
-    pipeline = _MediaPipeline(MagicMock(), tmp_path, MagicMock(), chat_id=1, limit=3)
+    pipeline = _MediaPipeline(
+        MagicMock(), tmp_path, MagicMock(), chat_id=1, limit=3, media_config=MagicMock()
+    )
     head = asyncio.create_task(asyncio.sleep(3600))
     pipeline._pending = CountingDeque([(head, MagicMock())])
 

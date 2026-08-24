@@ -749,3 +749,23 @@ def test_an_unusable_log_level_from_the_environment_names_the_environment(monkey
         resolve_log_level(False, None)
 
     assert "LOG_LEVEL" in str(excinfo.value)
+
+
+def test_skip_written_as_a_string_is_refused():
+    """`skip: "false"` в кавычках -- непустая строка, то есть истина: чат молча
+    исключался из выгрузки, хотя файл говорит обратное."""
+    import pytest as _pytest
+
+    from tg_export.config import ConfigError, _parse_chat_rule
+
+    with _pytest.raises(ConfigError, match="skip"):
+        _parse_chat_rule({"id": 1, "skip": "false"}, "chats[0]")
+
+
+def test_export_service_messages_written_as_a_string_is_refused():
+    import pytest as _pytest
+
+    from tg_export.config import ConfigError, _parse_defaults_section
+
+    with _pytest.raises(ConfigError, match="export_service_messages"):
+        _parse_defaults_section({"defaults": {"export_service_messages": "false"}})

@@ -239,3 +239,33 @@ def test_every_action_carries_the_name_of_its_own_class():
 
     unknown = type("MessageActionSomethingNew", (), {})()
     assert convert_action(unknown).type == "ActionSomethingNew"
+
+
+def test_an_animation_is_classified_as_a_gif_not_a_video():
+    """Ветка видео стояла выше анимации, а gif в Telegram -- mp4 с обоими атрибутами.
+
+    Из-за порядка `MediaType.gif` и каталог `gifs/` были недостижимы:
+    `media.types: [gif]` не скачивал ни одной анимации, `[video]` скачивал их
+    вместе с видео.
+    """
+    from tg_export.converter import _classify_document
+    from tg_export.models import MediaType
+
+    video_attr = MagicMock(duration=3, w=320, h=240, round_message=False)
+    attrs = {"DocumentAttributeVideo": video_attr, "DocumentAttributeAnimated": MagicMock()}
+
+    media_type, *_ = _classify_document(attrs, "video/mp4")
+
+    assert media_type is MediaType.gif
+
+
+def test_a_plain_video_is_still_a_video():
+    from tg_export.converter import _classify_document
+    from tg_export.models import MediaType
+
+    attrs = {"DocumentAttributeVideo": MagicMock(duration=3, w=320, h=240, round_message=False)}
+
+    media_type, _name, duration, w, h = _classify_document(attrs, "video/mp4")
+
+    assert media_type is MediaType.video
+    assert (duration, w, h) == (3, 320, 240)

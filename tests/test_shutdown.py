@@ -283,7 +283,9 @@ async def test_downloads_in_flight_are_awaited_even_if_the_wait_is_cancelled(tmp
             finished.append(True)
             raise
 
-    pipeline = _MediaPipeline(MagicMock(), tmp_path, MagicMock(), chat_id=1, limit=2)
+    pipeline = _MediaPipeline(
+        MagicMock(), tmp_path, MagicMock(), chat_id=1, limit=2, media_config=MagicMock()
+    )
     task = asyncio.create_task(slow_download())
     pipeline._pending.append((task, MagicMock()))
     await asyncio.sleep(0)

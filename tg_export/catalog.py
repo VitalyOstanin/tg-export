@@ -15,17 +15,51 @@ from tg_export.models import Chat, ChatType
 
 logger = logging.getLogger(__name__)
 
-# Map Telegram folder flags to ChatType values
+# Map Telegram folder flags to ChatType values. `contacts` and `non_contacts`
+# are not here: both select personal chats and differ only by the address book,
+# so mapping each of them to {personal} made a folder of one flag take the
+# chats of the other -- "only non-contacts" collected every personal chat.
 _FLAG_TO_TYPES: dict[str, set[ChatType]] = {
-    "contacts": {ChatType.personal},
-    "non_contacts": {ChatType.personal},
     "groups": {ChatType.private_group, ChatType.private_supergroup, ChatType.public_supergroup},
     "broadcasts": {ChatType.private_channel, ChatType.public_channel},
     "bots": {ChatType.bot},
 }
 
+# Flags whose answer is in the address book rather than in the type of a chat.
+_CONTACT_FLAGS = ("contacts", "non_contacts")
 
-def _apply_folder_flags(chats: list[Chat], folders: list[dict]) -> None:
+
+def _matches_contact_flags(chat: Chat, folder: dict, contact_ids: set[int] | None) -> bool:
+    """Whether a personal chat is what this folder's contact flags ask for."""
+    if chat.type is not ChatType.personal:
+        return False
+    wants_contacts = bool(folder.get("contacts"))
+    wants_non_contacts = bool(folder.get("non_contacts"))
+    if not (wants_contacts or wants_non_contacts):
+        return False
+    if contact_ids is None:
+        # The address book could not be read: every personal chat matches, the
+        # way it did before the flags were told apart.
+        return True
+    is_contact = chat.id in contact_ids
+    return (wants_contacts and is_contact) or (wants_non_contacts and not is_contact)
+
+
+async def fetch_contact_ids(api) -> set[int] | None:
+    """Ids of the address book, or None when it could not be read.
+
+    Telegram answers a folder of contacts by the address book, and the catalog
+    has no other way to tell one personal chat from another.
+    """
+    try:
+        contacts = await api.get_contacts()
+    except Exception as e:  # the catalog is still usable without them
+        logger.debug("contacts unavailable, folder flags fall back to every personal chat: %s", e)
+        return None
+    return {getattr(user, "id", 0) for user in getattr(contacts, "users", [])}
+
+
+def _apply_folder_flags(chats: list[Chat], folders: list[dict], contact_ids: set[int] | None = None) -> None:
     """Assign folder to chats matched by flag-based filters (contacts, groups, etc.)."""
     for folder in folders:
         # Collect chat types matched by this folder's flags
@@ -33,7 +67,7 @@ def _apply_folder_flags(chats: list[Chat], folders: list[dict]) -> None:
         for flag, types in _FLAG_TO_TYPES.items():
             if folder.get(flag):
                 matched_types.update(types)
-        if not matched_types:
+        if not matched_types and not any(folder.get(flag) for flag in _CONTACT_FLAGS):
             continue
 
         exclude_ids = set(folder.get("exclude_ids", []))
@@ -44,7 +78,7 @@ def _apply_folder_flags(chats: list[Chat], folders: list[dict]) -> None:
                 continue  # already assigned by explicit peer_id
             if chat.id in exclude_ids:
                 continue
-            if chat.type in matched_types:
+            if chat.type in matched_types or _matches_contact_flags(chat, folder, contact_ids):
                 chat.folder = folder_name
 
 
@@ -341,7 +375,12 @@ async def fetch_catalog(api, include_left: bool = False) -> list[Chat]:
     # `folders.<name>` rule an export follows, so assigning it before the
     # archive was fetched made an archived chat follow different settings
     # than the same chat outside the archive.
-    _apply_folder_flags(chats, folders)
+    contact_ids = (
+        await fetch_contact_ids(api)
+        if any(folder.get(flag) for folder in folders for flag in _CONTACT_FLAGS)
+        else None
+    )
+    _apply_folder_flags(chats, folders, contact_ids)
 
     if include_left:
         try:

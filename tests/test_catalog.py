@@ -264,3 +264,27 @@ async def test_a_flag_folder_takes_in_an_archived_chat():
     chats = await fetch_catalog(api)
 
     assert [(c.id, c.folder, c.is_archived) for c in chats] == [(10, "Группы", True)]
+
+
+def test_a_folder_of_non_contacts_leaves_the_contacts_out():
+    """Оба флага давали одно множество {personal}: папка «только не-контакты»
+    забирала и контакты тоже -- различие есть лишь в адресной книге."""
+    from tg_export.catalog import _apply_folder_flags
+
+    chats = [_chat(id=1), _chat(id=2)]
+    folders = [{"name": "Неизвестные", "non_contacts": True, "peer_ids": []}]
+
+    _apply_folder_flags(chats, folders, contact_ids={1})
+
+    assert [chat.folder for chat in chats] == [None, "Неизвестные"]
+
+
+def test_without_the_address_book_both_contact_flags_take_every_personal_chat():
+    """Адресная книга может быть недоступна -- тогда поведение прежнее."""
+    from tg_export.catalog import _apply_folder_flags
+
+    chat = _chat(id=1)
+
+    _apply_folder_flags([chat], [{"name": "Люди", "contacts": True, "peer_ids": []}], contact_ids=None)
+
+    assert chat.folder == "Люди"

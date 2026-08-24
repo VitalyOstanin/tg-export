@@ -346,6 +346,14 @@ def _classify_document(
     if "DocumentAttributeFilename" in attrs:
         name = attrs["DocumentAttributeFilename"].file_name
 
+    # Before the video branch: what Telegram calls a GIF is an mp4 carrying
+    # both DocumentAttributeAnimated and DocumentAttributeVideo, so with the
+    # video branch first MediaType.gif and the `gifs/` directory were
+    # unreachable -- `media.types: [gif]` downloaded no animations at all,
+    # while `[video]` downloaded them along with the videos.
+    if "DocumentAttributeAnimated" in attrs or (mime_type and "gif" in mime_type):
+        return MediaType.gif, name, None, None, None
+
     if "DocumentAttributeVideo" in attrs:
         v = attrs["DocumentAttributeVideo"]
         duration = v.duration
@@ -364,9 +372,6 @@ def _classify_document(
 
     if "DocumentAttributeSticker" in attrs:
         return MediaType.sticker, name, None, None, None
-
-    if "DocumentAttributeAnimated" in attrs or (mime_type and "gif" in mime_type):
-        return MediaType.gif, name, None, None, None
 
     return MediaType.document, name, duration, w, h
 

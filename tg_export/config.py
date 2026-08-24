@@ -264,7 +264,9 @@ class Config:
             if type_rule is not None:
                 return self._rule_to_export_config(type_rule)
 
-            return self._defaults_export_config(folder_rule.media)
+            # `folder_rule.media` is known to be None here -- the branch above
+            # took the other case -- so this is the defaults, plainly.
+            return self._defaults_export_config()
 
         # Priority 4: type_rules
         if chat_type and self.type_rules:
@@ -462,13 +464,13 @@ def _parse_chat_rule(d: dict[str, Any], section: str = "chats[]") -> ChatRule:
         media=media,
         date_from=_parse_date(d.get("date_from"), f"{section}.date_from"),
         date_to=_parse_date(d.get("date_to"), f"{section}.date_to"),
-        skip=d.get("skip", False),
+        skip=_require_bool(d, "skip", False),
     )
 
 
 def _parse_type_rule(d: dict[str, Any], section: str = "type_rules.*") -> TypeRule:
     _check_keys(d, _TYPE_RULE_KEYS_INNER, section)
-    if d.get("skip"):
+    if _require_bool(d, "skip", False):
         return TypeRule(skip=True)
     media = _parse_media_config(d["media"], f"{section}.media") if "media" in d else None
     return TypeRule(
@@ -481,7 +483,7 @@ def _parse_type_rule(d: dict[str, Any], section: str = "type_rules.*") -> TypeRu
 
 def _parse_folder_rule(d: dict[str, Any], section: str = "folders.*") -> FolderRule:
     _check_keys(d, _FOLDER_RULE_KEYS, section)
-    if d.get("skip"):
+    if _require_bool(d, "skip", False):
         return FolderRule(skip=True)
     media = _parse_media_config(d["media"], f"{section}.media") if "media" in d else None
     chats = [
@@ -606,7 +608,9 @@ def _parse_defaults_section(raw: dict[str, Any]) -> DefaultsConfig:
         media=_parse_media_config(def_raw.get("media", {}), "defaults.media"),
         date_from=_parse_date(def_raw.get("date_from"), "defaults.date_from"),
         date_to=_parse_date(def_raw.get("date_to"), "defaults.date_to"),
-        export_service_messages=def_raw.get("export_service_messages", bare.export_service_messages),
+        export_service_messages=_require_bool(
+            def_raw, "export_service_messages", bare.export_service_messages
+        ),
     )
 
 

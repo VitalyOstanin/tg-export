@@ -633,3 +633,44 @@ def test_a_leftover_of_either_kind_is_swept_from_the_whole_tree(tmp_path):
     clean_staging(tmp_path)
 
     assert [entry for entry in leftovers if entry.exists()] == []
+
+
+@pytest.mark.asyncio
+async def test_the_media_rule_of_the_chat_decides_what_is_downloaded(tmp_path):
+    """Раздел `media` чата, типа или папки разбирался, но до скачивания не доходил.
+
+    Загрузчик создавался один раз с `defaults.media`, и каждый чат качался по
+    умолчаниям: настройка, показанная `config -v`, ни на что не влияла.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    api = MagicMock()
+    api.download_media = AsyncMock(return_value=None)
+    dl = _downloader(api, tmp_path)
+    dl._register_skip = AsyncMock()
+
+    only_documents = MediaConfig(types=["document"], max_file_size_bytes=50 * 1024**2)
+
+    path, status = await dl.download(
+        MagicMock(id=7), _photo(), tmp_path, chat_id=1, media_config=only_documents
+    )
+
+    assert path is None
+    assert status == "skipped_by_type", status
+
+
+@pytest.mark.asyncio
+async def test_without_a_chat_rule_the_defaults_still_apply(tmp_path):
+    """Команды помимо экспорта зовут загрузку без настроек чата -- берутся умолчания."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    api = MagicMock()
+    api.download_media = AsyncMock(return_value=None)
+    dl = _downloader(api, tmp_path)
+    dl.config = MediaConfig(types=["document"], max_file_size_bytes=50 * 1024**2)
+    dl._register_skip = AsyncMock()
+
+    path, status = await dl.download(MagicMock(id=7), _photo(), tmp_path, chat_id=1)
+
+    assert path is None
+    assert status == "skipped_by_type", status

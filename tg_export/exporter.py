@@ -40,7 +40,7 @@ from rich.table import Table
 from rich.text import Text
 
 from tg_export.api import TgApi
-from tg_export.config import ChatExportConfig, Config
+from tg_export.config import ChatExportConfig, Config, MediaConfig
 
 # Bound here as a module global on purpose: exporter.console is what the
 # rest of the code and the tests reach for; the declaration is in
@@ -413,11 +413,24 @@ class _MediaPipeline:
     awaited is the oldest one in flight.
     """
 
-    def __init__(self, exporter: Exporter, chat_dir: Path, stats: ExportStats, chat_id: int, limit: int):
+    def __init__(
+        self,
+        exporter: Exporter,
+        chat_dir: Path,
+        stats: ExportStats,
+        chat_id: int,
+        limit: int,
+        media_config: MediaConfig,
+    ):
         self._exporter = exporter
         self._chat_dir = chat_dir
         self._stats = stats
         self._chat_id = chat_id
+        # Settings of this chat, not of `defaults`: a `media` section written
+        # for a chat, a type or a folder was parsed, validated and shown by
+        # `config -v`, and then had no effect -- the downloader was built once
+        # with `defaults.media` and every chat downloaded by it.
+        self._media_config = media_config
         # A window of one is exactly the previous sequential behaviour.
         self._limit = max(1, limit)
         self._pending: deque[tuple[asyncio.Task | None, Message]] = deque()
@@ -470,7 +483,14 @@ class _MediaPipeline:
         task = None
         if msg.media:
             task = asyncio.create_task(
-                self._exporter._process_media(msg, tl_msg, self._chat_dir, self._stats, chat_id=self._chat_id)
+                self._exporter._process_media(
+                    msg,
+                    tl_msg,
+                    self._chat_dir,
+                    self._stats,
+                    chat_id=self._chat_id,
+                    media_config=self._media_config,
+                )
             )
             self._running += 1
             task.add_done_callback(self._one_finished)
@@ -1134,6 +1154,7 @@ class Exporter:
                 before_date_from=before_date_from,
                 progress_line=progress_line,
                 keep_service=chat_config.export_service_messages,
+                media_config=chat_config.media,
             )
 
         if not full_history and not self._shutdown:
@@ -1147,6 +1168,7 @@ class Exporter:
                 before_date_from=before_date_from,
                 progress_line=progress_line,
                 keep_service=chat_config.export_service_messages,
+                media_config=chat_config.media,
             )
         else:
             # Phase 2 skipped (full_history already True or shutdown). Still
@@ -1253,6 +1275,7 @@ class Exporter:
         before_date_from,
         progress_line,
         keep_service: bool,
+        media_config: MediaConfig,
         note_message,
         stored_line,
     ) -> bool:
@@ -1271,7 +1294,9 @@ class Exporter:
         batch: list[Message] = []
         last_progress_time = time.monotonic()
         exhausted = False
-        async with _MediaPipeline(self, chat_dir, stats, chat.id, self._download_window()) as media:
+        async with _MediaPipeline(
+            self, chat_dir, stats, chat.id, self._download_window(), media_config
+        ) as media:
             async for tl_msg in self.api.iter_messages(chat.id, **iter_kwargs):
                 if self._shutdown:
                     break
@@ -1312,6 +1337,7 @@ class Exporter:
         before_date_from,
         progress_line,
         keep_service: bool = True,
+        media_config: MediaConfig,
     ) -> None:
         """Phase 1: everything newer than the stored pointer, newest first."""
         new_max_id = last_msg_id
@@ -1334,6 +1360,7 @@ class Exporter:
             before_date_from=before_date_from,
             progress_line=progress_line,
             keep_service=keep_service,
+            media_config=media_config,
             note_message=note,
             stored_line=lambda: f"{stats.messages_exported} new msgs stored",
         )
@@ -1362,6 +1389,7 @@ class Exporter:
         before_date_from,
         progress_line,
         keep_service: bool = True,
+        media_config: MediaConfig,
     ) -> None:
         """Phase 2: continue downward from the oldest message fetched so far."""
         current_oldest = oldest_msg_id
@@ -1385,6 +1413,7 @@ class Exporter:
             before_date_from=before_date_from,
             progress_line=progress_line,
             keep_service=keep_service,
+            media_config=media_config,
             note_message=note,
             stored_line=lambda: f"{stats.messages_exported} msgs stored (oldest={current_oldest})",
         )
@@ -1454,13 +1483,25 @@ class Exporter:
         return limit if isinstance(limit, int) and limit > 0 else 1
 
     async def _process_media(
-        self, msg: Message, tl_msg, chat_dir: Path, stats: ExportStats, chat_id: int = 0
+        self,
+        msg: Message,
+        tl_msg,
+        chat_dir: Path,
+        stats: ExportStats,
+        chat_id: int = 0,
+        media_config: MediaConfig | None = None,
     ):
-        """Download media for a message, updating stats."""
+        """Download media for a message, updating stats.
+
+        `media_config` is what the rules resolved for this chat; without it the
+        downloader falls back to `defaults.media`.
+        """
         if not msg.media:
             return
         try:
-            local_path, status = await self.downloader.download(tl_msg, msg.media, chat_dir, chat_id=chat_id)
+            local_path, status = await self.downloader.download(
+                tl_msg, msg.media, chat_dir, chat_id=chat_id, media_config=media_config
+            )
             if local_path and msg.media.file:
                 msg.media.file.local_path = str(local_path)
             self._count_download(status, local_path, stats)
