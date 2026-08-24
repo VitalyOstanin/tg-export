@@ -75,7 +75,7 @@ dependencies = [
     # installation, not only to the one that uses a proxy: a comparison of the
     # 2.8.2 and 3.0.0 wheels shows that everything else telethon 1.44 reaches
     # for is still there.
-    "python-socks[asyncio]>=2.0,<3",
+    "python-socks[asyncio]>=2.0,<4",
 ]
 
 [project.urls]
