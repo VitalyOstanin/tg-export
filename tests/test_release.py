@@ -194,6 +194,29 @@ def test_a_day_of_slack_is_allowed_between_the_section_and_the_tag(tmp_path):
     assert result.returncode == 0, result.stderr
 
 
+def test_notes_over_the_github_limit_stop_the_release(tmp_path):
+    """Тело длиннее лимита GitHub роняло бы `gh release create` -- уже после PyPI.
+
+    Публикация в индекс необратима, поэтому длина проверяется здесь, до неё, а
+    не выясняется на последнем шаге workflow.
+    """
+    body = "\n".join(f"- Пункт {i}." for i in range(200))
+    changelog = f"# Changelog\n\n## [1.5.1] -- 2026-07-30\n\n### Исправлено\n\n{body}\n\n## [1.5.0] -- 2026-07-30\n\n- Старое.\n"
+    result, out = _run("v1.5.1", tmp_path, changelog=changelog, extra=["--max-chars", "500"])
+
+    assert result.returncode != 0
+    assert "over the 500" in result.stderr, result.stderr
+    assert not out.exists(), "гейт записал notes, которые GitHub не примет"
+
+
+def test_notes_within_the_limit_pass(tmp_path):
+    """Граница включительная: ровно лимит -- всё ещё принимаемое тело."""
+    result, out = _run("v1.5.1", tmp_path, extra=["--max-chars", "1000"])
+
+    assert result.returncode == 0, result.stderr
+    assert 0 < len(out.read_text(encoding="utf-8")) <= 1000
+
+
 def test_without_an_output_path_the_notes_go_to_stdout_and_leave_no_file(tmp_path):
     """Умолчание писало release_notes.md в текущий каталог, а `.gitignore` его не знал.
 

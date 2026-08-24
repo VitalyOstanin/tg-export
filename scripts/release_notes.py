@@ -149,6 +149,27 @@ def _check_bump(changelog: str, version: str, body: str) -> None:
     )
 
 
+# GitHub refuses a release whose body is longer than this many characters. The
+# number is the limit of the `body` field of the REST API; it could not be
+# confirmed from the documentation in this run, so it is left adjustable through
+# --max-chars. The check runs here, where the notes are built, because that is
+# before the upload to PyPI -- `gh release create` runs after it, and PyPI has
+# no undo.
+NOTES_LIMIT = 125_000
+
+
+def _check_size(notes: str, limit: int) -> None:
+    """Refuse notes that GitHub would not accept as the body of a release."""
+    if len(notes) <= limit:
+        return
+    raise SystemExit(
+        f"release notes for this section are {len(notes)} characters, over the {limit} GitHub "
+        f"accepts for the body of a release: the release would be published to PyPI and then fail "
+        f"at 'gh release create'. Shorten the CHANGELOG section -- the history of a change belongs "
+        f"in its commit, the notes say what changed for the user."
+    )
+
+
 # The section is written before the tag is pushed, so a day apart is normal.
 DATE_SLACK = dt.timedelta(days=1)
 
@@ -184,6 +205,12 @@ def main() -> None:
         help="write the notes here; without it they go to stdout and no file is left behind",
     )
     parser.add_argument("--tag-date", default=None, help="date the tag was created, YYYY-MM-DD")
+    parser.add_argument(
+        "--max-chars",
+        type=int,
+        default=NOTES_LIMIT,
+        help=f"refuse notes longer than this many characters (default {NOTES_LIMIT}, the limit of a GitHub release body)",
+    )
     args = parser.parse_args()
 
     version = args.tag.removeprefix("v")
@@ -201,6 +228,7 @@ def main() -> None:
     if args.tag_date:
         _check_date(date, args.tag_date)
     notes = f"## tg-export v{version} -- {date}\n\n{body}\n"
+    _check_size(notes, args.max_chars)
     if args.output is None:
         print(notes)
     else:
