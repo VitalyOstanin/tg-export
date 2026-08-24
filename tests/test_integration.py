@@ -29,7 +29,7 @@ async def test_full_export_cycle(tmp_path, state):
     # Mock async generators to return empty iterators
     async def _empty_async_gen():
         return
-        yield  # noqa: B901 — makes this an async generator
+        yield  # делает функцию асинхронным генератором
 
     api.iter_userpics = _empty_async_gen
     api.get_stories = AsyncMock(side_effect=Exception("not available"))

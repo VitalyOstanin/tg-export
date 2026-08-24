@@ -144,7 +144,7 @@ async def test_build_status_table_handles_concurrent_active_downloads_mutation()
                 downloader.active_downloads[i] = DownloadProgress(filename=f"f{i}.bin")
                 if i > 5:
                     downloader.active_downloads.pop(i - 5, None)
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:  # поток отрисовки не должен падать
                 errors.append(e)
             i += 1
             time.sleep(0)

@@ -466,7 +466,7 @@ class _MediaPipeline:
     async def submit(self, msg: Message, tl_msg) -> list[Message]:
         """Start this message's download; return messages that are now ready."""
         task = None
-        if msg.media and self._exporter.downloader:
+        if msg.media:
             task = asyncio.create_task(
                 self._exporter._process_media(msg, tl_msg, self._chat_dir, self._stats, chat_id=self._chat_id)
             )
@@ -1410,17 +1410,18 @@ class Exporter:
     def _download_window(self) -> int:
         """How many media downloads may be in flight at once.
 
-        Comes from `concurrent_downloads`; anything unusable falls back to one,
-        which is the sequential behaviour.
+        Comes from `concurrent_downloads`. The value is validated when the
+        configuration is read (`_parse_concurrent_downloads`), so the only case
+        left here is a downloader built by hand in a test.
         """
-        limit = getattr(getattr(self.downloader, "config", None), "concurrent_downloads", 1)
+        limit = self.downloader.config.concurrent_downloads
         return limit if isinstance(limit, int) and limit > 0 else 1
 
     async def _process_media(
         self, msg: Message, tl_msg, chat_dir: Path, stats: ExportStats, chat_id: int = 0
     ):
         """Download media for a message, updating stats."""
-        if not msg.media or not self.downloader:
+        if not msg.media:
             return
         try:
             local_path, status = await self.downloader.download(tl_msg, msg.media, chat_dir, chat_id=chat_id)
@@ -1887,7 +1888,6 @@ class Exporter:
             chat_dir,
             known_paths_raw,
         )
-        return  # noqa: B012  - placeholder to keep async signature stable
 
     @staticmethod
     def _cleanup_orphaned_files_sync(

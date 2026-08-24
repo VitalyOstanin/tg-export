@@ -191,7 +191,7 @@ async def redownload_broken_files(
                 result, final_path = await redownload_broken_file(
                     api, state, entry, tl_msg=tl_msg, targets=targets
                 )
-            except Exception as e:  # noqa: BLE001 - reported per file by the caller
+            except Exception as e:  # reported per file by the caller
                 return RedownloadOutcome(entry, error=e)
             return RedownloadOutcome(entry, result=result, path=final_path)
 

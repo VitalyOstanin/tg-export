@@ -254,25 +254,32 @@ def test_strip_markup_function_removed():
 
 
 def test_logger_declared_after_all_module_imports():
-    """logger = logging.getLogger должен идти после блока импортов (PEP 8)."""
-    body = _tree("exporter.py").body
-    logger_idx = next(
-        (
-            i
+    """Логгер объявляется под именем `logger` сразу после блока импортов (PEP 8).
+
+    Проверка смотрела один `exporter.py`, поэтому мимо неё прошёл единственный
+    модуль с логгером под другим именем и в середине файла:
+    `_classify_logger = logging.getLogger(__name__)` между функцией и
+    константой -- то же поведение, другая запись.
+    """
+    offenders = []
+    for path in sorted(PROJECT.glob("**/*.py")):
+        body = ast.parse(path.read_text(encoding="utf-8")).body
+        assignments = [
+            (i, node, target.id)
             for i, node in enumerate(body)
             if isinstance(node, ast.Assign)
-            and any(isinstance(t, ast.Name) and t.id == "logger" for t in node.targets)
-        ),
-        None,
-    )
-    assert logger_idx is not None, "logger не объявлен"
-
-    late = [
-        (node.lineno, ast.unparse(node))
-        for node in body[logger_idx + 1 :]
-        if isinstance(node, ast.Import | ast.ImportFrom)
-    ]
-    assert not late, f"после logger=... идут module-level импорты (PEP 8): {late}"
+            for target in node.targets
+            if isinstance(target, ast.Name) and _qualified_call(node.value) == "logging.getLogger"
+        ]
+        for index, node, name in assignments:
+            if name != "logger":
+                offenders.append(f"{path.relative_to(PROJECT)}:{node.lineno} назван {name}")
+            late = [
+                inner.lineno for inner in body[index + 1 :] if isinstance(inner, ast.Import | ast.ImportFrom)
+            ]
+            if late:
+                offenders.append(f"{path.relative_to(PROJECT)}:{node.lineno} импорты после него: {late}")
+    assert not offenders, f"логгер объявлен не по правилу: {offenders}"
 
 
 def test_timedelta_imported_at_module_level_in_exporter():

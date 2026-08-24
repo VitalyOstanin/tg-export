@@ -203,7 +203,7 @@ async def _resolve_entities(api, ids: list) -> dict:
         return {}
     try:
         answered = await api.client.get_entity(list(ids))
-    except Exception as e:  # noqa: BLE001 - the per-chat path reports what failed
+    except Exception as e:  # the per-chat path reports what failed
         logger.debug("batch entity resolution failed (%s); falling back to one by one", e)
         return {}
     if not isinstance(answered, list):
@@ -249,7 +249,7 @@ async def _one_chat_info(api, cid, entity, *, last_n: int) -> dict:
                 hash=0,
             )
         )
-    except Exception as e:  # noqa: BLE001 - one unreachable chat must not end the rest
+    except Exception as e:  # one unreachable chat must not end the rest
         return {"id": cid, "error": str(e), "messages": 0}
 
     last_date = None

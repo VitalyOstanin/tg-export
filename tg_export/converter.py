@@ -60,6 +60,8 @@ from tg_export.models import (
     VenueMedia,
 )
 
+logger = logging.getLogger(__name__)
+
 
 def _to_str(val: Any) -> str | None:
     """Convert value to str, handling bytes from Telethon."""
@@ -258,74 +260,63 @@ def _poll_media(tl_media: Any) -> Media | None:
     )
 
 
+# A factory per Telethon media class, like `_DETAILED_ACTIONS` below: the same
+# question -- "which constructor does this class name mean" -- had three
+# different answers in this module, one of which the comment there calls the
+# worst of them.
+_MEDIA_FACTORIES: dict[str, Callable[[Any], Media | None]] = {
+    "MessageMediaPhoto": lambda m: _photo_media(m),
+    "MessageMediaDocument": lambda m: _document_media(m),
+    "MessageMediaPoll": lambda m: _poll_media(m),
+    "MessageMediaContact": lambda m: ContactMedia(
+        type=MediaType.contact,
+        file=None,
+        phone=m.phone_number or "",
+        first_name=m.first_name or "",
+        last_name=m.last_name or "",
+        vcard=getattr(m, "vcard", None),
+    ),
+    "MessageMediaGeo": lambda m: GeoMedia(
+        type=MediaType.geo,
+        file=None,
+        latitude=m.geo.lat,
+        longitude=m.geo.long,
+    ),
+    "MessageMediaVenue": lambda m: VenueMedia(
+        type=MediaType.venue,
+        file=None,
+        latitude=m.geo.lat,
+        longitude=m.geo.long,
+        title=m.title or "",
+        address=m.address or "",
+    ),
+    "MessageMediaGame": lambda m: GameMedia(
+        type=MediaType.game,
+        file=None,
+        title=m.game.title or "",
+        description=m.game.description or "",
+        short_name=m.game.short_name or "",
+    ),
+    "MessageMediaInvoice": lambda m: InvoiceMedia(
+        type=MediaType.invoice,
+        file=None,
+        title=m.title or "",
+        description=m.description or "",
+        currency=m.currency or "",
+        amount=m.total_amount or 0,
+        receipt_msg_id=getattr(m, "receipt_msg_id", None),
+    ),
+}
+
+
 def convert_media(tl_media: Any) -> Media | None:
     """Convert Telethon media to models.Media subclass."""
     if tl_media is None:
         return None
-
-    cls_name = tl_media.__class__.__name__
-
-    if cls_name == "MessageMediaPhoto":
-        return _photo_media(tl_media)
-
-    if cls_name == "MessageMediaDocument":
-        return _document_media(tl_media)
-
-    if cls_name == "MessageMediaContact":
-        return ContactMedia(
-            type=MediaType.contact,
-            file=None,
-            phone=tl_media.phone_number or "",
-            first_name=tl_media.first_name or "",
-            last_name=tl_media.last_name or "",
-            vcard=getattr(tl_media, "vcard", None),
-        )
-
-    if cls_name == "MessageMediaGeo":
-        geo = tl_media.geo
-        return GeoMedia(
-            type=MediaType.geo,
-            file=None,
-            latitude=geo.lat,
-            longitude=geo.long,
-        )
-
-    if cls_name == "MessageMediaVenue":
-        geo = tl_media.geo
-        return VenueMedia(
-            type=MediaType.venue,
-            file=None,
-            latitude=geo.lat,
-            longitude=geo.long,
-            title=tl_media.title or "",
-            address=tl_media.address or "",
-        )
-
-    if cls_name == "MessageMediaPoll":
-        return _poll_media(tl_media)
-
-    if cls_name == "MessageMediaGame":
-        game = tl_media.game
-        return GameMedia(
-            type=MediaType.game,
-            file=None,
-            title=game.title or "",
-            description=game.description or "",
-            short_name=game.short_name or "",
-        )
-
-    if cls_name == "MessageMediaInvoice":
-        return InvoiceMedia(
-            type=MediaType.invoice,
-            file=None,
-            title=tl_media.title or "",
-            description=tl_media.description or "",
-            currency=tl_media.currency or "",
-            amount=tl_media.total_amount or 0,
-            receipt_msg_id=getattr(tl_media, "receipt_msg_id", None),
-        )
-
-    return UnsupportedMedia(type=MediaType.unsupported, file=None)
+    build = _MEDIA_FACTORIES.get(tl_media.__class__.__name__)
+    if build is None:
+        return UnsupportedMedia(type=MediaType.unsupported, file=None)
+    return build(tl_media)
 
 
 def _classify_document(
@@ -447,6 +438,21 @@ def convert_action(tl_action: Any) -> ServiceAction | None:
 # ---------------------------------------------------------------------------
 
 
+# Three kinds of reaction differ in three fields of one record, so a table says
+# it where an if/elif chain repeated the call.
+_REACTION_FACTORIES: dict[str, Callable[[Any, int], Reaction]] = {
+    "ReactionEmoji": lambda reaction, count: Reaction(
+        type=ReactionType.emoji, emoji=reaction.emoticon, document_id=None, count=count
+    ),
+    "ReactionCustomEmoji": lambda reaction, count: Reaction(
+        type=ReactionType.custom_emoji, emoji=None, document_id=reaction.document_id, count=count
+    ),
+    "ReactionPaid": lambda reaction, count: Reaction(
+        type=ReactionType.paid, emoji=None, document_id=None, count=count
+    ),
+}
+
+
 def convert_reactions(tl_reactions: Any) -> list[Reaction]:
     """Convert Telethon reactions to list[Reaction]."""
     if tl_reactions is None:
@@ -456,35 +462,9 @@ def convert_reactions(tl_reactions: Any) -> list[Reaction]:
         return []
     reactions = []
     for r in results_list:
-        reaction = r.reaction
-        cls_name = reaction.__class__.__name__
-        if cls_name == "ReactionEmoji":
-            reactions.append(
-                Reaction(
-                    type=ReactionType.emoji,
-                    emoji=reaction.emoticon,
-                    document_id=None,
-                    count=r.count,
-                )
-            )
-        elif cls_name == "ReactionCustomEmoji":
-            reactions.append(
-                Reaction(
-                    type=ReactionType.custom_emoji,
-                    emoji=None,
-                    document_id=reaction.document_id,
-                    count=r.count,
-                )
-            )
-        elif cls_name == "ReactionPaid":
-            reactions.append(
-                Reaction(
-                    type=ReactionType.paid,
-                    emoji=None,
-                    document_id=None,
-                    count=r.count,
-                )
-            )
+        build = _REACTION_FACTORIES.get(r.reaction.__class__.__name__)
+        if build is not None:
+            reactions.append(build(r.reaction, r.count))
     return reactions
 
 
@@ -608,24 +588,28 @@ def convert_message(tl_msg: Any, chat_id: int) -> Message:
     )
 
 
+# Kind of a keyboard button by its Telethon class, like the other tables of this
+# module. It used to be built inside the function, which runs once per button of
+# every row of every message.
+_BUTTON_TYPES = {
+    "KeyboardButtonUrl": InlineButtonType.url,
+    "KeyboardButtonCallback": InlineButtonType.callback,
+    "KeyboardButtonGame": InlineButtonType.game,
+    "KeyboardButtonBuy": InlineButtonType.buy,
+    "KeyboardButtonSwitchInline": InlineButtonType.switch_inline,
+    "KeyboardButtonWebView": InlineButtonType.web_view,
+    "KeyboardButtonSimpleWebView": InlineButtonType.simple_web_view,
+    "KeyboardButtonUserProfile": InlineButtonType.user_profile,
+    "KeyboardButtonRequestPhone": InlineButtonType.request_phone,
+    "KeyboardButtonRequestGeoLocation": InlineButtonType.request_location,
+    "KeyboardButtonRequestPoll": InlineButtonType.request_poll,
+    "KeyboardButtonRequestPeer": InlineButtonType.request_peer,
+    "KeyboardButtonCopy": InlineButtonType.copy_text,
+}
+
+
 def _classify_button(btn: Any) -> InlineButtonType:
-    cls_name = btn.__class__.__name__
-    mapping = {
-        "KeyboardButtonUrl": InlineButtonType.url,
-        "KeyboardButtonCallback": InlineButtonType.callback,
-        "KeyboardButtonGame": InlineButtonType.game,
-        "KeyboardButtonBuy": InlineButtonType.buy,
-        "KeyboardButtonSwitchInline": InlineButtonType.switch_inline,
-        "KeyboardButtonWebView": InlineButtonType.web_view,
-        "KeyboardButtonSimpleWebView": InlineButtonType.simple_web_view,
-        "KeyboardButtonUserProfile": InlineButtonType.user_profile,
-        "KeyboardButtonRequestPhone": InlineButtonType.request_phone,
-        "KeyboardButtonRequestGeoLocation": InlineButtonType.request_location,
-        "KeyboardButtonRequestPoll": InlineButtonType.request_poll,
-        "KeyboardButtonRequestPeer": InlineButtonType.request_peer,
-        "KeyboardButtonCopy": InlineButtonType.copy_text,
-    }
-    return mapping.get(cls_name, InlineButtonType.default)
+    return _BUTTON_TYPES.get(btn.__class__.__name__, InlineButtonType.default)
 
 
 # ---------------------------------------------------------------------------
@@ -683,8 +667,6 @@ def _extract_migrated_to(entity: Any) -> int | None:
     return getattr(migrated_to, "channel_id", None)
 
 
-_classify_logger = logging.getLogger(__name__)
-
 # Telegram returns these instead of Chat/Channel when the account was kicked or
 # banned: the title is still known, but history and members are inaccessible.
 _FORBIDDEN_ENTITY_CLASSES = ("ChatForbidden", "ChannelForbidden")
@@ -716,7 +698,7 @@ def _classify_chat(entity: Any) -> ChatType:
 
     # Unknown entity class: log it instead of silently bucketing as personal,
     # so a new Telegram entity type surfaces in --debug rather than hiding.
-    _classify_logger.warning("Unknown entity class %r classified as personal", cls_name)
+    logger.warning("Unknown entity class %r classified as personal", cls_name)
     return ChatType.personal
 
 

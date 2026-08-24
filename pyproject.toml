@@ -157,7 +157,9 @@ line-length = 110
 extend-exclude = ["export_output", "docs/reviews", "docs/__check"]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B", "SIM", "PIE790"]
+# RUF100 -- an unused `noqa`: a `return  # noqa: B012` survived with a note
+# about keeping a coroutine signature stable, which B012 is not about at all.
+select = ["E", "F", "I", "UP", "B", "SIM", "PIE790", "RUF100"]
 ignore = [
     "E501",  # line too long (handled by formatter)
     "B008",  # function call in default arg (used by Click)

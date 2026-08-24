@@ -198,7 +198,7 @@ uv run pyright
 | 6  | сообщение, за которым команда отказывает, переживает `--quiet`          | `test_messages_before_a_failure_exit_survive_quiet`              |
 | 7  | Takeout-контекст ведётся `AsyncExitStack`, а не ручными вызовами        | `test_no_manual_async_context_calls_in_api`                      |
 | 8  | разметка снимается средствами rich, без своего помощника                | `test_strip_markup_function_removed`                             |
-| 9  | `logger` объявляется после блока импортов                               | `test_logger_declared_after_all_module_imports`                  |
+| 9  | логгер модуля назван `logger` и объявлен после блока импортов           | `test_logger_declared_after_all_module_imports`                  |
 | 10 | `timedelta` импортируется на уровне модуля                              | `test_timedelta_imported_at_module_level_in_exporter`            |
 | 11 | в теле функции откладываются только тяжёлые зависимости                 | `test_standard_library_is_imported_at_module_level`              |
 | 12 | пользовательский текст экранируется `rich.markup.escape`                | `test_exporter_imports_rich_escape`                              |

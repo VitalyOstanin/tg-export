@@ -821,7 +821,6 @@ class MediaDownloader:
                 if _link_or_copy(src, dst):
                     logger.debug("linked from sibling: file_id=%d %s -> %s", file_id, src, dst)
                     return dst
-            continue
 
         return None
 
