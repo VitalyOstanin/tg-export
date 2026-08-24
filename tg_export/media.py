@@ -31,6 +31,7 @@ from tg_export.errors import TgExportError
 from tg_export.importer import TdesktopIndex
 from tg_export.models import FileStatus, Media, MediaType
 from tg_export.state import DB_TIMEOUT_SECONDS, READER_PRAGMAS
+from tg_export.waits import FLOOD_WAIT_REASON, WAITS
 
 logger = logging.getLogger(__name__)
 
@@ -441,7 +442,8 @@ async def download_with_retries(attempt_download, *, msg_id: int) -> str | None:
                 )
                 raise
             logger.debug("msg %d: attempt %d failed, flood wait %ds", msg_id, attempt + 1, e.seconds)
-            await asyncio.sleep(e.seconds)
+            with WAITS.waiting(reason=FLOOD_WAIT_REASON, what=f"msg {msg_id}", seconds=e.seconds):
+                await asyncio.sleep(e.seconds)
         except _TRANSIENT_DOWNLOAD_ERRORS as e:
             if isinstance(e, OSError) and e.errno in _PERMANENT_OS_ERRORS:
                 logger.debug(
@@ -472,7 +474,8 @@ async def download_with_retries(attempt_download, *, msg_id: int) -> str | None:
                 e,
                 delay,
             )
-            await asyncio.sleep(delay)
+            with WAITS.waiting(reason="retry after a failure", what=f"msg {msg_id}", seconds=delay):
+                await asyncio.sleep(delay)
     # Unreachable while the attempt limit is positive: every iteration either
     # returns the downloaded path or raises on the last attempt. The line
     # exists so that a limit accidentally set to zero fails loudly instead of

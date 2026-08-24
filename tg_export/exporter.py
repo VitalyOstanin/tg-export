@@ -12,6 +12,7 @@ import asyncio
 import contextlib
 import functools
 import logging
+import math
 import re
 import signal
 import time
@@ -58,6 +59,7 @@ from tg_export.media import (
 from tg_export.models import Chat, ForumTopic, Message
 from tg_export.state import ExportState
 from tg_export.verify import RedownloadResult, redownload_broken_files
+from tg_export.waits import WAITS, WaitBoard
 
 logger = logging.getLogger(__name__)
 
@@ -547,9 +549,13 @@ class StatusView:
     and the start time can be rendered and checked without running an export.
     """
 
-    def __init__(self, stats: ExportStats, start_time: float):
+    def __init__(self, stats: ExportStats, start_time: float, waits: WaitBoard | None = None):
         self.stats = stats
         self.start_time = start_time
+        # The waits currently holding the export. Passed in by the tests; the
+        # export itself shares one board with the downloader and with the
+        # filter that reads the telethon log.
+        self.waits = waits if waits is not None else WAITS
 
     def line1(self, view: ChatView) -> str:
         """Chats, messages, transferred bytes and elapsed time.
@@ -583,7 +589,26 @@ class StatusView:
         if speed_str:
             line += f" ([green]{speed_str}[/])"
         line += f" | elapsed: {elapsed_str}"
+        line += self._waiting()
         return line
+
+    def _waiting(self) -> str:
+        """The wait holding the export back, counted down, or nothing.
+
+        Without it a flood wait shows as a status line that simply stops
+        moving: the counters keep their values, the spinner keeps turning and
+        nothing says that the pause was named by Telegram and how long it is.
+        """
+        pending = self.waits.pending()
+        if not pending:
+            return ""
+        wait = pending[0]
+        segment = (
+            f" | [yellow]waiting: {math.ceil(wait.remaining(time.monotonic()))}s {escape(wait.reason)}[/]"
+        )
+        if len(pending) > 1:
+            segment += f" [yellow]x{len(pending)}[/]"
+        return segment
 
     def line2(self, view: ChatView) -> str:
         """Where the files of the current chat came from."""

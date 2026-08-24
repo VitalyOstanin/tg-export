@@ -152,11 +152,12 @@ fail_under = 50
 "tg_export/importer.py" = 73
 "tg_export/locking.py" = 90
 "tg_export/privacy.py" = 87
-"tg_export/media.py" = 82
+"tg_export/media.py" = 83
 "tg_export/models.py" = 90
 "tg_export/session.py" = 82
 "tg_export/state.py" = 88
 "tg_export/verify.py" = 93
+"tg_export/waits.py" = 93
 
 [tool.ruff]
 target-version = "py311"

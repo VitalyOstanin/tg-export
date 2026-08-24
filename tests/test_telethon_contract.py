@@ -118,3 +118,46 @@ def test_media_subdir_pattern_does_not_depend_on_the_hash_seed():
         f"_HREF_RE зависит от рандомизации хэша строк: {patterns}. "
         "Разбор tdesktop-экспорта стал бы воспроизводимым не при каждом запуске."
     )
+
+
+def test_the_flood_wait_notice_keeps_the_shape_the_filter_reads():
+    """Запись telethon о сне на flood wait разбирается фильтром пакета.
+
+    Пауза, которую Telethon выдерживает внутри себя, не доходит до кода
+    пакета ни исключением, ни возвратом: единственный её след -- строка
+    журнала. Фильтр читает не готовый текст, а неотформатированное сообщение
+    и его аргументы, поэтому смысл несёт их порядок. Переименование метода,
+    перестановка аргументов или другая формулировка молча вернули бы паузу в
+    прежнюю невидимость -- отсюда сверка с живым Telethon.
+    """
+    import logging
+
+    from telethon.client.users import _fmt_flood
+
+    from tg_export.waits import FLOOD_WAIT_LOGGER, flood_wait_of
+
+    assert _fmt_flood.__module__ == FLOOD_WAIT_LOGGER, (
+        f"Сон на flood wait логируется модулем {_fmt_flood.__module__}, а фильтр "
+        f"поставлен на {FLOOD_WAIT_LOGGER}: записи до доски ожиданий не дойдут."
+    )
+
+    class GetHistoryRequest:
+        pass
+
+    msg, *args = _fmt_flood(18, GetHistoryRequest())
+    record = logging.LogRecord(
+        name=FLOOD_WAIT_LOGGER,
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg=msg,
+        args=tuple(args),
+        exc_info=None,
+    )
+    wait = flood_wait_of(record)
+    assert wait is not None, (
+        f"Фильтр не узнаёт запись telethon о сне: {record.getMessage()!r}. "
+        "Пауза перестанет быть видимой при штатном запуске."
+    )
+    assert wait.seconds == 18, f"Длительность паузы прочитана как {wait.seconds}, а названа была 18."
+    assert wait.what == "GetHistoryRequest", f"Имя запроса прочитано как {wait.what!r}."

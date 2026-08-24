@@ -48,6 +48,7 @@ import click
 from tg_export.cli import account, auth, common, export, state, takeout, tg
 from tg_export.cli.common import STATE_DB_NAME, quiet_third_party_loggers, resolve_log_level
 from tg_export.errors import EXIT_FAILURE, EXIT_OK, EXIT_SIGINT, TgExportError
+from tg_export.waits import watch_flood_waits
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +121,10 @@ def main(debug, log_level, quiet):
         handlers=[log_handler(is_terminal=sys.stderr.isatty(), show_path=debug)],
     )
     quiet_third_party_loggers(level, include_libraries=include_libraries)
+    # After the libraries are quieted, since it lifts one of their loggers back
+    # up: the sleep telethon performs on a flood wait is the only notice that
+    # an export standing still is waiting rather than hung.
+    watch_flood_waits(max(level, logging.WARNING) if not include_libraries else level)
     # One home for the two flags. They used to be written here twice -- into
     # these globals and into ctx.obj -- and read from both, while ctx.obj["debug"]
     # was read nowhere; run_cli reports errors outside any click context and
