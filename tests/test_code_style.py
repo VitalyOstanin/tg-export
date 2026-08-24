@@ -739,12 +739,17 @@ def test_the_package_and_its_build_files_speak_english():
     смешивали оба языка внутри одного файла.
     """
     root = PROJECT.parent
-    allowed = {
-        # Ссылка на название раздела CONTRIBUTING -- имя собственное.
-        "tg_export/cli/__init__.py",
-        # Имена разделов CHANGELOG -- данные, а не текст программы.
-        "scripts/release_notes.py",
-    }
+    # Исключения по строкам, а не по файлам: файл целиком выводился из-под
+    # проверки ради одной-двух строк, и русский текст, добавленный в него
+    # позже, проверка пропускала молча.
+    allowed_fragments = (
+        # Названия разделов CONTRIBUTING и CHANGELOG -- имена собственные и
+        # данные, а не текст программы.
+        "Устройство пакета",
+        "Ломающие изменения",
+        "Добавлено",
+        "Не выпущено",
+    )
     files = [
         *_package_sources(),
         root / "pyproject.toml",
@@ -757,9 +762,9 @@ def test_the_package_and_its_build_files_speak_english():
     offenders = [
         f"{path.relative_to(root)}:{i}"
         for path in files
-        if path.is_file() and str(path.relative_to(root)) not in allowed
+        if path.is_file()
         for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
-        if cyrillic.search(line)
+        if cyrillic.search(line) and not any(fragment in line for fragment in allowed_fragments)
     ]
 
     assert not offenders, f"артефакт пакета написан не на английском: {offenders}"

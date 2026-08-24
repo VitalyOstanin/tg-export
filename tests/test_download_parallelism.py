@@ -15,57 +15,29 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from conftest import make_chat, make_message
 
 from tg_export.exporter import Exporter, ExportStats
-from tg_export.models import Chat, ChatType, FileInfo, MediaType, Message, PhotoMedia
+from tg_export.models import Chat, FileInfo, MediaType, Message, PhotoMedia
 
 
 def _chat(chat_id: int) -> Chat:
-    return Chat(
-        id=chat_id,
-        name="Chat",
-        type=ChatType.personal,
-        username=None,
-        folder=None,
-        members_count=None,
-        last_message_date=None,
-        messages_count=0,
-        is_left=False,
-        is_archived=False,
-        is_forum=False,
-        migrated_to_id=None,
-        migrated_from_id=None,
-        is_monoforum=False,
-    )
+    return make_chat(id=chat_id)
 
 
 def _message_with_media(msg_id: int, chat_id: int) -> Message:
-    return Message(
+    return make_message(
         id=msg_id,
         chat_id=chat_id,
         date=datetime(2026, 1, 1, 12, 0),
-        edited=None,
         from_id=1,
         from_name="Someone",
-        text=[],
         media=PhotoMedia(
             type=MediaType.photo,
             file=FileInfo(id=msg_id, size=4, name=f"p{msg_id}.jpg", mime_type="image/jpeg", local_path=None),
             width=1,
             height=1,
         ),
-        action=None,
-        reply_to_msg_id=None,
-        reply_to_peer_id=None,
-        forwarded_from=None,
-        reactions=[],
-        is_outgoing=False,
-        signature=None,
-        via_bot_id=None,
-        saved_from_chat_id=None,
-        inline_buttons=None,
-        topic_id=None,
-        grouped_id=None,
     )
 
 

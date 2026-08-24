@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from conftest import make_chat
 
 from tg_export.config import Config
 from tg_export.exporter import Exporter, resolve_chat_dir, sanitize_name
@@ -333,21 +334,8 @@ def test_orphan_cleanup_leaves_alone_what_lies_outside_the_chat_directory(tmp_pa
 
 def _catalog_chat(*, is_left: bool = False, is_archived: bool = False) -> Chat:
     """Собрать запись каталога, задав только флаги, важные для отбора."""
-    return Chat(
-        id=1,
-        name="Left channel",
-        type=ChatType.public_channel,
-        username=None,
-        folder=None,
-        members_count=None,
-        last_message_date=None,
-        messages_count=0,
-        is_left=is_left,
-        is_archived=is_archived,
-        is_forum=False,
-        migrated_to_id=None,
-        migrated_from_id=None,
-        is_monoforum=False,
+    return make_chat(
+        name="Left channel", type=ChatType.public_channel, is_left=is_left, is_archived=is_archived
     )
 
 

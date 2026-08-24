@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from click.testing import CliRunner
+from conftest import make_message
 
 from tg_export.auth import AccountManager
 from tg_export.cli import common as cli_common
@@ -188,31 +189,10 @@ def test_service_messages_are_skipped_when_the_option_says_so(tmp_path):
     from datetime import datetime
 
     from tg_export.exporter import Exporter
-    from tg_export.models import ActionPinMessage, Message
+    from tg_export.models import ActionPinMessage
 
     def _msg(msg_id, action=None):
-        return Message(
-            id=msg_id,
-            chat_id=1,
-            date=datetime(2024, 1, 1),
-            edited=None,
-            from_id=None,
-            from_name="",
-            text=[],
-            media=None,
-            action=action,
-            reply_to_msg_id=None,
-            reply_to_peer_id=None,
-            forwarded_from=None,
-            reactions=[],
-            is_outgoing=False,
-            signature=None,
-            via_bot_id=None,
-            saved_from_chat_id=None,
-            inline_buttons=None,
-            topic_id=None,
-            grouped_id=None,
-        )
+        return make_message(id=msg_id, date=datetime(2024, 1, 1), from_name="", action=action)
 
     exporter = Exporter.__new__(Exporter)
     kept = exporter._keep_message(_msg(1), export_service_messages=False)

@@ -266,10 +266,9 @@ def test_the_publishing_job_names_an_environment():
     доверенного издателя) и даёт место, куда можно повесить ручное
     подтверждение перед необратимой загрузкой.
     """
-    import yaml
+    from parity import workflow as read_workflow
 
-    root = Path(__file__).resolve().parent.parent
-    workflow = yaml.safe_load((root / ".github" / "workflows" / "publish.yml").read_text(encoding="utf-8"))
+    workflow = read_workflow("publish.yml")
 
     publishing = [
         job
@@ -338,10 +337,9 @@ def test_the_publishing_job_runs_no_project_code():
     тестов, попавшая в тег, давали не сломанный релиз, а выпуск произвольного
     пакета от имени проекта -- необратимый, отката у PyPI нет.
     """
-    import yaml
+    from parity import workflow as read_workflow
 
-    root = Path(__file__).resolve().parent.parent
-    workflow = yaml.safe_load((root / ".github" / "workflows" / "publish.yml").read_text(encoding="utf-8"))
+    workflow = read_workflow("publish.yml")
 
     publishing = [
         (name, job)
@@ -398,10 +396,9 @@ def test_the_publishing_workflow_pins_the_version_of_uv():
     """
     import re
 
-    import yaml
+    from parity import workflow as read_workflow
 
-    root = Path(__file__).resolve().parent.parent
-    workflow = yaml.safe_load((root / ".github" / "workflows" / "publish.yml").read_text(encoding="utf-8"))
+    workflow = read_workflow("publish.yml")
 
     versions = [
         step.get("with", {}).get("version")

@@ -1,31 +1,19 @@
 from datetime import datetime
 
+from conftest import make_message
+
 from tg_export.exporter import group_by_topic
-from tg_export.models import ForumTopic, Message, TextPart, TextType
+from tg_export.models import ForumTopic, TextPart, TextType
 
 
 def _msg(id, topic_id, text="Hi"):
-    return Message(
+    return make_message(
         id=id,
-        chat_id=1,
         date=datetime(2024, 1, 1),
-        edited=None,
         from_id=1,
         from_name="A",
         text=[TextPart(type=TextType.text, text=text)],
-        media=None,
-        action=None,
-        reply_to_msg_id=None,
-        reply_to_peer_id=None,
-        forwarded_from=None,
-        reactions=[],
-        is_outgoing=False,
-        signature=None,
-        via_bot_id=None,
-        saved_from_chat_id=None,
-        inline_buttons=None,
         topic_id=topic_id,
-        grouped_id=None,
     )
 
 

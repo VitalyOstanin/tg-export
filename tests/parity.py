@@ -20,10 +20,14 @@ def command_key(run: str) -> str | None:
     окружения (`uv sync`, `uv python install`) и любые команды не через uv.
     """
     run = run.strip()
+    # A ceiling on the run is not part of the command: `timeout 900 uv run ...`
+    # is the same check as `uv run ...`.
+    if run.startswith("timeout "):
+        run = run.split(maxsplit=2)[2] if len(run.split(maxsplit=2)) == 3 else ""
     if not run.startswith("uv ") or run.startswith(("uv sync", "uv python")):
         return None
     tokens = [t for t in run.split() if t != "uv"]
-    if tokens[0] == "run":
+    if tokens and tokens[0] == "run":
         tokens = tokens[1:]
     while tokens and tokens[0].startswith("-"):
         flag = tokens.pop(0)
@@ -32,8 +36,12 @@ def command_key(run: str) -> str | None:
     if not tokens:
         return None
     if tokens[0] == "python":
+        if len(tokens) < 2:
+            # `uv run python` alone opens a shell: not a check, and the index
+            # below used to raise IndexError on it.
+            return None
         if tokens[1] == "-m":
-            return tokens[2]
+            return tokens[2] if len(tokens) > 2 else None
         # `python -c ...` -- инлайн-проверка собранного пакета, не шаг набора.
         return None if tokens[1].startswith("-") else Path(tokens[1]).name
     tail = tokens[1] if len(tokens) > 1 and not tokens[1].startswith("-") and tokens[1] != "." else ""
@@ -51,17 +59,24 @@ def check_script_commands() -> list[str]:
     `ruff format` -- те же инструменты, что и проверочная часть, поэтому по
     ней отсутствие `ruff format --check` было бы незаметно.
     """
-    runs, skipping = [], False
+    runs, depth = [], 0
     for line in (ROOT / CHECK_SCRIPT).read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
+        if depth:
+            # Nested `if` counted, not assumed absent: the first `fi` used to
+            # end the skipping, so everything after a nested block was read as
+            # part of the checks even while still inside the --fix branch.
+            if stripped.startswith("if "):
+                depth += 1
+            elif stripped == "fi":
+                depth -= 1
+            continue
         if stripped.startswith("if [["):
-            skipping = True
+            depth = 1
             continue
         if stripped == "fi":
-            skipping = False
             continue
-        if not skipping:
-            runs.append(stripped)
+        runs.append(stripped)
     return _keys(runs)
 
 

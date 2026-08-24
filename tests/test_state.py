@@ -3,11 +3,11 @@ import sqlite3
 from datetime import datetime
 
 import pytest
+from conftest import make_message
 
 from tg_export.models import (
     FileInfo,
     MediaType,
-    Message,
     PhotoMedia,
     TextPart,
     TextType,
@@ -15,27 +15,14 @@ from tg_export.models import (
 
 
 def _make_msg(msg_id=1, chat_id=123, text="Hello", from_id=100, from_name="Test", media=None, date=None):
-    return Message(
+    return make_message(
         id=msg_id,
         chat_id=chat_id,
         date=date or datetime(2024, 1, 1),
-        edited=None,
         from_id=from_id,
         from_name=from_name,
         text=[TextPart(type=TextType.text, text=text)] if text else [],
         media=media,
-        action=None,
-        reply_to_msg_id=None,
-        reply_to_peer_id=None,
-        forwarded_from=None,
-        reactions=[],
-        is_outgoing=False,
-        signature=None,
-        via_bot_id=None,
-        saved_from_chat_id=None,
-        inline_buttons=None,
-        topic_id=None,
-        grouped_id=None,
     )
 
 

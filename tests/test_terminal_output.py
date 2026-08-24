@@ -18,6 +18,7 @@ import threading
 import time
 
 import pytest
+from conftest import make_chat
 from rich.text import Text
 
 # ----- Markup escaping -----
@@ -185,7 +186,7 @@ async def test_exporter_dry_run_with_markup_in_chat_name_does_not_corrupt_output
 
     from tg_export import exporter as exporter_mod
     from tg_export.exporter import Exporter
-    from tg_export.models import Chat, ChatType
+    from tg_export.models import ChatType
 
     test_console = Console(
         file=StringIO(),
@@ -217,22 +218,7 @@ async def test_exporter_dry_run_with_markup_in_chat_name_does_not_corrupt_output
         account="test",
     )
 
-    chat = Chat(
-        id=1,
-        name="[bold red]EVIL[/] chat",
-        type=ChatType.private_group,
-        username=None,
-        folder=None,
-        members_count=None,
-        last_message_date=None,
-        messages_count=0,
-        is_left=False,
-        is_archived=False,
-        is_forum=False,
-        migrated_to_id=None,
-        migrated_from_id=None,
-        is_monoforum=False,
-    )
+    chat = make_chat(name="[bold red]EVIL[/] chat", type=ChatType.private_group)
     await exporter.run(dry_run=True, chat_list=[chat])
 
     output = test_console.export_text()

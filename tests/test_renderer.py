@@ -2,15 +2,13 @@ from datetime import datetime
 from pathlib import Path
 
 import pytest
+from conftest import make_chat, make_message
 
 from tg_export.config import OutputConfig
 from tg_export.html.renderer import HtmlRenderer, is_joined, render_text_parts
 from tg_export.models import (
-    Chat,
-    ChatType,
     FileInfo,
     MediaType,
-    Message,
     PhotoMedia,
     TextPart,
     TextType,
@@ -28,26 +26,15 @@ def _make_msg(
     action=None,
     grouped_id=None,
 ):
-    return Message(
+    return make_message(
         id=id,
         chat_id=chat_id,
         date=date or datetime(2024, 1, 1, 10, 0),
-        edited=None,
         from_id=from_id,
         from_name=from_name,
         text=[TextPart(type=TextType.text, text=text)] if text else [],
         media=media,
         action=action,
-        reply_to_msg_id=None,
-        reply_to_peer_id=None,
-        forwarded_from=None,
-        reactions=[],
-        is_outgoing=False,
-        signature=None,
-        via_bot_id=None,
-        saved_from_chat_id=None,
-        inline_buttons=None,
-        topic_id=None,
         grouped_id=grouped_id,
     )
 
@@ -64,22 +51,7 @@ def renderer(tmp_path):
 
 
 def _chat(chat_id=1, name="Chat"):
-    return Chat(
-        id=chat_id,
-        name=name,
-        type=ChatType.personal,
-        username=None,
-        folder=None,
-        members_count=None,
-        last_message_date=None,
-        messages_count=0,
-        is_left=False,
-        is_archived=False,
-        is_forum=False,
-        migrated_to_id=None,
-        migrated_from_id=None,
-        is_monoforum=False,
-    )
+    return make_chat(id=chat_id, name=name)
 
 
 def _render(renderer, tmp_path, messages):
@@ -167,22 +139,7 @@ def test_render_text_parts_keeps_https_url():
 
 
 def test_render_chat_monthly_split(renderer, tmp_path):
-    chat = Chat(
-        id=123,
-        name="Test",
-        type=ChatType.personal,
-        username=None,
-        folder=None,
-        members_count=None,
-        last_message_date=None,
-        messages_count=5,
-        is_left=False,
-        is_archived=False,
-        is_forum=False,
-        migrated_to_id=None,
-        migrated_from_id=None,
-        is_monoforum=False,
-    )
+    chat = make_chat(id=123, name="Test", messages_count=5)
     messages = (
         [_make_msg(id=i, text=f"Msg {i}", date=datetime(2024, 1, 15, 10, 0)) for i in range(1, 4)]
         + [_make_msg(id=i, text=f"Msg {i}", date=datetime(2024, 2, 10, 12, 0)) for i in range(4, 7)]
@@ -211,22 +168,7 @@ def test_render_chat_streaming_respects_should_stop(renderer, tmp_path):
     # На force-shutdown рендерер должен прерваться между месяцами и не
     # тянуть jinja2 для оставшихся buckets — иначе ThreadPoolExecutor не
     # завершится и asyncio.run зависнет на shutdown_default_executor.
-    chat = Chat(
-        id=777,
-        name="Stoppable",
-        type=ChatType.personal,
-        username=None,
-        folder=None,
-        members_count=None,
-        last_message_date=None,
-        messages_count=3,
-        is_left=False,
-        is_archived=False,
-        is_forum=False,
-        migrated_to_id=None,
-        migrated_from_id=None,
-        is_monoforum=False,
-    )
+    chat = make_chat(id=777, name="Stoppable", messages_count=3)
     month_keys = ["2024-01", "2024-02", "2024-03"]
     msgs_by_month = {
         "2024-01": [_make_msg(id=1, text="Jan", date=datetime(2024, 1, 15))],
@@ -256,22 +198,7 @@ def test_render_chat_streaming_respects_should_stop(renderer, tmp_path):
 
 
 def test_render_chat_escapes_xss_in_chat_name(renderer, tmp_path):
-    chat = Chat(
-        id=999,
-        name='<script>alert("xss")</script>',
-        type=ChatType.personal,
-        username=None,
-        folder=None,
-        members_count=None,
-        last_message_date=None,
-        messages_count=1,
-        is_left=False,
-        is_archived=False,
-        is_forum=False,
-        migrated_to_id=None,
-        migrated_from_id=None,
-        is_monoforum=False,
-    )
+    chat = make_chat(id=999, name='<script>alert("xss")</script>', messages_count=1)
     msg = _make_msg(
         id=1, text="<img src=x onerror=alert(1)>", from_name="<b>evil</b>", date=datetime(2024, 1, 1, 10, 0)
     )
