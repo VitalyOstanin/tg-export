@@ -1,4 +1,9 @@
-"""YAML config loading and validation."""
+"""Reading the account's YAML configuration and answering what applies to a chat.
+
+The file is read once into `Config`; every setting a chat is exported with is
+then resolved by `Config.resolve_chat_config`, which decides between the rules
+in the order `chats > folders.chats > folders > type_rules > defaults`.
+"""
 
 from __future__ import annotations
 
@@ -148,6 +153,14 @@ GLOBAL_DATA_SECTIONS = (
 
 @dataclass
 class Config:
+    """One account's configuration as the file declares it.
+
+    The fields are the sections of the file; what a particular chat is
+    exported with is not any single one of them but the result of
+    `resolve_chat_config`, which applies the rules in the order
+    `chats > folders.chats > folders > type_rules > defaults`.
+    """
+
     output: OutputConfig = field(default_factory=OutputConfig)
     defaults: DefaultsConfig = field(default_factory=DefaultsConfig)
     personal_info: bool = True

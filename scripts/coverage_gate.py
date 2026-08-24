@@ -12,6 +12,10 @@ Usage (after a run that produced .coverage):
 
 The floors are a regression guard, not a target: they sit slightly below the
 current numbers, so they fail when coverage drops rather than demanding growth.
+That only works while they follow the numbers: a floor left far below the
+actual coverage catches a collapse and misses the regression it exists for, so
+one that fell behind by more than SLACK is reported here with the value to
+write instead of it.
 """
 
 from __future__ import annotations
@@ -23,6 +27,12 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+
+# How far a floor may sit below the measured coverage. Five points is what the
+# floors were set to when they were last written by hand; more than that and
+# the guard only reacts to a collapse. Compared on whole points, so that a
+# floor written from `int(actual) - SLACK` does not read as behind at once.
+SLACK = 5.0
 
 
 def _floors() -> dict[str, float]:
@@ -72,12 +82,15 @@ def main() -> int:
         return 1
 
     failures = []
+    behind = []
     for path, floor in sorted(floors.items()):
         actual = measured[path]
         mark = "ok " if actual >= floor else "LOW"
         print(f"{mark} {path:32} {actual:5.1f}% (floor {floor:.0f}%)")
         if actual < floor:
             failures.append((path, actual, floor))
+        elif int(actual) - floor > SLACK:
+            behind.append((path, actual, floor))
 
     if failures:
         print("", file=sys.stderr)
@@ -85,7 +98,19 @@ def main() -> int:
             print(f"FAIL: {path} at {actual:.1f}%, floor {floor:.0f}%", file=sys.stderr)
         return 1
 
-    print(f"\nOK: {len(floors)} modules at or above their floor")
+    if behind:
+        print("", file=sys.stderr)
+        for path, actual, floor in behind:
+            raised = int(actual - SLACK)
+            print(
+                f"FAIL: {path} at {actual:.1f}% has floor {floor:.0f}%, "
+                f"more than {SLACK:.0f} points behind: write {raised} in "
+                f"[tool.tg-export.coverage-floor] of pyproject.toml",
+                file=sys.stderr,
+            )
+        return 1
+
+    print(f"\nOK: {len(floors)} modules within {SLACK:.0f} points of their floor")
     return 0
 
 

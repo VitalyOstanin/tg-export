@@ -1,4 +1,9 @@
-"""Media downloader with filtering and disk space check."""
+"""Downloading media and reusing what is already on disk.
+
+The module holds the downloader itself, the registry that hands out
+destination names, the readers of sibling accounts' state databases and the
+progress records the status display reads.
+"""
 
 from __future__ import annotations
 
@@ -492,6 +497,24 @@ class DownloadProgress:
 
 
 class MediaDownloader:
+    """Puts one media file of a message on disk, downloading it only if needed.
+
+    Six mechanisms live here, and each guards a failure of its own:
+
+    - a semaphore bounding how many downloads run at once;
+    - per-file_id locks, so two messages carrying the same file do not both
+      download it -- the second one links to what the first registered;
+    - a registry of destination names, so two writers never get one path;
+    - a cache of the free-space check, asked once per interval rather than per
+      file;
+    - read-only connections to the state databases of sibling accounts, kept
+      open for the whole export;
+    - a snapshot of the downloads in flight, read by the display thread.
+
+    Reuse is tried before the network: another chat of this account, a sibling
+    account's export, a Telegram Desktop export.
+    """
+
     def __init__(
         self,
         api,

@@ -1,4 +1,11 @@
-"""Telethon API wrapper with Takeout support."""
+"""The Telegram side of the export: requests, paging and the takeout session.
+
+Two clients live behind one object. The ordinary client owns the session file
+and its lock, performs login and every request outside an export; the takeout
+client, when a session is open, carries the history reads -- Telegram counts
+those against the export quota instead of the ordinary rate limits. Which of
+the two a call uses is decided by `_active_client`, so callers do not choose.
+"""
 
 from __future__ import annotations
 
@@ -55,6 +62,14 @@ def _peer_ids(peers) -> list[int]:
 
 
 class TgApi:
+    """One account's connection to Telegram, with or without a takeout session.
+
+    History reads go through the takeout client while a session is open and
+    through the ordinary one otherwise; everything else -- login, contacts,
+    sending -- always goes through the ordinary client, which also owns the
+    session file and the lock on it.
+    """
+
     def __init__(self, session_path: str | Path, api_id: int, api_hash: str, proxy: ProxyTuple | None = None):
         kwargs = {}
         if proxy:

@@ -611,3 +611,43 @@ def test_the_pipeline_can_be_rehearsed_without_publishing():
     for name in sorted(irreversible):
         condition = str(jobs[name].get("if", ""))
         assert "push" in condition, f"{name} выполняется и на репетиции: if={condition!r}"
+
+
+def test_the_coverage_gate_reports_a_floor_that_fell_behind(tmp_path):
+    """Граница, отставшая от факта, ловит только обвал -- и не ловит регрессию.
+
+    Границы правятся руками, а гейт проверял одно «не ниже» и молчал, когда
+    запас стал избыточным: за несколько дней работы таблица снова разошлась с
+    фактом на шестнадцать пунктов, то есть по прямому назначению -- поймать
+    падение покрытия -- для этих модулей не работала. Отставание видно на том
+    же прогоне, со строкой нового значения.
+    """
+    import subprocess
+    import sys
+
+    root = Path(__file__).resolve().parent.parent
+    script = (root / "scripts" / "coverage_gate.py").read_text(encoding="utf-8")
+    stale = tmp_path / "scripts"
+    stale.mkdir()
+    (stale / "coverage_gate.py").write_text(script, encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.tg-export.coverage-floor]\n"tg_export/__init__.py" = 10\n', encoding="utf-8"
+    )
+
+    measured = tmp_path / "measured.py"
+    measured.write_text(
+        "import json, pathlib, sys\n"
+        "sys.path.insert(0, str(pathlib.Path(sys.argv[1]) / 'scripts'))\n"
+        "import coverage_gate\n"
+        "coverage_gate._measured = lambda: {'tg_export/__init__.py': 100.0}\n"
+        "sys.exit(coverage_gate.main())\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(measured), str(tmp_path)], capture_output=True, text=True, cwd=tmp_path
+    )
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "tg_export/__init__.py" in result.stdout + result.stderr
+    assert "95" in result.stdout + result.stderr, "не назван новый номинал границы"

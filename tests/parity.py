@@ -105,9 +105,27 @@ def jobs_before(jobs: dict, name: str) -> list[str]:
     return earlier
 
 
+def step_check_commands(steps) -> list[str]:
+    """Ключи проверок, выполняемых перечисленными шагами workflow.
+
+    Команды считаются построчно: блок `run:`, начинающийся с `set -euo
+    pipefail`, при разборе целиком не давал ни одного ключа, и проверка внутри
+    такого шага была невидима для сверки с `scripts/check.sh`. Шаг
+    `scripts/check.sh` разворачивается в набор проверок самого скрипта.
+    """
+    keys = []
+    for step in steps:
+        run = (step.get("run") or "").strip()
+        if CHECK_SCRIPT in run:
+            keys.extend(check_script_commands())
+            continue
+        keys.extend(_keys(run.splitlines()))
+    return keys
+
+
 def ci_check_commands() -> list[str]:
     """Проверки, которые выполняет ci.yml."""
-    return _keys(step.get("run") or "" for step in _workflow_steps("ci.yml"))
+    return step_check_commands(_workflow_steps("ci.yml"))
 
 
 def publish_commands_before(action: str) -> list[str]:
@@ -126,11 +144,4 @@ def publish_commands_before(action: str) -> list[str]:
             break
         steps.append(step)
 
-    keys = []
-    for step in steps:
-        run = (step.get("run") or "").strip()
-        if CHECK_SCRIPT in run:
-            keys.extend(check_script_commands())
-            continue
-        keys.extend(_keys(run.splitlines()))
-    return keys
+    return step_check_commands(steps)

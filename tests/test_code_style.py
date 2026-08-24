@@ -587,6 +587,49 @@ def test_every_command_is_described_in_the_cli_reference():
     assert not missing, f"команды не описаны в docs/cli.md: {missing}"
 
 
+def test_every_option_of_every_command_is_named_in_the_cli_reference():
+    """Опция, добавленная к команде, должна попасть в её раздел справочника.
+
+    Наличие самой команды в `docs/cli.md` закреплено проверкой, а состав её
+    опций -- нет: новая опция описывалась только в `--help`, и таблица опций
+    команды расходилась с интерфейсом молча. Сверяются длинные написания;
+    короткие формы и служебная `--help` описаны в разделе глобальных опций.
+    """
+    import click
+
+    from tg_export.cli import main
+
+    reference = (PROJECT.parent / "docs" / "cli.md").read_text(encoding="utf-8")
+    sections = {}
+    current = None
+    for line in reference.splitlines():
+        if line.startswith(("## ", "### ")):
+            current = line.lstrip("#").strip().split(" -- ")[0]
+            sections[current] = []
+        elif current is not None:
+            sections[current].append(line)
+    sections = {name: "\n".join(body) for name, body in sections.items()}
+
+    def leaves(cmd, prefix=""):
+        if isinstance(cmd, click.Group):
+            for sub in cmd.commands.values():
+                yield from leaves(sub, f"{prefix}{cmd.name} " if prefix or cmd.name != "main" else "")
+        else:
+            yield (prefix + (cmd.name or "")).strip(), cmd
+
+    missing = []
+    for name, command in leaves(main):
+        described = sections.get(name)
+        assert described is not None, f"в docs/cli.md нет раздела команды {name!r}"
+        for parameter in command.params:
+            if not isinstance(parameter, click.Option):
+                continue
+            for spelling in parameter.opts:
+                if spelling.startswith("--") and spelling != "--help" and spelling not in described:
+                    missing.append(f"{name} {spelling}")
+    assert not missing, f"опции не описаны в разделе своей команды в docs/cli.md: {missing}"
+
+
 def test_one_command_runs_everything_ci_runs():
     """scripts/check.sh должен покрывать все проверки CI.
 
@@ -1087,3 +1130,19 @@ def test_style_rules_take_their_files_from_the_shared_sets():
                 offenders.append(f"{function.name}:{node.lineno}")
 
     assert not offenders, f"свой обход исходников вместо общего множества: {offenders}"
+
+
+def test_a_check_inside_a_multi_line_step_is_seen_by_the_parity_check():
+    """Гарантия «одна команда делает всё, что делает CI» не должна зависеть от оформления шага.
+
+    Блок `run:` передавался в разбор целиком, а разбор отвечает на первую
+    строку: у шага, начинающегося с `set -euo pipefail`, ключей не возникало
+    вовсе, и проверка, добавленная в такой шаг и не добавленная в
+    `scripts/check.sh`, оставалась невидимой. Многострочные шаги в проекте уже
+    пишутся -- ими оформлены сверка тега с `master` и smoke-тест wheel.
+    """
+    from parity import step_check_commands
+
+    steps = [{"run": "set -euo pipefail\nuv run pyright"}]
+
+    assert step_check_commands(steps) == ["pyright"]
