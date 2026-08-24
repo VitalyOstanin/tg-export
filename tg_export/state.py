@@ -511,7 +511,12 @@ class ExportState:
             if db is not None:
                 await db.close()
         except Exception as e:
+            # Logged and re-raised: a database that did not close is a flush of
+            # the WAL that did not happen, that is, records of this run left
+            # unwritten. Swallowed here, it never reached the outcome, and the
+            # run reported "Export complete" with exit code 0 over it.
             logger.warning("state database did not close cleanly: %s", e)
+            raise
         finally:
             self._lock.release()
 

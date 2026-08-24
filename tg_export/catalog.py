@@ -374,7 +374,6 @@ async def fetch_catalog(api, include_left: bool = False) -> list[Chat]:
 
 def _classify_left_channel(entity) -> ChatType:
     """Classify left channel/group type."""
-
     if getattr(entity, "megagroup", False):
         if getattr(entity, "username", None):
             return ChatType.public_supergroup

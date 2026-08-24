@@ -219,7 +219,7 @@ uv run pyright
 | 27 | имя не импортируется дважды -- в шапке и в теле функции                 | `test_no_module_imports_the_same_name_twice`                     |
 | 28 | код пакета и файлы сборки написаны по-английски                         | `test_the_package_and_its_build_files_speak_english`             |
 | 29 | команда, названная в строках кода, существует в интерфейсе              | `test_every_command_named_in_the_code_exists`                    |
-| 30 | тело функции не начинается пустой строкой вместо docstring              | `test_no_function_body_starts_with_a_blank_line`                 |
+| 30 | тело функции не разрывается пустой строкой ни до docstring, ни после     | `test_no_function_body_starts_with_a_blank_line`                 |
 | 31 | файл не заканчивается баннером-разделителем                             | `test_no_module_ends_with_a_divider_banner`                      |
 | 32 | статус файла записывается членом `FileStatus`, не строкой               | `test_file_statuses_are_spelled_by_the_enum_not_as_free_strings` |
 | 33 | `FileStatus` и `DownloadStatus` совпадают там, где пересекаются         | `test_the_two_status_vocabularies_agree_where_they_overlap`      |

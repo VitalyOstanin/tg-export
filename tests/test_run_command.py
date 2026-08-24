@@ -22,7 +22,6 @@ from tg_export.exporter import ExportStats
 @pytest.fixture
 def run_env(tmp_path, monkeypatch):
     """Окружение для run: аккаунт, конфиг, подставные Telegram и экспортёр."""
-
     cfg_dir = tmp_path / "config"
     mgr = AccountManager(config_dir=cfg_dir)
     mgr.ensure_dirs()
@@ -157,7 +156,6 @@ def test_run_keeps_the_takeout_session_for_the_next_run(run_env):
 def test_takeout_clear_finishes_the_session_on_the_server(tmp_path, monkeypatch):
     """Раз экспорт намеренно оставляет сессию живой, clear должен закрыть её и
     на сервере, иначе takeout остаётся запущенным без способа к нему обратиться."""
-
     cfg_dir = tmp_path / "config"
     mgr = AccountManager(config_dir=cfg_dir)
     mgr.ensure_dirs()

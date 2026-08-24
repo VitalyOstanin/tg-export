@@ -113,7 +113,6 @@ async def test_intra_account_link_leaves_the_event_loop(tmp_path, monkeypatch):
 async def test_index_render_leaves_the_event_loop(tmp_path):
     """Рендер индекса идёт при живом соединении с Telegram: пока шаблон
     собирается, соединение не обслуживается. Рендер чата уже вынесен в поток."""
-
     seen = {}
     renderer = MagicMock()
 

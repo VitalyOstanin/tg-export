@@ -24,7 +24,6 @@ from tg_export.errors import EXIT_USAGE
 @pytest.fixture
 def cfg_dir(tmp_path, monkeypatch):
     """Изолированный каталог настроек с одним аккаунтом и учётными данными."""
-
     d = tmp_path / "config"
     mgr = AccountManager(config_dir=d)
     mgr.ensure_dirs()
@@ -98,7 +97,6 @@ def test_auth_check_without_accounts_is_ok(cfg_dir):
 
 @pytest.mark.asyncio
 async def test_tg_send_reports_failed_delivery(monkeypatch):
-
     api = MagicMock()
     api.disconnect = AsyncMock()
     api.client.send_message = AsyncMock(side_effect=RuntimeError("no such user"))
@@ -110,7 +108,6 @@ async def test_tg_send_reports_failed_delivery(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_tg_send_success_returns_zero(monkeypatch):
-
     api = MagicMock()
     api.disconnect = AsyncMock()
     api.client.send_message = AsyncMock()
@@ -122,7 +119,6 @@ async def test_tg_send_success_returns_zero(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_tg_download_missing_message_is_error(monkeypatch, tmp_path):
-
     api = MagicMock()
     api.disconnect = AsyncMock()
     api.client.get_messages = AsyncMock(return_value=None)

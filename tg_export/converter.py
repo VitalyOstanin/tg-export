@@ -659,8 +659,12 @@ def _get_messages_count(tl_dialog: Any) -> int:
             top = getattr(tl, "top_message", None)
             if isinstance(top, int) and top > 0:
                 return top
-    except (TypeError, AttributeError):
-        pass
+    except (TypeError, AttributeError) as e:
+        # An entity whose attribute access itself fails: the count then falls
+        # back to zero, which is indistinguishable from "top_message did not
+        # come" unless the reason is written down, as the neighbouring
+        # classification does.
+        logger.debug("message count of a dialog is unreadable (%s) -- counted as zero", e)
     return 0
 
 

@@ -673,7 +673,6 @@ async def _print_export_summary(stats, state, output_base: Path, *, takeout_acti
     Goes to stderr and is marked essential, so --quiet keeps it: the export
     artifacts themselves are the files written to disk.
     """
-
     common.diag("\nExport complete:", essential=True)
     # Which API served the export decides how complete and how fast it was, so
     # it belongs in the summary rather than only in a line printed at start-up
@@ -846,6 +845,11 @@ async def _run_export(
             await resources.aclose()
         except (Exception, asyncio.CancelledError) as e:
             logger.warning("resources of the export were not released cleanly: %s", e)
+            # Into the outcome, not only into the log: an unreleased resource
+            # means the database did not flush, and the run must not report
+            # success over records it failed to write.
+            if stats is not None:
+                stats.errors.append(f"resources of the export were not released cleanly: {e}")
 
     # An export that logged errors did not do what it was asked to do, so it must
     # not report success; a signal outranks that and maps to 128 + signum.
@@ -889,7 +893,6 @@ async def _group_chats_for_index(chats, cfg, state, should_stop):
 
     Returns None when ``should_stop`` fires: the caller then skips the render.
     """
-
     from tg_export.exporter import sanitize_name
 
     folders = defaultdict(list)

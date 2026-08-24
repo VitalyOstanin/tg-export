@@ -553,7 +553,13 @@ def _require_bool(raw: dict[str, Any], key: str, default: bool = True) -> bool:
     return value
 
 
-def _validate_choice(value: str, allowed: set[str], field_name: str) -> str:
+def validate_choice(value: str, allowed: set[str], field_name: str) -> str:
+    """Refuse a value outside `allowed`, naming what was allowed.
+
+    Public because every message of the tool about a set of accepted values is
+    worded here: the proxy type in `auth.py` had its own wording and printed
+    the repr of a tuple.
+    """
     if value not in allowed:
         allowed_str = ", ".join(sorted(allowed))
         raise ConfigError(f"Invalid value {value!r} for {field_name}; allowed values: {allowed_str}")
@@ -563,7 +569,7 @@ def _validate_choice(value: str, allowed: set[str], field_name: str) -> str:
 def _parse_action_section(raw: dict[str, Any], section: str, allowed: set[str], default: str) -> str:
     """Read the single `action` key of a section that has only that key."""
     data = _check_keys(_require_mapping(raw.get(section, {}), section), _ACTION_SECTION_KEYS, section)
-    return _validate_choice(data.get("action", default), allowed, f"{section}.action")
+    return validate_choice(data.get("action", default), allowed, f"{section}.action")
 
 
 def _parse_output_section(raw: dict[str, Any]) -> OutputConfig:
@@ -575,7 +581,7 @@ def _parse_output_section(raw: dict[str, Any]) -> OutputConfig:
         # YAML reaches us verbatim: without this a directory literally named ~
         # would be created in the current working directory.
         path=str(Path(out_raw.get("path", bare.path)).expanduser()),
-        format=_validate_choice(out_raw.get("format", bare.format), _OUTPUT_FORMATS, "output.format"),
+        format=validate_choice(out_raw.get("format", bare.format), _OUTPUT_FORMATS, "output.format"),
     )
 
 

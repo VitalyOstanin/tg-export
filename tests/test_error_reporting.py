@@ -109,7 +109,6 @@ def test_debug_does_not_turn_on_the_libraries_own_logging():
     telethon логирует каждый пакет MTProto, aiosqlite -- каждый запрос; на их
     фоне три десятка собственных debug-записей не найти.
     """
-
     try:
         level, include_libraries = cli_common.resolve_log_level(debug=True, log_level=None)
         assert (level, include_libraries) == (logging.DEBUG, False)
@@ -124,7 +123,6 @@ def test_debug_does_not_turn_on_the_libraries_own_logging():
 
 def test_the_all_suffix_lifts_the_libraries_too():
     """Полный вывод библиотек должен оставаться доступным -- отдельным словом."""
-
     try:
         level, include_libraries = cli_common.resolve_log_level(debug=False, log_level="DEBUG:all")
         assert (level, include_libraries) == (logging.DEBUG, True)
@@ -443,7 +441,7 @@ async def test_a_failed_close_still_releases_the_lock(tmp_path, caplog):
     broken.close = AsyncMock(side_effect=RuntimeError("WAL flush failed"))
     real_db, state._db = state._db, broken
 
-    with caplog.at_level(logging.WARNING):
+    with caplog.at_level(logging.WARNING), pytest.raises(RuntimeError, match="WAL flush failed"):
         await state.close()
 
     assert state._db is None
@@ -504,3 +502,28 @@ async def test_a_section_that_cannot_reach_the_server_is_recorded_as_an_error(tm
     await exporter.export_global_data(stats)
 
     assert any("stories" in error for error in stats.errors), stats.errors
+
+
+@pytest.mark.asyncio
+async def test_a_database_that_did_not_close_changes_the_outcome_of_the_run(tmp_path, monkeypatch):
+    """Отказ закрытия базы записывался в журнал и там же заканчивался.
+
+    Внешний обработчик в `_run_export` заведён ровно под этот случай, но
+    внутренний перехват в `close` до него ничего не доносил: сброс WAL мог не
+    пройти, а пользователь читал «Export complete» и код 0. Незакрытая база --
+    это потеря последних записей, и прогон обязан сообщить о ней кодом.
+    """
+    from tg_export.state import ExportState
+
+    state = ExportState(tmp_path / "state.db")
+    await state.open()
+
+    broken = MagicMock()
+    broken.close = AsyncMock(side_effect=RuntimeError("WAL flush failed"))
+    real_db, state._db = state._db, broken
+
+    with pytest.raises(RuntimeError, match="WAL flush failed"):
+        await state.close()
+
+    assert not state._lock.held, "блокировка осталась взятой"
+    await real_db.close()

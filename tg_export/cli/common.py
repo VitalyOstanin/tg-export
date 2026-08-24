@@ -273,7 +273,6 @@ def resolve_log_level(debug: bool, log_level: str | None) -> tuple[int, bool]:
     every command of this one -- naming ``--log-level``, which the user never
     passed.
     """
-
     source = "--log-level"
     raw = log_level or ""
     if not raw:

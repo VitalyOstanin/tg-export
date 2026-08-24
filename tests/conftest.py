@@ -31,7 +31,6 @@ async def state(tmp_path):
 @pytest.fixture
 def account_env(tmp_path, monkeypatch):
     """Настроенный аккаунт без файла конфигурации экспорта."""
-
     cfg_dir = tmp_path / "config"
     mgr = AccountManager(config_dir=cfg_dir)
     mgr.ensure_dirs()

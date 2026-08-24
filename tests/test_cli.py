@@ -78,7 +78,6 @@ def _takeout_cfg(max_file_size=1024):
 
 @pytest.mark.asyncio
 async def test_start_takeout_returns_true_on_success(monkeypatch):
-
     diag = _RecordingDiag()
     monkeypatch.setattr(cli_common, "diag", diag)
     api = MagicMock()
@@ -138,7 +137,6 @@ async def test_start_takeout_require_turns_fallback_into_error(monkeypatch):
 async def test_start_takeout_does_not_swallow_programming_errors(monkeypatch):
     # Широкий except Exception прятал и дефекты самого кода — например TypeError
     # из повреждённого takeout_id. Такие ошибки должны доходить до вызывающего.
-
     monkeypatch.setattr(cli_common, "diag", _RecordingDiag())
     api = MagicMock()
     api.start_takeout = AsyncMock(side_effect=TypeError("object supporting the buffer API required"))
@@ -237,7 +235,6 @@ def test_live_display_requires_a_terminal_and_no_quiet(monkeypatch, is_terminal,
 
 
 def test_upload_progress_yields_nothing_under_quiet(monkeypatch):
-
     monkeypatch.setattr(cli_common, "_QUIET", True)
     with cli_tg._upload_progress(by_bytes=True) as progress:
         assert progress is None
@@ -248,7 +245,6 @@ async def test_start_takeout_asks_for_the_largest_configured_limit(monkeypatch):
     """Лимит Takeout берётся не из defaults, а из максимума по применимым
     правилам: правило чата с большим max_file_size иначе было бы урезано
     самой сессией."""
-
     monkeypatch.setattr(cli_common, "diag", _RecordingDiag())
     api = MagicMock()
     api.start_takeout = AsyncMock()
@@ -319,7 +315,6 @@ def test_each_account_exports_into_its_own_directory(tmp_path, monkeypatch):
     Без этого два аккаунта писали в один каталог, делили одну базу состояния и
     при дедупликации принимали чужие файлы за свои.
     """
-
     base = tmp_path / "exports"
     _account_with_config(tmp_path, monkeypatch, str(base))
 
@@ -330,7 +325,6 @@ def test_each_account_exports_into_its_own_directory(tmp_path, monkeypatch):
 
 def test_a_path_that_already_names_the_account_is_not_doubled(tmp_path, monkeypatch):
     """Конфиги прежних версий зашивали alias прямо в путь."""
-
     base = tmp_path / "exports" / "acc"
     _account_with_config(tmp_path, monkeypatch, str(base))
 
@@ -355,7 +349,6 @@ def test_an_existing_export_stays_where_it_was_written(tmp_path, monkeypatch):
 
 def test_the_output_override_names_the_directory_itself(tmp_path, monkeypatch):
     """`--output` указывает на сам каталог выгрузки, к нему ничего не приписывается."""
-
     _account_with_config(tmp_path, monkeypatch, str(tmp_path / "exports"))
     override = tmp_path / "elsewhere"
 

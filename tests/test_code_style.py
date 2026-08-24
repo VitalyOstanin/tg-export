@@ -769,18 +769,30 @@ def test_no_function_body_starts_with_a_blank_line():
     """Разрыв сразу после сигнатуры читается как след удалённого docstring.
 
     Функции пакета начинаются с docstring, а `ruff format` пустую строку в
-    начале блока сохраняет, поэтому расхождение остаётся незамеченным.
+    начале блока сохраняет, поэтому расхождение остаётся незамеченным. Разрыв
+    между docstring и первым оператором -- то же расхождение с другой стороны:
+    в сотнях функций тело идёт сразу за docstring, и написание должно быть
+    одно, иначе читатель принимает пробел за границу смысловых частей.
     """
     offenders = []
-    for path, tree in _trees(_package_sources()):
+    for path, tree in _trees(_package_sources() + _test_sources()):
         lines = path.read_text(encoding="utf-8").splitlines()
         for node in ast.walk(tree):
             if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
                 continue
             first = node.body[0].lineno
             if first - 2 >= 0 and not lines[first - 2].strip():
-                offenders.append(f"{path.relative_to(PROJECT)}:{node.lineno} {node.name}")
-    assert not offenders, f"пустая строка вместо docstring: {offenders}"
+                offenders.append(f"{path}:{node.lineno} {node.name} (пустая строка вместо docstring)")
+            if ast.get_docstring(node) is None or len(node.body) < 2:
+                continue
+            # Кроме вложенного определения: перед ним пустую строку ставит сам
+            # `ruff format`, и запрет здесь спорил бы с форматтером.
+            if isinstance(node.body[1], ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+                continue
+            after_docstring = node.body[0].end_lineno
+            if after_docstring is not None and not lines[after_docstring].strip():
+                offenders.append(f"{path}:{node.lineno} {node.name} (пустая строка после docstring)")
+    assert not offenders, f"разрыв в начале тела функции: {offenders}"
 
 
 def test_no_module_ends_with_a_divider_banner():
