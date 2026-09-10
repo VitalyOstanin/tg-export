@@ -536,11 +536,12 @@ async def _send_files(client, recipient, file_paths, text, as_document) -> None:
                 if total_task is not None:
                     progress.update(total_task, completed=done + sent)
 
-            await client.send_file(
+            await _send_one_file(
+                client,
                 recipient,
-                str(path),
+                path,
                 caption=caption if index == 0 else "",
-                force_document=as_document,
+                as_document=as_document,
                 progress_callback=file_progress,
             )
             done_bytes += sizes[index]
@@ -552,6 +553,33 @@ async def _send_files(client, recipient, file_paths, text, as_document) -> None:
                         completed=done_bytes,
                         description=f"total {index + 1}/{len(file_paths)} files",
                     )
+
+
+async def _send_one_file(client, recipient, path, *, caption, as_document, progress_callback) -> None:
+    """Send one file, uploading its parts over several connections at once.
+
+    The upload is done here rather than inside `send_file` so that a large
+    file leaves at the speed of the line instead of one part per round trip;
+    small files still go the library's way. Because the message is then built
+    from a handle rather than from a path, the attributes and the mime type
+    are read from the file on disk and passed along -- taken from the handle
+    they would come from its name alone, and a video would lose its duration
+    and dimensions.
+    """
+    from telethon import utils
+
+    from tg_export.upload import upload_file
+
+    handle = await upload_file(client, path, progress_callback=progress_callback)
+    attributes, mime_type = utils.get_attributes(str(path), force_document=as_document)
+    await client.send_file(
+        recipient,
+        handle,
+        caption=caption,
+        force_document=as_document,
+        attributes=attributes,
+        mime_type=mime_type,
+    )
 
 
 async def _tg_send(account_name, recipients, text, files, as_document=False) -> int:

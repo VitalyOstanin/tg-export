@@ -405,38 +405,45 @@ class TestTgSend:
         ):
             asyncio.run(_tg_send("acc", [123], text, files, as_document))
 
-        return api.client.send_file
+        return api.client
 
     def test_single_file_sent_as_document_when_flag_set(self, tmp_path):
-        send_file = self._run_send(tmp_path, 1, True)
+        send_file = self._run_send(tmp_path, 1, True).send_file
 
         assert send_file.await_count == 1
         assert send_file.await_args.kwargs["force_document"] is True
 
     def test_documents_are_sent_one_by_one(self, tmp_path):
-        send_file = self._run_send(tmp_path, 3, True)
+        client = self._run_send(tmp_path, 3, True)
+        send_file = client.send_file
 
         assert send_file.await_count == 3
         assert all(call.kwargs["force_document"] is True for call in send_file.await_args_list)
-        assert all(isinstance(call.args[1], str) for call in send_file.await_args_list)
+        # Каждый файл сперва загружается, и в сообщение уходит полученный
+        # дескриптор, а не путь: части крупного файла отправляются
+        # параллельно, чего send_file по пути не делает.
+        assert client.upload_file.await_count == 3
+        assert all(isinstance(call.args[0], str) for call in client.upload_file.await_args_list)
 
     def test_caption_goes_to_the_first_document_only(self, tmp_path):
-        send_file = self._run_send(tmp_path, 3, True, text="hello")
+        send_file = self._run_send(tmp_path, 3, True, text="hello").send_file
         captions = [call.kwargs["caption"] for call in send_file.await_args_list]
 
         assert captions == ["hello", "", ""]
 
     def test_photos_keep_album_grouping(self, tmp_path):
-        send_file = self._run_send(tmp_path, 3, False)
+        send_file = self._run_send(tmp_path, 3, False).send_file
 
         assert send_file.await_count == 1
         assert send_file.await_args.kwargs["force_document"] is False
         assert len(send_file.await_args.args[1]) == 3
 
     def test_progress_callback_is_passed(self, tmp_path):
-        send_file = self._run_send(tmp_path, 2, True)
+        upload_file = self._run_send(tmp_path, 2, True).upload_file
 
-        assert all(callable(call.kwargs["progress_callback"]) for call in send_file.await_args_list)
+        # Прогресс считается по ходу загрузки частей, поэтому обратный вызов
+        # уходит туда, а не в отправку готового сообщения.
+        assert all(callable(call.kwargs["progress_callback"]) for call in upload_file.await_args_list)
 
 
 @pytest.mark.asyncio
@@ -474,6 +481,7 @@ async def test_send_files_escapes_the_file_name_for_rich(tmp_path, monkeypatch):
 
     client = MagicMock()
     client.send_file = AsyncMock()
+    client.upload_file = AsyncMock(return_value="handle")
 
     await cli_tg._send_files(client, 1, [tricky], "text", True)
 

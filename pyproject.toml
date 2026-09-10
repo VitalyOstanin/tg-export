@@ -176,6 +176,7 @@ fail_under = 50
 "tg_export/models.py" = 90
 "tg_export/session.py" = 82
 "tg_export/state.py" = 88
+"tg_export/upload.py" = 90
 "tg_export/verify.py" = 94
 "tg_export/waits.py" = 93
 
