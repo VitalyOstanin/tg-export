@@ -75,6 +75,16 @@ dependencies = [
     # because the package now sits in the main dependencies: the ceiling
     # applies to every installation, not only to the one that uses a proxy.
     "python-socks[asyncio]>=2.0,<4",
+    # MTProto encrypts every part of an upload, and without this package
+    # Telethon does it in pure Python: measured at 7.8 MB/s on the machine the
+    # parallel upload was written for, which is below what several connections
+    # to the datacentre deliver together. Telethon picks the module up by
+    # importing it, so it is a dependency rather than an extra: an installation
+    # without it silently keeps the slow path. Wheels are published for every
+    # Python and platform this project declares, so nothing is compiled at
+    # install time. Upper bound at the next major of a 0.x line, where a break
+    # is allowed in a minor.
+    "cryptg>=0.5,<1",
 ]
 
 [project.urls]
