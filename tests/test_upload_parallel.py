@@ -77,14 +77,14 @@ def _client():
     [
         (100 * 1024, 32 * 1024),
         (5 * MB, 64 * 1024),
-        (100 * MB, 128 * 1024),
-        (401 * MB, 128 * 1024),
-        (600 * MB, 256 * 1024),
+        (100 * MB, 512 * 1024),
+        (401 * MB, 512 * 1024),
+        (600 * MB, 512 * 1024),
         (1500 * MB, 512 * 1024),
     ],
 )
 def test_part_size_follows_the_file_size(file_size, expected):
-    """Мелкие размеры оставлены мелким файлам, крупные растут с размером."""
+    """Мелкие размеры оставлены мелким файлам, за 32 МБ берётся наибольший."""
     assert choose_part_size(file_size) == expected
 
 
@@ -121,7 +121,7 @@ def _widen(policy, *, to):
 
 def test_width_grows_only_when_every_connection_answered_fast():
     """Пока быстрый ответ показало не каждое соединение, роста нет."""
-    limits = UploadLimits()
+    limits = UploadLimits(min_connections=1)
     policy = ConnectionCountPolicy(limits)
     policy.record(connection=0, duration=0.2, in_flight=MB)
     assert policy.grow_if_all_fast() is True
@@ -138,7 +138,7 @@ def test_width_grows_only_when_every_connection_answered_fast():
 
 def test_fast_answer_on_a_light_connection_does_not_count():
     """Быстрый ответ на одинокой мелкой части ничего не доказывает."""
-    policy = ConnectionCountPolicy(UploadLimits())
+    policy = ConnectionCountPolicy(UploadLimits(min_connections=1))
     policy.record(connection=0, duration=0.1, in_flight=64 * 1024)
     assert policy.grow_if_all_fast() is False
     assert policy.count == 1
@@ -146,7 +146,7 @@ def test_fast_answer_on_a_light_connection_does_not_count():
 
 def test_middling_answer_stops_the_growth():
     """Ответ между порогами снимает отметки, и ширина остаётся прежней."""
-    policy = ConnectionCountPolicy(UploadLimits())
+    policy = ConnectionCountPolicy(UploadLimits(min_connections=1))
     policy.record(connection=0, duration=0.2, in_flight=MB)
     policy.record(connection=0, duration=3.0, in_flight=MB)
     assert policy.grow_if_all_fast() is False
@@ -156,7 +156,7 @@ def test_middling_answer_stops_the_growth():
 def test_slow_answer_drops_one_connection():
     """Ответ дольше восьми секунд закрывает одно соединение."""
     clock = [100.0]
-    policy = ConnectionCountPolicy(UploadLimits(), clock=lambda: clock[0])
+    policy = ConnectionCountPolicy(UploadLimits(min_connections=1), clock=lambda: clock[0])
     _widen(policy, to=4)
     assert policy.count == 4
 
@@ -167,7 +167,7 @@ def test_slow_answer_drops_one_connection():
 def test_connections_are_dropped_no_faster_than_the_settle_time():
     """Второе сужение подряд ждёт, пока очередь разойдётся на новой ширине."""
     clock = [100.0]
-    limits = UploadLimits()
+    limits = UploadLimits(min_connections=1)
     policy = ConnectionCountPolicy(limits, clock=lambda: clock[0])
     _widen(policy, to=4)
     assert policy.count == 4
@@ -183,15 +183,53 @@ def test_connections_are_dropped_no_faster_than_the_settle_time():
 
 def test_width_never_falls_below_one():
     """Последнее соединение не закрывается: отправлять было бы нечем."""
-    policy = ConnectionCountPolicy(UploadLimits())
+    policy = ConnectionCountPolicy(UploadLimits(min_connections=1))
     for _ in range(5):
         policy.record(connection=0, duration=30.0, in_flight=MB)
     assert policy.count == 1
 
 
+def test_width_starts_at_the_floor():
+    """Ширина открывается на нижней границе, а не на одном соединении."""
+    policy = ConnectionCountPolicy(UploadLimits(min_connections=3))
+    assert policy.count == 3
+
+
+def test_width_never_falls_below_the_floor():
+    """Медленные ответы сужают отправку только до нижней границы."""
+    clock = [100.0]
+    limits = UploadLimits(min_connections=2, max_connections=4)
+    policy = ConnectionCountPolicy(limits, clock=lambda: clock[0])
+    _widen(policy, to=4)
+
+    for _ in range(5):
+        policy.record(connection=0, duration=9.0, in_flight=MB)
+        clock[0] += limits.settle_after_shrink
+    assert policy.count == 2
+
+
+def test_the_default_floor_leaves_room_to_narrow():
+    """Пределы по умолчанию допускают сужение до нижней границы.
+
+    Нижняя граница вровень с потолком сделала бы ответ на запрет со стороны
+    Telegram пустым действием: закрывать было бы нечего.
+    """
+    limits = UploadLimits()
+    assert limits.min_connections < limits.max_connections
+
+    clock = [100.0]
+    policy = ConnectionCountPolicy(limits, clock=lambda: clock[0])
+    _widen(policy, to=limits.max_connections)
+
+    for _ in range(limits.max_connections):
+        policy.record(connection=0, duration=9.0, in_flight=MB)
+        clock[0] += limits.settle_after_shrink
+    assert policy.count == limits.min_connections
+
+
 def test_width_never_exceeds_the_ceiling():
     """Ширина упирается в объявленный предел числа соединений."""
-    limits = UploadLimits(max_connections=3)
+    limits = UploadLimits(min_connections=1, max_connections=3)
     policy = ConnectionCountPolicy(limits)
     for _ in range(10):
         for index in range(policy.count):
@@ -227,6 +265,22 @@ async def test_every_part_is_sent_once_and_numbered_in_order(tmp_path):
     assert {r.file_id for r in sent} == {handle.id}
     assert b"".join(r.bytes for r in sorted(sent, key=lambda r: r.file_part)) == path.read_bytes()
     assert handle.name == "big.bin"
+
+
+async def test_upload_opens_the_floor_of_connections_at_once(tmp_path):
+    """Соединения нижней границы открыты с самого начала, без ожидания роста.
+
+    Порог быстрого ответа снят до нуля, поэтому ни один ответ не считается
+    быстрым и ширина вырасти не может: всё, что открыто, открыто на старте.
+    """
+    path = _write(tmp_path / "big.bin", 300 * 1024)
+    connect, created = fake_pool()
+    limits = UploadLimits(min_connections=3, fast_response=0.0, in_flight_per_connection=32 * 1024)
+    uploader = ParallelUploader(_client(), limits=limits, connect=connect)
+
+    await uploader.upload(path)
+
+    assert len(created) == 3
 
 
 async def test_progress_counts_up_to_the_file_size(tmp_path):

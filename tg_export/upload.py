@@ -64,15 +64,27 @@ BIG_FILE_FROM = 10 * 1024 * 1024
 class UploadLimits:
     """How wide the upload may open and what counts as a fast answer.
 
-    Defaults follow the official desktop client, with one number lowered: it
-    allows eight connections, and measurements on this project's own line
+    Defaults follow the official desktop client, with two departures.  The
+    ceiling is four rather than eight: measurements on this project's own line
     showed the throughput flat from two connections onwards and Telegram
-    answering the widest runs with a one-second flood wait, so the ceiling is
-    four. A megabyte stays in flight on each, growth continues only while
-    answers come back within a second, and one connection is dropped when an
-    answer takes eight or more.
+    answering the widest runs with a one-second flood wait.  And the width
+    starts at the floor instead of at one, because the client's rule -- open
+    another connection once every current one answered within a second --
+    never fires on a line whose round trip is already a second, and the upload
+    would then crawl through the whole file on a single connection.
+
+    The floor is two, which is where that same measurement has the throughput
+    flatten, so opening there costs nothing and narrowing stays possible: a
+    floor equal to the ceiling would turn the answer to a flood wait -- drop a
+    connection -- into a no-op.
+
+    A megabyte stays in flight on each, growth continues only while answers
+    come back within a second, and one connection is dropped when an answer
+    takes eight or more, down to the floor.
     """
 
+    # The width the upload opens with and never falls below.
+    min_connections: int = 2
     max_connections: int = 4
     in_flight_per_connection: int = 1024 * 1024
     fast_response: float = 1.0
@@ -110,7 +122,7 @@ class ConnectionCountPolicy:
     def __init__(self, limits: UploadLimits, *, clock: Callable[[], float] = time.monotonic) -> None:
         self._limits = limits
         self._clock = clock
-        self._count = 1
+        self._count = limits.min_connections
         self._fast: set[int] = set()
         self._last_shrink: float | None = None
 
@@ -136,7 +148,7 @@ class ConnectionCountPolicy:
             self._fast.add(connection)
 
     def _shrink(self) -> None:
-        if self._count <= 1:
+        if self._count <= self._limits.min_connections:
             return
         now = self._clock()
         if self._last_shrink is not None and now - self._last_shrink < self._limits.settle_after_shrink:
@@ -163,12 +175,14 @@ class ConnectionCountPolicy:
 
 
 def choose_part_size(file_size: int) -> int:
-    """The part size the official client would pick for a file this large.
+    """The part size to cut a file of this size into.
 
     The smallest sizes are reserved for small files: a 5 MB file cut into
-    32 KB parts is 160 round trips for no reason, so the client starts at
-    64 KB past a megabyte and at 128 KB past 32 MB. From there the first size
-    that keeps the file within MAX_PARTS wins.
+    32 KB parts is 160 round trips for no reason, so the floor is 64 KB past a
+    megabyte. Past 32 MB the file is large enough that the number of round
+    trips decides the speed, so it takes the largest size outright instead of
+    the smallest one that fits within MAX_PARTS -- 128 KB parts turn a 283 MB
+    file into 2159 answers to wait for, against 540 at 512 KB.
     """
     if file_size <= 0:
         raise ValueError(f"file size must be positive, got {file_size}")
@@ -177,7 +191,7 @@ def choose_part_size(file_size: int) -> int:
     elif file_size <= MEDIUM_FILE_UP_TO:
         allowed = PART_SIZES[1:]
     else:
-        allowed = PART_SIZES[2:]
+        allowed = PART_SIZES[-1:]
     for part_size in allowed:
         if (file_size + part_size - 1) // part_size <= MAX_PARTS:
             return part_size
@@ -357,7 +371,10 @@ class ParallelUploader:
         policy = ConnectionCountPolicy(self._limits)
         pool = _Pool(connect=self._connect)
         try:
-            await pool.resize(1)
+            # The floor, not one connection: the width only ever grows on
+            # answers that came back inside a second, so a line slower than
+            # that would carry the whole file on a single connection.
+            await pool.resize(policy.count)
             await self._run(
                 path=path,
                 file_id=file_id,
