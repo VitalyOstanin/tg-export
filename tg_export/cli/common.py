@@ -214,7 +214,7 @@ def account_output_dir(base: Path, account: str) -> Path:
 
 @contextlib.asynccontextmanager
 async def opened_state(
-    account, config_override, output_override
+    account, config_override, output_override, *, read_only: bool = False
 ) -> AsyncIterator[tuple[ExportState, Path, str]]:
     """Open the state database of an account; yield ``(state, output_base, account)``.
 
@@ -225,7 +225,9 @@ async def opened_state(
     caller was handed a value that might be None and pyright had to be told to
     keep quiet about it project-wide.
     """
-    async with _opened_state(account, config_override, output_override, required=True) as opened:
+    async with _opened_state(
+        account, config_override, output_override, required=True, read_only=read_only
+    ) as opened:
         state, output_base, resolved = opened
         assert state is not None  # required=True exits instead of yielding None
         yield state, output_base, resolved
@@ -236,13 +238,15 @@ async def opened_state_if_any(
     account, config_override, output_override
 ) -> AsyncIterator[tuple[ExportState | None, Path, str]]:
     """Same, but a missing database yields ``(None, ...)`` instead of exiting."""
-    async with _opened_state(account, config_override, output_override, required=False) as opened:
+    async with _opened_state(
+        account, config_override, output_override, required=False, read_only=False
+    ) as opened:
         yield opened
 
 
 @contextlib.asynccontextmanager
 async def _opened_state(
-    account, config_override, output_override, *, required: bool
+    account, config_override, output_override, *, required: bool, read_only: bool = False
 ) -> AsyncIterator[tuple[ExportState | None, Path, str]]:
     from tg_export.state import ExportState
 
@@ -255,7 +259,7 @@ async def _opened_state(
         yield None, output_base, account
         return
 
-    async with ExportState(state_path) as state:
+    async with ExportState(state_path, read_only=read_only) as state:
         yield state, output_base, account
 
 

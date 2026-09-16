@@ -423,9 +423,14 @@ class ExportState:
     - removal: `purge_chat`, `count_chat_rows`, `count_all_rows`.
     """
 
-    def __init__(self, db_path: Path) -> None:
+    def __init__(self, db_path: Path, *, read_only: bool = False) -> None:
         self.db_path = db_path
         self._db: aiosqlite.Connection | None = None
+        # A reader takes no lock at all. The lock exists to keep two writers
+        # off one database; WAL already gives a reader a consistent snapshot
+        # while a writer works, so making `state show` wait for an export to
+        # finish bought nothing and hid exactly the run it was asked about.
+        self._read_only = read_only
         self._lock = ProcessLock(
             db_path,
             f"State DB is locked by another tg-export process: {db_path}.lock. "
@@ -441,6 +446,8 @@ class ExportState:
 
     def _acquire_lock(self) -> None:
         """Take the advisory lock that keeps a second export off this database."""
+        if self._read_only:
+            return
         try:
             self._lock.acquire()
         except ProcessLockError as e:
@@ -462,11 +469,16 @@ class ExportState:
             # it would take the process umask, and tightening it afterwards
             # leaves a window with a readable file. An empty private file made
             # first is the one SQLite then opens.
-            create_private_file(self.db_path)
+            if not self._read_only:
+                create_private_file(self.db_path)
             self._db = await aiosqlite.connect(self.db_path, timeout=DB_TIMEOUT_SECONDS)
             self.db.row_factory = aiosqlite.Row
             await self._apply_pragmas()
-            await self._create_tables()
+            # Creating the schema is a write, and a reader must not attempt one
+            # next to an export: it would wait out the busy timeout and then
+            # fail over a database that is in use, not missing.
+            if not self._read_only:
+                await self._create_tables()
             # -wal and -shm appear when the connection opens, so they are
             # tightened here; the database file itself was created private above.
             for suffix in ("", "-wal", "-shm"):

@@ -60,7 +60,13 @@ def state_show(account, config, output, as_json, chat_id) -> None:
 
 async def _state_show(account, config_override, output_override, chat_id, as_json=False) -> None:
     """Show the export state: one chat when it is named, the whole account otherwise."""
-    async with common.opened_state(account, config_override, output_override) as (st, _, account):
+    # Read-only: the numbers of a running export are exactly what this command
+    # is asked for, and taking the writer's lock made it wait for that export.
+    async with common.opened_state(account, config_override, output_override, read_only=True) as (
+        st,
+        _,
+        account,
+    ):
         if chat_id:
             chat_state = await st.get_chat_state(chat_id)
             if not chat_state:

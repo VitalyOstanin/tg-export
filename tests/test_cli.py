@@ -1002,6 +1002,7 @@ def test_auth_check_json_puts_a_document_on_stdout(account_env, monkeypatch):
 
 
 def test_state_show_json_puts_a_document_on_stdout(tmp_path, monkeypatch, account_env):
+    import asyncio
     import json as json_mod
 
     from tg_export.cli import common as cli_common
@@ -1009,9 +1010,15 @@ def test_state_show_json_puts_a_document_on_stdout(tmp_path, monkeypatch, accoun
 
     state_db = tmp_path / "state.db"
 
+    async def create_tables():
+        async with ExportState(state_db):
+            pass
+
+    asyncio.run(create_tables())
+
     @contextlib.asynccontextmanager
-    async def opened(account, config_override, output_override):
-        async with ExportState(state_db) as st:
+    async def opened(account, config_override, output_override, *, read_only=False):
+        async with ExportState(state_db, read_only=read_only) as st:
             yield st, tmp_path, "acc"
 
     monkeypatch.setattr(cli_common, "opened_state", opened)

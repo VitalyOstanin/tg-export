@@ -950,3 +950,47 @@ async def test_the_first_descent_sets_the_bottom_mark_and_zero_never_wins(state)
 
     await state.set_oldest_msg_id(chat_id=6, msg_id=0)
     assert (await state.get_chat_state(6))["oldest_msg_id"] == 500
+
+
+class TestReadOnlyState:
+    """Чтение базы не мешает экспорту и не ждёт его окончания."""
+
+    @staticmethod
+    def _classes():
+        from tg_export.state import ExportState, StateLockError
+
+        return ExportState, StateLockError
+
+    @pytest.mark.asyncio
+    async def test_reader_opens_while_a_writer_holds_the_lock(self, tmp_path):
+        """Читатель открывает базу, пока экспорт держит исключительную блокировку."""
+        ExportState, _ = self._classes()
+        db_path = tmp_path / "state.db"
+
+        async with ExportState(db_path), ExportState(db_path, read_only=True) as reader:
+            cursor = await reader.db.execute("SELECT 1")
+            assert await cursor.fetchone() is not None
+
+    @pytest.mark.asyncio
+    async def test_writer_starts_while_a_reader_is_open(self, tmp_path):
+        """Открытый читатель не мешает экспорту начаться."""
+        ExportState, _ = self._classes()
+        db_path = tmp_path / "state.db"
+
+        async with ExportState(db_path):
+            pass
+
+        async with ExportState(db_path, read_only=True), ExportState(db_path) as writer:
+            cursor = await writer.db.execute("SELECT 1")
+            assert await cursor.fetchone() is not None
+
+    @pytest.mark.asyncio
+    async def test_two_writers_still_refuse_each_other(self, tmp_path):
+        """Два пишущих процесса по-прежнему не работают на одной базе."""
+        ExportState, StateLockError = self._classes()
+        db_path = tmp_path / "state.db"
+
+        async with ExportState(db_path):
+            with pytest.raises(StateLockError):
+                async with ExportState(db_path):
+                    pass
