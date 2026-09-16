@@ -25,7 +25,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from tg_export.format import format_moment
+from tg_export.format import class_suffix, display_name, format_moment, strip_control_chars
 from tg_export.privacy import ensure_private_dir, write_private_text
 
 logger = logging.getLogger(__name__)
@@ -160,3 +160,160 @@ async def missed_messages(
             continue
         async for message in api.client.iter_messages(dialog.entity, min_id=mark, limit=limit, reverse=True):
             yield chat_id, message
+
+
+def message_record(chat_id: int | None, chat: str | None, message: Any, *, event: str = "message") -> dict:
+    """One message as the reader of the stream sees it.
+
+    The names repeat what `tg messages --json` already prints, so a program
+    reading both parses them with one piece of code. Attachments are named, not
+    fetched: the listener stays light, and `tg download` fetches a file when
+    the reader decides it wants one.
+    """
+    file = getattr(message, "file", None)
+    sender = getattr(message, "sender", None)
+    return {
+        "event": event,
+        "chat_id": chat_id,
+        "chat": chat,
+        "id": getattr(message, "id", None),
+        "date": format_moment(getattr(message, "date", None), missing=""),
+        "sender_id": getattr(message, "sender_id", None),
+        "sender": display_name(sender) if sender is not None else "",
+        "text": getattr(message, "message", "") or "",
+        "media": class_suffix(getattr(message, "media", None), "MessageMedia"),
+        "file": (
+            {"name": getattr(file, "name", None), "size": getattr(file, "size", None)}
+            if file is not None
+            else None
+        ),
+        "action": class_suffix(getattr(message, "action", None), "MessageAction"),
+        "outgoing": bool(getattr(message, "out", False)),
+        "reply_to": getattr(message, "reply_to_msg_id", None),
+    }
+
+
+def deletion_record(chat_id: int | None, chat: str | None, ids: list[int], when: Any) -> dict:
+    """A deletion, which Telegram reports without saying much.
+
+    The chat is absent in private conversations and small groups: Telegram
+    sends no peer there, since a message id alone identifies the message for a
+    client that stored it. The record keeps the field and leaves it empty
+    rather than dropping the event, which the reader can still match by id.
+    """
+    return {
+        "event": "deleted",
+        "chat_id": chat_id,
+        "chat": chat,
+        "ids": list(ids),
+        "date": format_moment(when, missing=""),
+    }
+
+
+def text_line(record: dict) -> str:
+    """One record as a line for a terminal, shaped like the `tg messages` listing."""
+    chat = strip_control_chars(record.get("chat") or "")
+    if record["event"] == "deleted":
+        ids = ", ".join(str(i) for i in record.get("ids", []))
+        return f"  {record['date']}  {chat}  deleted: {ids}"
+    mark = " (edited)" if record["event"] == "edited" else ""
+    text = record.get("text") or ""
+    if record.get("media"):
+        text = f"[{record['media']}] {text}".strip()
+    if record.get("action"):
+        text = f"({record['action']})"
+    sender = strip_control_chars(record.get("sender") or "")
+    return f"  {record['date']}  {chat}  [{record['id']}]{mark}  {sender}: {strip_control_chars(text)}"
+
+
+class RecordSink:
+    """Where the stream goes: the standard output, and a log file when asked.
+
+    The log is always JSON even when the terminal gets lines: a file is read by
+    a program later, and a format that depends on which flag was passed is a
+    format nobody can rely on.
+    """
+
+    def __init__(self, stream: Any, *, as_json: bool, log_path: Path | None) -> None:
+        self._stream = stream
+        self._as_json = as_json
+        self._log_path = Path(log_path) if log_path is not None else None
+
+    async def emit(self, record: dict) -> None:
+        document = json.dumps(record, ensure_ascii=False)
+        self._stream.write((document if self._as_json else text_line(record)) + "\n")
+        self._stream.flush()
+        if self._log_path is not None:
+            await asyncio.to_thread(self._append, document)
+
+    def _append(self, document: str) -> None:
+        """Add one line to the log, creating it closed to other users."""
+        ensure_private_dir(self._log_path.parent)  # pyright: ignore[reportOptionalMemberAccess]
+        fd = os.open(str(self._log_path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(fd, "a", encoding="utf-8") as fh:
+            fh.write(document + "\n")
+
+
+def subscribe(
+    client: Any,
+    handler: Any,
+    *,
+    wanted: set[int] | None,
+    excluded: set[int],
+    edits: bool,
+    outgoing: bool,
+) -> None:
+    """Put `handler` on the events this run was asked to follow.
+
+    Telethon takes the chats either as a white list or as a black one, which is
+    why the command refuses both at once. Deletions are filtered by chat only
+    where Telegram names one -- channels and supergroups -- so in a private
+    conversation an exclusion does not reach them.
+    """
+    from telethon import events
+
+    if wanted:
+        chats: list[int] | None = sorted(wanted)
+        blacklist = False
+    elif excluded:
+        chats = sorted(excluded)
+        blacklist = True
+    else:
+        chats = None
+        blacklist = False
+
+    # `incoming=True` is how Telethon spells "not mine"; leaving both unset
+    # means no filter at all, which is the default this command wants.
+    incoming = None if outgoing else True
+
+    client.add_event_handler(
+        handler,
+        events.NewMessage(chats=chats, blacklist_chats=blacklist, incoming=incoming),
+    )
+    if edits:
+        client.add_event_handler(
+            handler,
+            events.MessageEdited(chats=chats, blacklist_chats=blacklist, incoming=incoming),
+        )
+        client.add_event_handler(
+            handler,
+            events.MessageDeleted(chats=chats, blacklist_chats=blacklist),
+        )
+
+
+async def connection_watchdog(client: Any, on_reconnect: Any, *, interval: float = 30.0) -> None:
+    """Run `on_reconnect` after the connection comes back.
+
+    Telethon reconnects on its own and says nothing about the gap, so the
+    catch-up has to be driven from outside. Asking the client whether it is
+    connected keeps this independent of the library's internals, which is where
+    the missing catch-up already lives.
+    """
+    was_connected = client.is_connected()
+    while True:
+        await asyncio.sleep(interval)
+        connected = client.is_connected()
+        if connected and not was_connected:
+            logger.info("connection is back; asking for what was missed")
+            await on_reconnect()
+        was_connected = connected

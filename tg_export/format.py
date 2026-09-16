@@ -94,3 +94,16 @@ def display_name(entity: Any, *, missing: str = "") -> str:
     first = getattr(entity, "first_name", "") or ""
     last = getattr(entity, "last_name", "") or ""
     return f"{first} {last}".strip() or missing
+
+
+def class_suffix(value: object, prefix: str) -> str | None:
+    """The tail of a Telethon class name: `MessageMediaDocument` -> `Document`.
+
+    Telegram names a kind by the class of the object carrying it, and every
+    reader of that kind wants the same short form -- the listing of a chat, the
+    JSON of one message, the live stream. Returns None for a missing value, so
+    that "no media" and "media of an unknown kind" stay apart.
+    """
+    if value is None:
+        return None
+    return value.__class__.__name__.replace(prefix, "")

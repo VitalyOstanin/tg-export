@@ -27,7 +27,7 @@ from tg_export.errors import (
     EXIT_FAILURE,
     EXIT_OK,
 )
-from tg_export.format import display_name, format_moment, strip_control_chars
+from tg_export.format import class_suffix, display_name, format_moment, strip_control_chars
 from tg_export.privacy import ensure_private_dir, write_private_text
 
 logger = logging.getLogger(__name__)
@@ -117,8 +117,8 @@ async def _tg_messages(chat_id, account, limit, truncate=DEFAULT_MESSAGE_TEXT_LE
                         "date": date_str,
                         "sender": sender,
                         "text": body[:truncate] if truncate else body,
-                        "media": _class_suffix(msg.media, "MessageMedia"),
-                        "action": _class_suffix(msg.action, "MessageAction"),
+                        "media": class_suffix(msg.media, "MessageMedia"),
+                        "action": class_suffix(msg.action, "MessageAction"),
                     }
                 )
             else:
@@ -130,11 +130,6 @@ async def _tg_messages(chat_id, account, limit, truncate=DEFAULT_MESSAGE_TEXT_LE
                 )
         if as_json:
             click.echo(json.dumps(collected, ensure_ascii=False, indent=2))
-
-
-def _class_suffix(value, prefix: str) -> str | None:
-    """`MessageMediaPhoto` -> `Photo`; None when there is no such value."""
-    return value.__class__.__name__.replace(prefix, "") if value else None
 
 
 def _entity_name(entity) -> str:
