@@ -121,6 +121,7 @@ async def test_tg_send_success_returns_zero(monkeypatch):
 async def test_tg_download_missing_message_is_error(monkeypatch, tmp_path):
     api = MagicMock()
     api.disconnect = AsyncMock()
+    api.client.get_entity = AsyncMock(return_value=MagicMock())
     api.client.get_messages = AsyncMock(return_value=None)
     monkeypatch.setattr(cli_common, "connected_api", _fake_connected_api(api))
 

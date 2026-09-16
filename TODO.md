@@ -45,3 +45,20 @@
 
   - Telethon `sqlite.py` (codeberg, активный fork): <https://codeberg.org/Lonami/Telethon/src/branch/v1/telethon/sessions/sqlite.py>
   - Коммит, добавивший асимметрию (PR #4618 PFS): <https://github.com/LonamiWebs/Telethon/commit/5a3a94eb>
+
+- [x] `tg` CLI: принимать не только числовой chat_id, но и @username, ссылку t.me и invite-ссылку
+
+  Реализовано в [tg_export/cli/chatref.py](tg_export/cli/chatref.py): общий тип
+  аргумента Click `CHAT_REF` принимает `123456789`, `-1001234567890`, `@name`,
+  `name`, `https://t.me/name`, `https://t.me/name/1234`, `t.me/name` и
+  `https://t.me/c/<internal>/<msg>`; ссылка-приглашение отвергается с подсказкой
+  вступить в чат. Тип подключён к `messages`, `info`, `download` и `send`.
+  Разрешение сущности идёт через `resolve_chat`, который различает «такого имени
+  нет» и «чат закрыт для этого аккаунта». Тесты -- `tests/test_chatref.py`.
+
+- [ ] `tg` CLI: команда поиска каналов и групп по строке
+
+  `contacts.SearchRequest(q=..., limit=...)` возвращает каналы и группы вместе с
+  `participants_count` и username. Обёртка вида `tg-export tg search <строка>`
+  закрывала бы сценарий «найти тематические чаты и посмотреть, что в них», для
+  которого сейчас приходится писать скрипт.

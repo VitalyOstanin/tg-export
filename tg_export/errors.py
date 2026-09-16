@@ -56,3 +56,13 @@ class ProcessLockError(TgExportError, RuntimeError):
     the lock turns a corrupted file or a bare "database is locked" into a clear
     statement of what is busy.
     """
+
+
+class ChatResolveError(TgExportError):
+    """A chat reference names nothing this account can read.
+
+    Raised by the `tg` group after Telegram refused a reference the argument
+    parser accepted: the name is free, or the chat exists and is closed. Both
+    are answers to the user, not defects, so they end the command with a
+    message instead of a traceback.
+    """

@@ -18,6 +18,7 @@ from typing import Any
 import click
 
 from tg_export.cli import common
+from tg_export.cli.chatref import CHAT_REF, resolve_chat
 from tg_export.cli.common import (
     DEFAULT_MESSAGE_TEXT_LENGTH,
     fail,
@@ -38,7 +39,7 @@ def tg() -> None:
 
 
 @tg.command("messages")
-@click.argument("chat_id", type=int)
+@click.argument("chat_id", type=CHAT_REF)
 @click.option("--account", default=None, help=common.ACCOUNT_HELP)
 # IntRange, not int: -5 messages is not a request the command can serve, and
 # it used to reach Telethon as a limit of its own.
@@ -52,7 +53,10 @@ def tg() -> None:
 @click.option("--no-truncate", is_flag=True, default=False, help="Print message text in full")
 @click.option("--json", "as_json", is_flag=True, help="Output as machine-readable JSON")
 def tg_messages(chat_id, account, limit, truncate, no_truncate, as_json) -> None:
-    """Show recent messages from a chat."""
+    """Show recent messages from a chat.
+
+    CHAT_ID: chat id, @username, bare username or a t.me link.
+    """
     if no_truncate:
         if truncate:
             raise click.BadParameter("--no-truncate cannot be combined with --truncate")
@@ -91,7 +95,7 @@ def _message_preview(msg, *, truncate: int = DEFAULT_MESSAGE_TEXT_LENGTH) -> tup
 async def _tg_messages(chat_id, account, limit, truncate=DEFAULT_MESSAGE_TEXT_LENGTH, as_json=False) -> None:
     """Print the last messages of a chat: date, sender and the cut text."""
     async with common.connected_api(account) as (api, account):
-        entity = await api.client.get_entity(chat_id)
+        entity = await resolve_chat(api.client, chat_id)
         title = getattr(entity, "title", None) or _entity_name(entity)
         if as_json:
             common.diag(f"# {title} (id={chat_id})")
@@ -138,7 +142,7 @@ def _entity_name(entity) -> str:
 
 
 @tg.command("info")
-@click.argument("chat_ids", type=int, nargs=-1)
+@click.argument("chat_ids", type=CHAT_REF, nargs=-1)
 @click.option("--account", default=None, help=common.ACCOUNT_HELP)
 @click.option(
     "--from-catalog",
@@ -168,7 +172,8 @@ def _entity_name(entity) -> str:
 def tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_file, as_json) -> None:
     """Show chat info: message count, type, title.
 
-    Accepts one or more CHAT_IDS, or use --from-catalog with --type to batch query.
+    Accepts one or more CHAT_IDS -- ids, @usernames or t.me links -- or use
+    --from-catalog with --type to batch query.
     """
     if chat_type and not catalog_file:
         # The filter picks chats out of a catalog; without one there is nothing
@@ -390,11 +395,11 @@ async def _tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_fi
     default=False,
     help="Send files as documents without compression (keeps original quality)",
 )
-@click.argument("recipients", nargs=-1, required=True)
+@click.argument("recipients", type=CHAT_REF, nargs=-1, required=True)
 def tg_send(account, files, text, text_file, as_document, recipients) -> None:
     """Send message to one or more recipients.
 
-    RECIPIENTS: chat IDs or usernames (multiple allowed).
+    RECIPIENTS: chat ids, @usernames or t.me links (multiple allowed).
     Use --text for message text and --file for attachments.
     At least --text or --file must be specified.
 
@@ -413,14 +418,7 @@ def tg_send(account, files, text, text_file, as_document, recipients) -> None:
     if not text and not files:
         raise click.UsageError("specify --text, --text-file and/or --file")
 
-    parsed = []
-    for r in recipients:
-        try:
-            parsed.append(int(r))
-        except ValueError:
-            parsed.append(r)
-
-    exit_code = asyncio.run(_tg_send(account, parsed, text, files, as_document))
+    exit_code = asyncio.run(_tg_send(account, list(recipients), text, files, as_document))
     if exit_code:
         fail(code=exit_code)
 
@@ -617,10 +615,12 @@ async def _tg_send(account_name, recipients, text, files, as_document=False) -> 
 @click.option("--account", default=None, help=common.ACCOUNT_HELP)
 @click.option("--output", "-o", type=click.Path(path_type=Path), default=".", help="Output directory")
 @click.option("--json", "as_json", is_flag=True, help="Output as machine-readable JSON")
-@click.argument("chat_id", type=int)
+@click.argument("chat_id", type=CHAT_REF)
 @click.argument("msg_id", type=int)
 def tg_download(account, output, chat_id, msg_id, as_json) -> None:
     """Download message content: text and all media files.
+
+    CHAT_ID: chat id, @username, bare username or a t.me link.
 
     Saves message text to <msg_id>.txt and media files to the output directory.
     """
@@ -681,7 +681,7 @@ def _save_message_text(out: Path, msg_id: int, text: str) -> Path:
 
 
 async def _tg_download(
-    account_name: str | None, chat_id: int, msg_id: int, out: Path, *, as_json: bool = False
+    account_name: str | None, chat_id: int | str, msg_id: int, out: Path, *, as_json: bool = False
 ) -> int:
     """Save the text and the media of one message; report what was saved.
 
@@ -694,7 +694,8 @@ async def _tg_download(
     async with common.connected_api(account_name) as (api, _):
         from tg_export.api import one_message
 
-        tl_msg = one_message(await api.client.get_messages(chat_id, ids=msg_id))
+        entity = await resolve_chat(api.client, chat_id)
+        tl_msg = one_message(await api.client.get_messages(entity, ids=msg_id))
         if tl_msg is None:
             common.diag(f"Message {msg_id} not found in chat {chat_id}", essential=True)
             return EXIT_FAILURE
