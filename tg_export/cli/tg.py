@@ -11,6 +11,7 @@ import contextlib
 import hashlib
 import json
 import logging
+import sys
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,7 @@ from tg_export.cli.common import (
 from tg_export.errors import (
     EXIT_FAILURE,
     EXIT_OK,
+    ChatResolveError,
 )
 from tg_export.format import class_suffix, display_name, format_moment, strip_control_chars
 from tg_export.privacy import ensure_private_dir, write_private_text
@@ -738,4 +740,182 @@ async def _tg_download(
             common.diag("  (empty message, no text or media)")
         if as_json:
             click.echo(json.dumps(saved, ensure_ascii=False, indent=2))
+        return EXIT_OK
+
+
+@tg.command("watch")
+@click.argument("chats", type=CHAT_REF, nargs=-1)
+@click.option("--account", default=None, help=common.ACCOUNT_HELP)
+@click.option(
+    "--exclude",
+    "excluded",
+    type=CHAT_REF,
+    multiple=True,
+    help="Chat to leave out; repeatable, and used instead of naming chats to watch",
+)
+@click.option(
+    "--json/--text",
+    "as_json",
+    default=None,
+    help="One JSON document per line, or lines for a terminal (default: JSON unless stdout is a terminal)",
+)
+@click.option(
+    "--log",
+    "log_path",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Append every record to this file as JSON, whatever the terminal gets",
+)
+@click.option(
+    "--no-catchup",
+    is_flag=True,
+    default=False,
+    help="Start from the current moment instead of replaying what was missed",
+)
+@click.option(
+    "--catchup-limit",
+    type=click.IntRange(min=1),
+    default=100,
+    help="At most this many missed messages per chat",
+)
+@click.option("--no-outgoing", is_flag=True, default=False, help="Leave out messages sent from this account")
+@click.option("--no-edits", is_flag=True, default=False, help="Leave out edits and deletions")
+@click.option(
+    "--state",
+    "state_path",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Where the marks of what was already shown are kept",
+)
+def tg_watch(
+    chats,
+    account,
+    excluded,
+    as_json,
+    log_path,
+    no_catchup,
+    catchup_limit,
+    no_outgoing,
+    no_edits,
+    state_path,
+) -> None:
+    """Follow chats live, printing every message as it arrives.
+
+    CHATS: chats to watch -- ids, @usernames or t.me links. Without them every
+    chat is watched, and --exclude leaves individual chats out.
+
+    The listener holds the session of the account for as long as it runs, so an
+    export of the same account cannot run beside it.
+    """
+    if chats and excluded:
+        raise click.UsageError("name the chats to watch, or exclude chats with --exclude -- not both")
+    if as_json is None:
+        as_json = not sys.stdout.isatty()
+
+    exit_code = asyncio.run(
+        _tg_watch(
+            account,
+            list(chats),
+            list(excluded),
+            as_json=as_json,
+            log_path=log_path,
+            catchup=not no_catchup,
+            catchup_limit=catchup_limit,
+            outgoing=not no_outgoing,
+            edits=not no_edits,
+            state_path=state_path,
+        )
+    )
+    if exit_code:
+        fail(code=exit_code)
+
+
+async def _watch_ids(api, refs: list) -> set[int]:
+    """The ids of the chats named on the command line, resolved before listening.
+
+    A reference that names nothing stops the command here, with every failing
+    one reported: finding that out after an hour of listening is worse than
+    finding it out at once.
+    """
+    from telethon import utils as tl_utils
+
+    ids: set[int] = set()
+    refused: list[str] = []
+    for ref in refs:
+        try:
+            entity = await resolve_chat(api.client, ref)
+        except ChatResolveError as e:
+            refused.append(str(e))
+            continue
+        ids.add(tl_utils.get_peer_id(entity))
+    if refused:
+        raise ChatResolveError("; ".join(refused))
+    return ids
+
+
+async def _tg_watch(
+    account_name: str | None,
+    chats: list,
+    excluded: list,
+    *,
+    as_json: bool,
+    log_path: Path | None,
+    catchup: bool,
+    catchup_limit: int,
+    outgoing: bool,
+    edits: bool,
+    state_path: Path | None,
+) -> int:
+    """Listen until the connection ends, printing what arrives and what was missed."""
+    from tg_export.watch import (
+        LiveStream,
+        RecordSink,
+        WatchState,
+        connection_watchdog,
+        subscribe,
+    )
+
+    async with common.connected_api(account_name) as (api, account):
+        try:
+            wanted = await _watch_ids(api, chats) or None
+            excluded_ids = await _watch_ids(api, excluded)
+        except ChatResolveError as e:
+            # Reported here rather than left to the entry point: a refusal the
+            # user can act on belongs with the command that asked for the chat.
+            common.error(str(e))
+            return EXIT_FAILURE
+
+        path = state_path or common.account_manager().watch_state_path(account)
+        state = WatchState.load(path, account)
+        stream = LiveStream(
+            api,
+            state,
+            RecordSink(sys.stdout, as_json=as_json, log_path=log_path),
+            wanted=wanted,
+            excluded=excluded_ids,
+            catchup_limit=catchup_limit,
+        )
+
+        subscribe(
+            api.client,
+            stream.handle,
+            wanted=wanted,
+            excluded=excluded_ids,
+            edits=edits,
+            outgoing=outgoing,
+        )
+        common.diag(f"Watching {'every chat' if wanted is None else f'{len(wanted)} chats'}")
+        if catchup:
+            await stream.catch_up()
+
+        watchdog = asyncio.create_task(connection_watchdog(api.client, stream.catch_up))
+        try:
+            await api.client.run_until_disconnected()
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            common.diag("Stopped")
+        finally:
+            watchdog.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await watchdog
+            await state.save(force=True)
         return EXIT_OK

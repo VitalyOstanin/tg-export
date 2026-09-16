@@ -22,6 +22,7 @@ import os
 import time
 from collections.abc import AsyncIterator
 from datetime import datetime
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -287,16 +288,16 @@ def subscribe(
     incoming = None if outgoing else True
 
     client.add_event_handler(
-        handler,
+        partial(handler, kind="message"),
         events.NewMessage(chats=chats, blacklist_chats=blacklist, incoming=incoming),
     )
     if edits:
         client.add_event_handler(
-            handler,
+            partial(handler, kind="edited"),
             events.MessageEdited(chats=chats, blacklist_chats=blacklist, incoming=incoming),
         )
         client.add_event_handler(
-            handler,
+            partial(handler, kind="deleted"),
             events.MessageDeleted(chats=chats, blacklist_chats=blacklist),
         )
 
@@ -317,3 +318,91 @@ async def connection_watchdog(client: Any, on_reconnect: Any, *, interval: float
             logger.info("connection is back; asking for what was missed")
             await on_reconnect()
         was_connected = connected
+
+
+class LiveStream:
+    """One run of the listener: what was seen, where it goes, how events read.
+
+    The command owns the connection and the flags; everything that happens per
+    event lives here, where it can be exercised without a Click invocation.
+    """
+
+    def __init__(
+        self,
+        api: Any,
+        state: WatchState,
+        sink: RecordSink,
+        *,
+        wanted: set[int] | None,
+        excluded: set[int],
+        catchup_limit: int,
+    ) -> None:
+        self._api = api
+        self._state = state
+        self._sink = sink
+        self._wanted = wanted
+        self._excluded = excluded
+        self._catchup_limit = catchup_limit
+        self._titles: dict[int, str] = {}
+
+    async def handle(self, event: Any, *, kind: str) -> None:
+        """Turn one event into a record and hand it over."""
+        chat_id = getattr(event, "chat_id", None)
+        if kind == "deleted":
+            ids = list(getattr(event, "deleted_ids", []) or [])
+            known = self._titles.get(chat_id) if chat_id is not None else None
+            await self._emit(
+                deletion_record(chat_id, known, ids, datetime.now()),
+                chat_id=None,
+                message_id=None,
+            )
+            return
+
+        message = event.message
+        # A message the catch-up already handed over arrives again as an event;
+        # the mark is what tells the two apart. Edits carry the original id, so
+        # the check is for new messages only.
+        seen = self._state.last_seen(chat_id) if chat_id is not None else None
+        if kind == "message" and seen is not None and message.id <= seen:
+            return
+        record = message_record(chat_id, await self._title_of(event, chat_id), message, event=kind)
+        await self._emit(
+            record,
+            chat_id=chat_id if kind == "message" else None,
+            message_id=message.id if kind == "message" else None,
+        )
+
+    async def catch_up(self) -> None:
+        """Hand over what arrived while nothing was listening."""
+        async for chat_id, message in missed_messages(
+            self._api,
+            self._state,
+            wanted=self._wanted,
+            excluded=self._excluded,
+            limit=self._catchup_limit,
+        ):
+            await self._emit(
+                message_record(chat_id, self._titles.get(chat_id), message),
+                chat_id=chat_id,
+                message_id=message.id,
+            )
+
+    async def _emit(self, record: dict, *, chat_id: int | None, message_id: int | None) -> None:
+        await self._sink.emit(record)
+        if chat_id is not None and message_id is not None:
+            self._state.note(chat_id, message_id)
+            await self._state.save()
+
+    async def _title_of(self, event: Any, chat_id: int | None) -> str | None:
+        """The name of the chat an event came from, asked for once per chat."""
+        if chat_id is not None and chat_id in self._titles:
+            return self._titles[chat_id]
+        try:
+            chat = await event.get_chat()
+        except Exception as e:  # a title is not worth failing the stream over
+            logger.debug("cannot name chat %s: %s", chat_id, e)
+            return None
+        name = getattr(chat, "title", None) or display_name(chat) or None
+        if chat_id is not None and name:
+            self._titles[chat_id] = name
+        return name

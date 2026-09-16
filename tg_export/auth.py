@@ -128,6 +128,14 @@ class AccountManager:
     def config_path(self, name: str) -> Path:
         return self.config_dir / f"{validate_account_name(name)}.yaml"
 
+    @property
+    def watch_dir(self) -> Path:
+        """Where the live listener keeps what it has already handed over."""
+        return self.config_dir / "watch"
+
+    def watch_state_path(self, name: str) -> Path:
+        return self.watch_dir / f"{validate_account_name(name)}.json"
+
     def resolve_config(self, account: str, config_override: Path | None = None) -> Path:
         """Return config path: explicit override or convention-based."""
         return config_override or self.config_path(account)
