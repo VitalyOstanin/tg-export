@@ -320,3 +320,25 @@ async def test_the_download_path_prepares_its_directories_off_the_loop(tmp_path,
     await dl.download(MagicMock(id=5), _photo(), tmp_path / "chat", chat_id=1)
 
     assert seen["thread"] != threading.get_ident()
+
+
+@pytest.mark.asyncio
+async def test_watch_state_save_leaves_the_event_loop(tmp_path, monkeypatch):
+    """Отметки слушателя пишутся файлом с заменой -- пока идёт запись, цикл
+    событий не обслуживает поток обновлений Telegram."""
+    from tg_export.watch import WatchState
+
+    seen = {}
+    original = WatchState._write
+
+    def spy(self, payload):
+        seen["thread"] = threading.get_ident()
+        original(self, payload)
+
+    monkeypatch.setattr(WatchState, "_write", spy)
+
+    state = WatchState(tmp_path / "watch.json", "testaccount")
+    state.note(111, 980)
+    await state.save(force=True)
+
+    assert seen["thread"] != threading.get_ident()
