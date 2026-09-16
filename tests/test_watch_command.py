@@ -33,6 +33,15 @@ def _run(args, *, api=None, connect_error=None, tmp_path=None):
     return result, api
 
 
+def _channel():
+    """Канал как его отдаёт Telegram: по нему считается маркированный идентификатор."""
+    from datetime import datetime
+
+    from telethon.tl.types import Channel, ChatPhotoEmpty
+
+    return Channel(id=1234567890, title="Чат", photo=ChatPhotoEmpty(), date=datetime.now())
+
+
 def _api(entity=None):
     api = AsyncMock()
     api.client = MagicMock()
@@ -100,9 +109,7 @@ class TestWatchRefusals:
 class TestWatchSelection:
     def test_named_chat_becomes_the_white_list(self, tmp_path):
         """Названный чат разрешается в маркированный идентификатор и уходит в подписку."""
-        from telethon.tl.types import Channel
-
-        api = _api(Channel(id=1234567890, title="Чат", photo=None, date=None))
+        api = _api(_channel())
 
         result, api = _run(["@examplechat", "--no-catchup"], api=api, tmp_path=tmp_path)
 
@@ -113,9 +120,7 @@ class TestWatchSelection:
 
     def test_excluded_chat_becomes_the_black_list(self, tmp_path):
         """Исключённый чат уходит в подписку чёрным списком."""
-        from telethon.tl.types import Channel
-
-        api = _api(Channel(id=1234567890, title="Чат", photo=None, date=None))
+        api = _api(_channel())
 
         result, api = _run(["--exclude", "@examplechat", "--no-catchup"], api=api, tmp_path=tmp_path)
 
