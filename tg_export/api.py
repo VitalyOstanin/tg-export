@@ -10,7 +10,6 @@ the two a call uses is decided by `_active_client`, so callers do not choose.
 from __future__ import annotations
 
 import contextlib
-import importlib.util
 import logging
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -30,8 +29,7 @@ from telethon.tl.functions.updates import GetStateRequest
 from telethon.tl.functions.users import GetFullUserRequest
 from telethon.tl.types import InputPeerSelf, InputUserSelf
 
-from tg_export.auth import ProxyTuple
-from tg_export.config import ConfigError
+from tg_export.auth import ProxyTuple, telethon_proxy_kwargs
 from tg_export.converter import peer_id
 from tg_export.locking import ProcessLock
 from tg_export.session import FixedSQLiteSession
@@ -75,31 +73,15 @@ class TgApi:
     def __init__(
         self, session_path: str | Path, api_id: int, api_hash: str, proxy: ProxyTuple | None = None
     ) -> None:
-        kwargs = {}
-        if proxy:
-            # Telethon silently ignores `proxy=` when python-socks is missing
-            # (only warns), connecting directly and leaking the real IP. Fail
-            # fast instead so a configured proxy is never bypassed unnoticed.
-            # python-socks is a dependency of the package, so getting here means
-            # the environment lost it rather than never had it.
-            if importlib.util.find_spec("python_socks") is None:
-                # ConfigError, not a bare RuntimeError: this is a state of the
-                # environment the user can fix, and the message below says how.
-                # Outside the TgExportError hierarchy it was printed with a
-                # "RuntimeError:" prefix and the advice to re-run with --debug.
-                raise ConfigError(
-                    "Proxy is configured, but the 'python-socks' package is missing from "
-                    "this environment. Telethon would ignore the proxy and connect "
-                    "directly, exposing the real IP. The package is a dependency of "
-                    "tg-export: restore the environment with `uv sync` in a checkout of "
-                    "this project, or reinstall tg-export when it comes from PyPI."
-                )
-            kwargs["proxy"] = proxy
+        kwargs = telethon_proxy_kwargs(proxy)
         # The state-database lock covers an output directory, not an account,
         # so it never stopped two processes from using one session file --
         # `tg send` next to a running export, or a second export with a
-        # different --output. Telethon keeps no lock of its own and answers
-        # concurrent use by corrupting the authorisation key in the file.
+        # different --output. Telethon keeps no lock of its own, and Telegram
+        # revokes an authorisation key used from two addresses at once
+        # (AUTH_KEY_DUPLICATED), which leaves the file needing a fresh login;
+        # the documented way to use one account from several places is a
+        # session per place.
         self._session_lock = ProcessLock(
             Path(str(session_path)),
             f"Telegram session {session_path} is in use by another tg-export process. "

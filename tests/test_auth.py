@@ -431,3 +431,46 @@ def test_proxy_credentials_must_be_strings(tmp_path):
 
     with _pytest.raises(ConfigError, match="proxy.password"):
         mgr.load_proxy()
+
+
+class TestLoginUsesTheProxy:
+    """Вход подключается через тот же прокси, что и остальные команды."""
+
+    @pytest.mark.asyncio
+    async def test_configured_proxy_reaches_the_client(self, tmp_path, monkeypatch):
+        """Настроенный прокси передаётся клиенту входа, а не обходится."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from tg_export.auth import AccountManager
+
+        proxy = ("socks5", "127.0.0.1", 1080, True, None, None)
+        mgr = AccountManager(config_dir=tmp_path)
+        mgr.ensure_dirs()
+        monkeypatch.setattr(AccountManager, "load_proxy", lambda self: proxy)
+
+        client = MagicMock()
+        client.connect = AsyncMock()
+        client.is_user_authorized = AsyncMock(return_value=True)
+        client.get_me = AsyncMock(return_value=MagicMock())
+        client.disconnect = MagicMock(return_value=None)
+
+        with patch("telethon.TelegramClient", return_value=client) as constructor:
+            await mgr._login_into(tmp_path / "acc.session", 1, "hash")
+
+        assert constructor.call_args.kwargs.get("proxy") == proxy
+
+    def test_missing_socks_backend_is_refused(self):
+        """Без python-socks Telethon молча пошёл бы напрямую -- вместо этого отказ."""
+        from unittest.mock import patch
+
+        from tg_export.auth import telethon_proxy_kwargs
+        from tg_export.config import ConfigError
+
+        with patch("importlib.util.find_spec", return_value=None), pytest.raises(ConfigError):
+            telethon_proxy_kwargs(("socks5", "127.0.0.1", 1080, True, None, None))
+
+    def test_no_proxy_means_no_keyword(self):
+        """Без настроенного прокси клиенту не передаётся ничего лишнего."""
+        from tg_export.auth import telethon_proxy_kwargs
+
+        assert telethon_proxy_kwargs(None) == {}

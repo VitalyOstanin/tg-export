@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import importlib.util
 import logging
 import os
 import re
@@ -96,6 +97,30 @@ def default_config_dir() -> Path:
 # Shape of the tuple Telethon expects in `proxy=`: scheme, host, port, rdns,
 # username, password. Written out so both ends of the call agree on the order.
 ProxyTuple = tuple[str, str, int, bool, str | None, str | None]
+
+
+def telethon_proxy_kwargs(proxy: ProxyTuple | None) -> dict[str, Any]:
+    """The `proxy=` keyword for a TelegramClient, or nothing when none is set.
+
+    Telethon only warns when `python-socks` is missing and then connects
+    directly, which leaks the real address of a user who asked for a proxy.
+    Every connection to Telegram goes through here so that the refusal is the
+    same wherever a client is built -- the login used to build one of its own
+    without the keyword at all, and a proxied environment could not log in.
+    """
+    from tg_export.config import ConfigError
+
+    if not proxy:
+        return {}
+    if importlib.util.find_spec("python_socks") is None:
+        raise ConfigError(
+            "Proxy is configured, but the 'python-socks' package is missing from "
+            "this environment. Telethon would ignore the proxy and connect "
+            "directly, exposing the real IP. The package is a dependency of "
+            "tg-export: restore the environment with `uv sync` in a checkout of "
+            "this project, or reinstall tg-export when it comes from PyPI."
+        )
+    return {"proxy": proxy}
 
 
 class AccountManager:
@@ -343,7 +368,12 @@ class AccountManager:
         # plain SQLiteSession, which addresses the session columns by name while
         # they are written positionally. Login is the only writer outside the
         # subclass, so leaving it out keeps the file a source of corruption.
-        client = TelegramClient(FixedSQLiteSession(str(staging)), api_id, api_hash)
+        # The same proxy the rest of the commands use: without it a login in a
+        # proxied environment times out, and a successful direct connection
+        # would announce the address the configuration asked to hide.
+        client = TelegramClient(
+            FixedSQLiteSession(str(staging)), api_id, api_hash, **telethon_proxy_kwargs(self.load_proxy())
+        )
         try:
             await client.connect()
 

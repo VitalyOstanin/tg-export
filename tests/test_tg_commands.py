@@ -292,7 +292,7 @@ def test_tgapi_raises_when_proxy_set_but_python_socks_missing(tmp_path):
 
     proxy = ("socks5", "127.0.0.1", 1080, True, None, None)
     with (
-        patch("tg_export.api.importlib.util.find_spec", return_value=None),
+        patch("tg_export.auth.importlib.util.find_spec", return_value=None),
         pytest.raises(ConfigError, match="python-socks"),
     ):
         TgApi(str(tmp_path / "test.session"), 1, "hash", proxy=proxy)
@@ -320,7 +320,7 @@ def test_the_missing_proxy_hint_names_a_dependency_of_the_package(tmp_path):
 
     proxy = ("socks5", "127.0.0.1", 1080, True, None, None)
     with (
-        patch("tg_export.api.importlib.util.find_spec", return_value=None),
+        patch("tg_export.auth.importlib.util.find_spec", return_value=None),
         pytest.raises(ConfigError) as excinfo,
     ):
         TgApi(str(tmp_path / "test.session"), 1, "hash", proxy=proxy)
@@ -336,7 +336,7 @@ def test_tgapi_passes_proxy_to_client_when_python_socks_available(tmp_path):
 
     proxy = ("socks5", "127.0.0.1", 1080, True, None, None)
     with (
-        patch("tg_export.api.importlib.util.find_spec", return_value=object()),
+        patch("tg_export.auth.importlib.util.find_spec", return_value=object()),
         patch("tg_export.api.FixedSQLiteSession"),
         patch("tg_export.api.TelegramClient") as mock_client,
     ):
@@ -349,7 +349,7 @@ def test_tgapi_no_proxy_does_not_check_python_socks(tmp_path):
     from tg_export.api import TgApi
 
     with (
-        patch("tg_export.api.importlib.util.find_spec", return_value=None) as mock_find,
+        patch("tg_export.auth.importlib.util.find_spec", return_value=None) as mock_find,
         patch("tg_export.api.FixedSQLiteSession"),
         patch("tg_export.api.TelegramClient") as mock_client,
     ):
