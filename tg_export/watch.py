@@ -21,7 +21,7 @@ import logging
 import os
 import time
 from collections.abc import AsyncIterator
-from datetime import datetime
+from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -108,7 +108,10 @@ class WatchState:
             {
                 "version": WATCH_STATE_VERSION,
                 "account": self.account,
-                "updated": format_moment(datetime.now()),
+                # UTC, like the dates Telegram hands over: the file sits next to a
+                # stream whose moments are in UTC, and two zones side by side
+                # read as one.
+                "updated": format_moment(datetime.now(UTC)),
                 "chats": {str(chat_id): message_id for chat_id, message_id in self._chats.items()},
             },
             ensure_ascii=False,
@@ -141,8 +144,12 @@ async def missed_messages(
     wanted: set[int] | None,
     excluded: set[int],
     limit: int,
-) -> AsyncIterator[tuple[int, Any]]:
+) -> AsyncIterator[tuple[int, str | None, Any]]:
     """Messages that arrived while nothing was listening, oldest first.
+
+    Each message comes with the name of its chat: the dialog list already
+    carries it, and a back-filled message used to reach the reader with an
+    empty chat while a live one carried the name.
 
     A chat with no mark is not replayed: it was never listened to, and handing
     over its history would flood the reader with an archive it did not ask for.
@@ -159,8 +166,9 @@ async def missed_messages(
         top = _top_message_id(dialog)
         if top is None or top <= mark:
             continue
+        title = getattr(dialog, "title", None) or getattr(dialog, "name", None)
         async for message in api.client.iter_messages(dialog.entity, min_id=mark, limit=limit, reverse=True):
-            yield chat_id, message
+            yield chat_id, title, message
 
 
 def message_record(chat_id: int | None, chat: str | None, message: Any, *, event: str = "message") -> dict:
@@ -374,15 +382,17 @@ class LiveStream:
 
     async def catch_up(self) -> None:
         """Hand over what arrived while nothing was listening."""
-        async for chat_id, message in missed_messages(
+        async for chat_id, title, message in missed_messages(
             self._api,
             self._state,
             wanted=self._wanted,
             excluded=self._excluded,
             limit=self._catchup_limit,
         ):
+            if title:
+                self._titles[chat_id] = title
             await self._emit(
-                message_record(chat_id, self._titles.get(chat_id), message),
+                message_record(chat_id, title or self._titles.get(chat_id), message),
                 chat_id=chat_id,
                 message_id=message.id,
             )

@@ -93,6 +93,7 @@ def _dialog(chat_id: int, top_message: int | None):
     """
     return SimpleNamespace(
         id=chat_id,
+        title=f"Чат {chat_id}",
         message=SimpleNamespace(id=top_message) if top_message is not None else None,
         dialog=SimpleNamespace(top_message=top_message or 0),
         entity=SimpleNamespace(chat_id=chat_id),
@@ -163,7 +164,7 @@ class TestMissedMessages:
 
         collected = _collect(api, state, wanted=None, excluded=set(), limit=50)
 
-        assert collected == [(111, message)]
+        assert collected == [(111, "Чат 111", message)]
         entity, kwargs = api.calls[0]
         assert entity is dialog.entity
         assert kwargs["min_id"] == 974

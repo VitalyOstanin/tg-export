@@ -904,7 +904,8 @@ async def _tg_watch(
             edits=edits,
             outgoing=outgoing,
         )
-        common.diag(f"Watching {'every chat' if wanted is None else f'{len(wanted)} chats'}")
+        named = "every chat" if wanted is None else f"{len(wanted)} chat{'' if len(wanted) == 1 else 's'}"
+        common.diag(f"Watching {named}")
         if catchup:
             await stream.catch_up()
 
