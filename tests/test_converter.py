@@ -201,6 +201,66 @@ def test_a_link_after_an_emoji_keeps_its_own_text():
     assert link[0].href == "https://example.com"
 
 
+def test_a_link_under_words_is_listed_with_its_address():
+    """Адрес ссылки, привязанной к словам, есть только в entity, а не в тексте.
+
+    `tg messages` и `tg watch` печатали голый `message`: слова ссылки были видны,
+    а её адреса не было нигде.
+    """
+    from telethon.tl.types import MessageEntityBold, MessageEntityTextUrl, MessageEntityUrl
+
+    from tg_export.converter import text_links
+
+    text = "\U0001f680 вот alfa и beta, https://example.org"
+    entities = [
+        MessageEntityTextUrl(offset=14, length=4, url="https://example.com/b"),
+        MessageEntityBold(offset=3, length=3),
+        MessageEntityTextUrl(offset=7, length=4, url="https://example.com/a"),
+        # Открытый адрес уже стоит в тексте, его повторять незачем.
+        MessageEntityUrl(offset=20, length=19),
+    ]
+
+    assert text_links(text, entities) == [
+        {"offset": 7, "length": 4, "text": "alfa", "url": "https://example.com/a"},
+        {"offset": 14, "length": 4, "text": "beta", "url": "https://example.com/b"},
+    ]
+    assert text_links(text, None) == []
+    assert text_links("", entities) == []
+
+
+def test_a_link_beyond_the_text_is_left_out():
+    """Границы, которых в тексте нет, не должны ронять вывод сообщения."""
+    from telethon.tl.types import MessageEntityTextUrl
+
+    from tg_export.converter import text_links
+
+    assert text_links("abc", [MessageEntityTextUrl(offset=2, length=5, url="https://example.com")]) == []
+
+
+def test_the_address_follows_the_words_it_hides_under():
+    """В строке для терминала адрес встаёт в скобках сразу за словами ссылки."""
+    from tg_export.converter import with_link_targets
+
+    text = "\U0001f680 вот alfa и beta"
+    links = [
+        {"offset": 7, "length": 4, "text": "alfa", "url": "https://example.com/a"},
+        {"offset": 14, "length": 4, "text": "beta", "url": "https://example.com/b"},
+    ]
+
+    assert with_link_targets(text, links) == (
+        "\U0001f680 вот alfa (https://example.com/a) и beta (https://example.com/b)"
+    )
+    assert with_link_targets(text, []) == text
+
+
+def test_an_address_already_shown_as_the_words_is_not_repeated():
+    from tg_export.converter import with_link_targets
+
+    links = [{"offset": 5, "length": 19, "text": "https://example.com", "url": "https://example.com"}]
+
+    assert with_link_targets("see: https://example.com", links) == "see: https://example.com"
+
+
 def test_text_without_entities_is_unchanged():
     """Обычный текст не должен пострадать от перевода в единицы UTF-16."""
     from tg_export.converter import convert_entities

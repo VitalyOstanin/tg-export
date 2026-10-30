@@ -24,6 +24,7 @@ from tg_export.cli.common import (
     DEFAULT_MESSAGE_TEXT_LENGTH,
     fail,
 )
+from tg_export.converter import text_links, with_link_targets
 from tg_export.errors import (
     EXIT_FAILURE,
     EXIT_OK,
@@ -85,7 +86,7 @@ def _message_preview(msg, *, truncate: int = DEFAULT_MESSAGE_TEXT_LENGTH) -> tup
     copies drifted: one cut the text by the setting, the other by a literal.
     """
     sender = _sender_name(msg.sender) if msg.sender else ""
-    text = msg.message or ""
+    text = with_link_targets(msg.message or "", text_links(msg.message, msg.entities))
     if msg.media:
         media_type = msg.media.__class__.__name__.replace("MessageMedia", "")
         text = f"[{media_type}] {text}" if text else f"[{media_type}]"
@@ -119,6 +120,7 @@ async def _tg_messages(chat_id, account, limit, truncate=DEFAULT_MESSAGE_TEXT_LE
                         "date": date_str,
                         "sender": sender,
                         "text": body[:truncate] if truncate else body,
+                        "links": text_links(body, msg.entities),
                         "media": class_suffix(msg.media, "MessageMedia"),
                         "action": class_suffix(msg.action, "MessageAction"),
                     }

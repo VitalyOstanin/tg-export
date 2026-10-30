@@ -181,6 +181,60 @@ def convert_entities(text: str, entities: list[Any] | None) -> list[TextPart]:
     return parts
 
 
+def text_links(text: str, entities: list[Any] | None) -> list[dict]:
+    """The links hidden under words: ``{offset, length, text, url}`` each.
+
+    Their address lives only in the entity, so a listing printing the bare
+    text showed the words and lost the address. A link typed out as an address
+    is already in the text and is not listed. ``offset`` and ``length`` stay in
+    UTF-16 code units, as Telegram counts them; ``text`` is the fragment they
+    cut out. Links overlapping an earlier one or reaching past the text are
+    left out, as in `convert_entities`.
+    """
+    if not text or not entities:
+        return []
+    units = text.encode("utf-16-le")
+    total_units = len(units) // 2
+    links = []
+    end = 0
+    for entity in sorted(entities, key=lambda e: e.offset):
+        if entity.__class__.__name__ != "MessageEntityTextUrl":
+            continue
+        if entity.offset < end or entity.length <= 0 or entity.offset + entity.length > total_units:
+            continue
+        end = entity.offset + entity.length
+        links.append(
+            {
+                "offset": entity.offset,
+                "length": entity.length,
+                "text": _utf16_slice(units, entity.offset, end),
+                "url": entity.url,
+            }
+        )
+    return links
+
+
+def with_link_targets(text: str, links: list[dict]) -> str:
+    """The text with the address of each link in brackets after its words.
+
+    For a line a person reads. A link whose words already are its address is
+    left as it is.
+    """
+    if not links:
+        return text
+    units = text.encode("utf-16-le")
+    pieces = []
+    position = 0
+    for link in links:
+        end = link["offset"] + link["length"]
+        pieces.append(_utf16_slice(units, position, end))
+        if link["url"] != link["text"]:
+            pieces.append(f" ({link['url']})")
+        position = end
+    pieces.append(_utf16_slice(units, position, len(units) // 2))
+    return "".join(pieces)
+
+
 # ---------------------------------------------------------------------------
 # Media conversion
 # ---------------------------------------------------------------------------

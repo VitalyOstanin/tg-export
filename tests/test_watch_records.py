@@ -27,6 +27,7 @@ def _message(**kwargs):
         "id": 4711,
         "date": MOMENT,
         "message": "смотри вложение",
+        "entities": None,
         "media": None,
         "action": None,
         "out": False,
@@ -52,6 +53,7 @@ class TestMessageRecord:
             "sender_id": 12345,
             "sender": "Иван Иванов",
             "text": "смотри вложение",
+            "links": [],
             "media": None,
             "file": None,
             "action": None,
@@ -89,6 +91,17 @@ class TestMessageRecord:
 
         assert record["outgoing"] is True
 
+    def test_links_under_words_carry_their_addresses(self):
+        """Адрес ссылки, привязанной к словам, в тексте не виден -- он идёт полем `links`."""
+        from telethon.tl.types import MessageEntityTextUrl
+
+        entities = [MessageEntityTextUrl(offset=10, length=4, url="https://example.com")]
+
+        record = message_record(111, "Чат", _message(message="читай эту beta", entities=entities))
+
+        assert record["text"] == "читай эту beta"
+        assert record["links"] == [{"offset": 10, "length": 4, "text": "beta", "url": "https://example.com"}]
+
 
 class TestDeletionRecord:
     def test_lists_the_deleted_ids(self):
@@ -116,6 +129,16 @@ class TestTextLine:
         assert "[4711]" in line
         assert "Иван Иванов" in line
         assert "смотри вложение" in line
+
+    def test_message_line_shows_the_address_of_a_link(self):
+        """В терминале адрес ссылки встаёт в скобках за её словами."""
+        from telethon.tl.types import MessageEntityTextUrl
+
+        entities = [MessageEntityTextUrl(offset=10, length=4, url="https://example.com")]
+
+        line = text_line(message_record(111, "Чат", _message(message="читай эту beta", entities=entities)))
+
+        assert line.endswith("читай эту beta (https://example.com)")
 
     def test_deletion_line_says_what_went(self):
         """Строка удаления называет идентификаторы удалённых сообщений."""

@@ -120,7 +120,7 @@ class TestDownloadIfNew:
 # ---------------------------------------------------------------------------
 
 
-def _invoke_tg_messages(args: list[str], text: str = "hello", media: str | None = None):
+def _invoke_tg_messages(args: list[str], text: str = "hello", media: str | None = None, entities=None):
     """Выполнить `tg messages` поверх заглушки API, отдающей одно сообщение."""
     from click.testing import CliRunner
 
@@ -137,6 +137,7 @@ def _invoke_tg_messages(args: list[str], text: str = "hello", media: str | None 
     mock_msg.sender.first_name = "Alice"
     mock_msg.sender.last_name = ""
     mock_msg.message = text
+    mock_msg.entities = entities
     if media is None:
         mock_msg.media = None
     else:
@@ -266,6 +267,19 @@ class TestTgMessagesJson:
         entry = json.loads(result.stdout)[0]
         assert entry["media"] == "Photo"
         assert entry["text"] == "hello", entry
+
+    def test_json_lists_the_links_hidden_under_words(self):
+        """Текст остаётся как отправлен, а адреса ссылок идут отдельным полем."""
+        import json
+
+        from telethon.tl.types import MessageEntityTextUrl
+
+        entities = [MessageEntityTextUrl(offset=8, length=4, url="https://example.com")]
+        result = _invoke_tg_messages(["-n", "1", "--json"], text="see the alfa", entities=entities)
+
+        entry = json.loads(result.stdout)[0]
+        assert entry["text"] == "see the alfa"
+        assert entry["links"] == [{"offset": 8, "length": 4, "text": "alfa", "url": "https://example.com"}]
 
     def test_json_still_cuts_when_asked_to(self):
         import json
@@ -749,9 +763,10 @@ def test_upload_progress_yields_nothing_under_a_running_live(monkeypatch):
         assert progress is None
 
 
-def _preview_message(text=None, media=None, action=None, first="Ann", last="Lee"):
+def _preview_message(text=None, media=None, action=None, first="Ann", last="Lee", entities=None):
     msg = MagicMock()
     msg.message = text
+    msg.entities = entities
     msg.media = media
     msg.action = action
     msg.sender = MagicMock(first_name=first, last_name=last)
@@ -777,6 +792,19 @@ def test_the_preview_of_a_message_is_built_in_one_place():
     created = MagicMock()
     created.__class__.__name__ = "MessageActionChatCreate"
     assert _message_preview(_preview_message("ignored", action=created))[1] == "(ChatCreate)"
+
+
+def test_the_preview_shows_the_address_of_a_link_under_words():
+    """Ссылка, привязанная к словам, печаталась одними словами, без адреса."""
+    from telethon.tl.types import MessageEntityTextUrl
+
+    from tg_export.cli.tg import _message_preview
+
+    msg = _preview_message(
+        "see the alfa", entities=[MessageEntityTextUrl(offset=8, length=4, url="https://example.com")]
+    )
+
+    assert _message_preview(msg)[1] == "see the alfa (https://example.com)"
 
 
 def test_the_preview_is_cut_at_the_configured_length():
