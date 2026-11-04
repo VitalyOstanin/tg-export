@@ -51,6 +51,42 @@ def _section(changelog: str, version: str) -> tuple[str, str]:
     return date_match.group(1), body
 
 
+# A line that starts a block of its own rather than continuing the one above:
+# a heading, a list item, a table row, a quote or a code fence.
+_BLOCK_START_RE = re.compile(r"(#{1,6} |[-*+] |[0-9]+[.)] |\||> |```)")
+
+
+def _unwrap(body: str) -> str:
+    """Join the lines CHANGELOG.md wraps by width into whole paragraphs.
+
+    GitHub renders every newline of a release body as a line break, so a
+    paragraph wrapped at a hundred columns reached the release page as broken
+    phrases. A line continues the one above unless either is blank, or it
+    starts a block of its own; code blocks are left as they are.
+    """
+    out: list[str] = []
+    in_code = False
+    for line in body.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_code = not in_code
+            out.append(line)
+            continue
+        previous = out[-1].strip() if out else ""
+        continues = (
+            not in_code
+            and stripped
+            and previous
+            and not _BLOCK_START_RE.match(stripped)
+            and not previous.startswith(("#", "|", "```"))
+        )
+        if continues:
+            out[-1] = f"{out[-1].rstrip()} {stripped}"
+        else:
+            out.append(line)
+    return "\n".join(out)
+
+
 # Categories of the CHANGELOG that carry a size: everything else releases as a patch.
 BREAKING_HEADING = "Ломающие изменения"
 FEATURE_HEADING = "Добавлено"
@@ -235,7 +271,7 @@ def main() -> int:
     _check_bump(changelog, version, body)
     if args.tag_date:
         _check_date(date, args.tag_date)
-    notes = f"## tg-export v{version} -- {date}\n\n{body}\n"
+    notes = f"## tg-export v{version} -- {date}\n\n{_unwrap(body)}\n"
     _check_size(notes, args.max_chars)
     if args.output is None:
         print(notes)

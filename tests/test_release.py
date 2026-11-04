@@ -783,3 +783,32 @@ def test_the_declared_operating_systems_are_the_ones_ci_runs_on():
         assert entry not in runners, f"матрица покрывает {entry}: классификатор можно заявить"
     unbacked = {c for c in declared if "Linux" not in c}
     assert not unbacked, f"заявлены системы, на которых ничего не прогоняется: {sorted(unbacked)}"
+
+
+def test_wrapped_changelog_lines_become_whole_paragraphs(tmp_path):
+    """GitHub показывает каждый перевод строки тела релиза как разрыв строки.
+
+    CHANGELOG перенесён по ширине, и пункт приходил на страницу релиза
+    обрывками фраз. Перенесённые строки склеиваются, а заголовки, пункты,
+    абзацы, таблицы и код остаются отдельными.
+    """
+    changelog = (
+        "# Changelog\n\n## [1.5.1] -- 2026-07-30\n\n### Исправлено\n\n"
+        "- Первый пункт начинается здесь\n  и продолжается на второй строке.\n\n"
+        "  Второй абзац пункта\n  тоже из двух строк.\n"
+        "- Второй пункт.\n\n"
+        "Обычный абзац\nиз двух строк.\n\n"
+        "| № | столбец |\n|---|---------|\n| 1 | alfa    |\n\n"
+        "```\ncode line one\ncode line two\n```\n\n"
+        "## [1.5.0] -- 2026-07-30\n\n- Старое.\n"
+    )
+    result, out = _run("v1.5.1", tmp_path, changelog=changelog)
+
+    assert result.returncode == 0, result.stderr
+    notes = out.read_text(encoding="utf-8")
+    assert "- Первый пункт начинается здесь и продолжается на второй строке.\n" in notes
+    assert "\n  Второй абзац пункта тоже из двух строк.\n- Второй пункт.\n" in notes
+    assert "\nОбычный абзац из двух строк.\n" in notes
+    assert "| № | столбец |\n|---|---------|\n| 1 | alfa    |\n" in notes
+    assert "```\ncode line one\ncode line two\n```" in notes
+    assert "### Исправлено\n\n- Первый" in notes
