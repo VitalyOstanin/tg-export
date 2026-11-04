@@ -3,7 +3,9 @@
 import asyncio
 import io
 import json
+import os
 import stat
+import threading
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -13,8 +15,8 @@ from telethon.tl.types import MessageReplyHeader
 
 from tg_export.watch import (
     RecordSink,
-    connection_watchdog,
     deletion_record,
+    follow_reconnects,
     message_record,
     subscribe,
     text_line,
@@ -189,13 +191,20 @@ class TestSubscribe:
         assert client.add_event_handler.call_count == 3
 
     def test_outgoing_can_be_left_out(self):
-        """Отказ от своих сообщений выражается фильтром входящих."""
+        """Без своих сообщений правки фильтруются по входящим, а новые сообщения -- нет.
+
+        Свои новые сообщения доходят до обработчика: он их не печатает, но
+        сдвигает по ним отметку чата, иначе догонка запрашивала бы их снова.
+        """
         client = MagicMock()
 
         subscribe(client, MagicMock(), wanted=None, excluded=set(), edits=True, outgoing=False)
 
-        builder = client.add_event_handler.call_args_list[0].args[1]
-        assert builder.incoming is True
+        new_messages = client.add_event_handler.call_args_list[0].args[1]
+        edits = client.add_event_handler.call_args_list[1].args[1]
+        assert new_messages.incoming is None
+        assert new_messages.outgoing is None
+        assert edits.incoming is True
 
 
 class TestRecordSink:
@@ -247,37 +256,188 @@ class TestRecordSink:
 
         assert len(log.read_text(encoding="utf-8").splitlines()) == 2
 
+    def test_existing_loose_log_is_tightened(self, tmp_path):
+        """Журнал, созданный раньше с правами для всех, закрывается перед дописыванием:
+        переписка не должна оставаться читаемой другим пользователям."""
+        log = tmp_path / "live.ndjson"
+        log.write_text('{"event":"message","id":1}\n', encoding="utf-8")
+        log.chmod(0o644)
+        sink = RecordSink(io.StringIO(), as_json=False, log_path=log)
 
-class TestConnectionWatchdog:
+        async def run():
+            await sink.emit(message_record(111, "Чат", _message()))
+            await sink.aclose()
+
+        asyncio.run(run())
+
+        assert stat.S_IMODE(log.stat().st_mode) & 0o077 == 0
+
+    def test_log_is_opened_once_for_many_records(self, tmp_path, monkeypatch):
+        """Файл журнала открывается один раз на весь запуск, а не на каждую запись."""
+        log = tmp_path / "live.ndjson"
+        opened = []
+        real_open = os.open
+
+        def counting_open(path, *args, **kwargs):
+            opened.append(path)
+            return real_open(path, *args, **kwargs)
+
+        monkeypatch.setattr("tg_export.watch.os.open", counting_open)
+        sink = RecordSink(io.StringIO(), as_json=True, log_path=log)
+
+        async def run():
+            for message_id in (4711, 4712, 4713):
+                await sink.emit(message_record(111, "Чат", _message(id=message_id)))
+            await sink.aclose()
+
+        asyncio.run(run())
+
+        assert len(opened) == 1
+        assert len(log.read_text(encoding="utf-8").splitlines()) == 3
+
+    def test_log_lines_reach_the_file_before_closing(self, tmp_path):
+        """Каждая запись попадает в файл сразу: читатель журнала видит её, не дожидаясь
+        остановки слушателя."""
+        log = tmp_path / "live.ndjson"
+        sink = RecordSink(io.StringIO(), as_json=True, log_path=log)
+
+        async def run():
+            await sink.emit(message_record(111, "Чат", _message()))
+            seen = log.read_text(encoding="utf-8")
+            await sink.aclose()
+            return seen
+
+        assert json.loads(asyncio.run(run()).strip())["id"] == 4711
+
+    def test_aclose_without_log_is_harmless(self):
+        """Закрытие без журнала ничего не требует и может повторяться."""
+        sink = RecordSink(io.StringIO(), as_json=True, log_path=None)
+
+        async def run():
+            await sink.aclose()
+            await sink.aclose()
+
+        asyncio.run(run())
+
+    def test_stdout_is_written_off_the_event_loop(self):
+        """Вывод пишется не в потоке цикла событий: медленный читатель конвейера
+        не должен останавливать обработку обновлений и ping соединения."""
+        loop_thread = threading.get_ident()
+        writers = []
+
+        class Recording(io.StringIO):
+            def write(self, text):
+                writers.append(threading.get_ident())
+                return super().write(text)
+
+        sink = RecordSink(Recording(), as_json=True, log_path=None)
+
+        asyncio.run(sink.emit(message_record(111, "Чат", _message())))
+
+        assert writers
+        assert loop_thread not in writers
+
+    def test_concurrent_records_keep_their_order(self, tmp_path):
+        """Записи, пришедшие одновременно из разных обработчиков, выходят в порядке
+        поступления -- и в вывод, и в журнал."""
+        log = tmp_path / "live.ndjson"
+        stream = io.StringIO()
+        sink = RecordSink(stream, as_json=True, log_path=log)
+        ids = list(range(5000, 5040))
+
+        async def run():
+            await asyncio.gather(*(sink.emit(message_record(111, "Чат", _message(id=i))) for i in ids))
+            await sink.aclose()
+
+        asyncio.run(run())
+
+        assert [json.loads(line)["id"] for line in stream.getvalue().splitlines()] == ids
+        assert [json.loads(line)["id"] for line in log.read_text(encoding="utf-8").splitlines()] == ids
+
+
+class TestFollowReconnects:
     @pytest.mark.asyncio
-    async def test_recovered_connection_triggers_the_catch_up(self):
-        """Восстановление связи запускает добор -- библиотека его не делает."""
-        states = [True, False, False, True]
-        client = MagicMock()
-        client.is_connected.side_effect = lambda: states.pop(0) if states else True
+    async def test_reconnect_runs_the_catch_up_before_the_library_callback(self):
+        """Колбэк переподключения сначала запускает добор, затем прежний колбэк Telethon."""
         calls = []
 
+        async def original():
+            calls.append("telethon")
+
         async def on_reconnect():
-            calls.append(1)
+            calls.append("catch-up")
 
-        task = asyncio.create_task(connection_watchdog(client, on_reconnect, interval=0))
-        await asyncio.sleep(0.05)
-        task.cancel()
+        client = SimpleNamespace(_sender=SimpleNamespace(_auto_reconnect_callback=original))
 
-        assert calls, "добор после восстановления связи не запущен"
+        restore = follow_reconnects(client, on_reconnect)
+        await client._sender._auto_reconnect_callback()
+        restore()
+
+        assert calls == ["catch-up", "telethon"]
+        assert client._sender._auto_reconnect_callback is original
 
     @pytest.mark.asyncio
-    async def test_steady_connection_is_left_alone(self):
-        """Пока связь держится, добор не повторяется."""
-        client = MagicMock()
-        client.is_connected.return_value = True
+    async def test_failed_catch_up_still_runs_the_library_callback(self):
+        """Упавший добор не отменяет запрос, которым Telethon возобновляет обновления."""
         calls = []
 
+        async def original():
+            calls.append("telethon")
+
         async def on_reconnect():
-            calls.append(1)
+            raise ConnectionError("связь оборвалась посреди догонки")
 
-        task = asyncio.create_task(connection_watchdog(client, on_reconnect, interval=0))
-        await asyncio.sleep(0.05)
-        task.cancel()
+        client = SimpleNamespace(_sender=SimpleNamespace(_auto_reconnect_callback=original))
 
-        assert calls == []
+        follow_reconnects(client, on_reconnect)
+        await client._sender._auto_reconnect_callback()
+
+        assert calls == ["telethon"]
+
+    def test_client_without_the_hook_is_reported_not_broken(self, caplog):
+        """Клиент без колбэка переподключения не роняет команду: добор после разрыва недоступен."""
+
+        async def on_reconnect():
+            return None
+
+        with caplog.at_level("WARNING", logger="tg_export.watch"):
+            restore = follow_reconnects(SimpleNamespace(), on_reconnect)
+        restore()
+
+        assert "reconnect" in caplog.text
+
+
+class TestTelethonReconnectContract:
+    """Добор после разрыва опирается на внутренности Telethon; проверки ловят их смену."""
+
+    def test_sender_carries_the_reconnect_callback(self):
+        """Отправитель клиента хранит колбэк, вызываемый после переподключения."""
+        from telethon import TelegramClient
+        from telethon.sessions import StringSession
+
+        client = TelegramClient(StringSession(), 1, "hash")
+
+        assert callable(client._sender._auto_reconnect_callback)
+
+    def test_callback_runs_after_every_successful_reconnect(self):
+        """`_reconnect` вызывает колбэк после успешного подключения."""
+        import inspect
+
+        from telethon.network.mtprotosender import MTProtoSender
+
+        source = inspect.getsource(MTProtoSender._reconnect)
+
+        assert "self._auto_reconnect_callback()" in source
+
+    def test_is_connected_does_not_drop_during_a_reconnect(self):
+        """`is_connected` не сбрасывается при автопереподключении -- опрос его разрыва не видит.
+
+        Флаг гасит только окончательное отключение, после которого
+        `run_until_disconnected` возвращается и слушатель завершается.
+        """
+        import inspect
+
+        from telethon.network.mtprotosender import MTProtoSender
+
+        assert "_user_connected = False" not in inspect.getsource(MTProtoSender._reconnect)
+        assert "_user_connected = False" in inspect.getsource(MTProtoSender._disconnect)

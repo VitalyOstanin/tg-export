@@ -3,6 +3,7 @@
 import asyncio
 import contextlib
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -313,6 +314,58 @@ class TestTgMessagesJson:
         result = _invoke_tg_messages(["-n", "1", "--json", "--truncate", "10"], text="z" * 100)
 
         assert json.loads(result.stdout)[0]["text"] == "z" * 10
+
+    def test_json_cut_keeps_only_links_inside_the_cut_text(self):
+        """Ссылка за границей обрезки не попадает в links: её смещения вышли бы за text."""
+        import json
+
+        from telethon.tl.types import MessageEntityTextUrl
+
+        entities = [
+            MessageEntityTextUrl(offset=0, length=4, url="https://example.com/a"),
+            MessageEntityTextUrl(offset=14, length=4, url="https://example.com/b"),
+        ]
+        result = _invoke_tg_messages(
+            ["-n", "1", "--json", "--truncate", "10"], text="alfa and then beta", entities=entities
+        )
+
+        entry = json.loads(result.stdout)[0]
+        assert entry["text"] == "alfa and t"
+        assert [link["url"] for link in entry["links"]] == ["https://example.com/a"]
+
+
+class TestListingMatchesTheStream:
+    def test_listing_line_and_stream_line_show_one_message_alike(self):
+        """Строка `tg messages` и строка `tg watch` одного сообщения совпадают после даты и чата."""
+        from telethon.tl.types import MessageEntityTextUrl, MessageReplyHeader
+
+        from tg_export.watch import message_record, text_line
+
+        entities = [MessageEntityTextUrl(offset=8, length=4, url="https://example.com")]
+        reply = MessageReplyHeader(reply_to_msg_id=40)
+        result = _invoke_tg_messages(
+            ["-n", "1"], text="see the alfa", media="Photo", entities=entities, reply_to=reply
+        )
+        listing = next(line for line in result.stdout.splitlines() if "[42]" in line)
+
+        message = SimpleNamespace(
+            id=42,
+            date=None,
+            sender=SimpleNamespace(first_name="Alice", last_name=""),
+            sender_id=None,
+            message="see the alfa",
+            entities=entities,
+            reply_to=reply,
+            media=type("MessageMediaPhoto", (), {})(),
+            action=None,
+            file=None,
+            out=False,
+        )
+        stream = text_line(message_record(111, "Test Chat", message))
+
+        tail = "[42] ↪ 40  Alice: [Photo] see the alfa (https://example.com)"
+        assert listing.endswith(tail)
+        assert stream.endswith(tail)
 
 
 # ---------------------------------------------------------------------------

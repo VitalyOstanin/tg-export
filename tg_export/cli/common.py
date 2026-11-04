@@ -246,7 +246,7 @@ async def opened_state_if_any(
 
 @contextlib.asynccontextmanager
 async def _opened_state(
-    account, config_override, output_override, *, required: bool, read_only: bool = False
+    account, config_override, output_override, *, required: bool, read_only: bool
 ) -> AsyncIterator[tuple[ExportState | None, Path, str]]:
     from tg_export.state import ExportState
 

@@ -797,3 +797,59 @@ def test_the_client_is_built_on_the_fixed_session(tmp_path):
         if session is not None:
             session.close()
         api._session_lock.release()
+
+
+@pytest.mark.asyncio
+async def test_peer_dialogs_are_asked_in_one_request(tmp_path):
+    """Диалоги названных чатов берутся одним GetPeerDialogs, а не обходом всего списка.
+
+    Каждый приходит таким же, как из `iter_dialogs`: с названием чата, его
+    сущностью и последним сообщением.
+    """
+    from datetime import UTC, datetime
+    from types import SimpleNamespace
+
+    from telethon.tl import types
+    from telethon.tl.functions.messages import GetPeerDialogsRequest
+
+    api = TgApi(str(tmp_path / "peers.session"), 1, "hash")
+    channel = types.Channel(
+        id=1234567890, title="alfa", photo=types.ChatPhotoEmpty(), date=datetime.now(UTC), access_hash=42
+    )
+    peer = types.PeerChannel(channel_id=1234567890)
+    # The fields `messages.PeerDialogs` carries; its `state` is not read.
+    answer = SimpleNamespace(
+        dialogs=[
+            types.Dialog(
+                peer=peer,
+                top_message=20,
+                read_inbox_max_id=0,
+                read_outbox_max_id=0,
+                unread_count=0,
+                unread_mentions_count=0,
+                unread_reactions_count=0,
+                unread_poll_votes_count=0,
+                notify_settings=types.PeerNotifySettings(),
+            )
+        ],
+        messages=[types.Message(id=20, peer_id=peer, date=datetime.now(UTC), message="beta")],
+        chats=[channel],
+        users=[],
+    )
+    requests: list = []
+
+    async def send(request):
+        requests.append(request)
+        return answer
+
+    client = MagicMock(side_effect=send)
+    client.get_input_entity = AsyncMock(return_value=types.InputPeerChannel(1234567890, 0))
+    api.client = client
+
+    dialogs = [d async for d in api.peer_dialogs([-1001234567890])]
+
+    assert len(requests) == 1
+    assert isinstance(requests[0], GetPeerDialogsRequest)
+    assert [d.id for d in dialogs] == [-1001234567890]
+    assert dialogs[0].title == "alfa"
+    assert dialogs[0].message.id == 20

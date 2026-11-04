@@ -34,6 +34,58 @@ CONVERTER = Path(__file__).resolve().parent.parent / "tg_export" / "converter.py
 # пользователя без имени.
 NOT_TL_CLASS_NAMES = {"Action", "MessageAction", "Unknown"}
 
+# Кнопки клавиатуры Telethon описывает по-разному до и после слоя 229
+# (Telethon 1.45): прежде вид кнопки задавал её собственный класс, теперь — класс
+# поля `type` у KeyboardButton или KeyboardInlineButton. Конвертер разбирает обе
+# формы, пока pyproject допускает Telethon ниже 1.45, но в установленном Telethon
+# есть классы только одной из них. Снимки ниже перечисляют классы каждого
+# поколения, на которые опирается конвертер: имя из поколения, которого нет в
+# установленном Telethon, проверяется по снимку, а сам снимок текущего поколения —
+# по telethon.tl.types.
+BUTTON_CLASSES_BEFORE_LAYER_229 = frozenset(
+    {
+        "KeyboardButtonUrl",
+        "KeyboardButtonCallback",
+        "KeyboardButtonGame",
+        "KeyboardButtonBuy",
+        "KeyboardButtonSwitchInline",
+        "KeyboardButtonWebView",
+        "KeyboardButtonSimpleWebView",
+        "KeyboardButtonUserProfile",
+        "KeyboardButtonRequestPhone",
+        "KeyboardButtonRequestGeoLocation",
+        "KeyboardButtonRequestPoll",
+        "KeyboardButtonRequestPeer",
+        "KeyboardButtonCopy",
+    }
+)
+BUTTON_CLASSES_SINCE_LAYER_229 = frozenset(
+    {
+        "KeyboardInlineButton",
+        "InlineButtonTypeUrl",
+        "InlineButtonTypeCallback",
+        "InlineButtonTypeGame",
+        "InlineButtonTypeBuy",
+        "InlineButtonTypeSwitchInline",
+        "InlineButtonTypeWebView",
+        "ButtonTypeSimpleWebView",
+        "InlineButtonTypeUserProfile",
+        "ButtonTypeRequestPhone",
+        "ButtonTypeRequestGeoLocation",
+        "ButtonTypeRequestPoll",
+        "ButtonTypeRequestPeer",
+        "InlineButtonTypeCopy",
+    }
+)
+
+
+def _button_generations() -> tuple[frozenset[str], frozenset[str]]:
+    """Снимки кнопок установленного Telethon и другого поколения — в этом порядке."""
+    if hasattr(tl_types, "KeyboardInlineButton"):
+        return BUTTON_CLASSES_SINCE_LAYER_229, BUTTON_CLASSES_BEFORE_LAYER_229
+    return BUTTON_CLASSES_BEFORE_LAYER_229, BUTTON_CLASSES_SINCE_LAYER_229
+
+
 # Ожидаемый порядок колонок в таблице sessions. Telethon пишет строку
 # позиционно (`insert or replace into sessions values (?,?,?,?,?,?)`), поэтому
 # смысл несёт позиция, а не имя; tg_export.session спасает две последние.
@@ -61,17 +113,45 @@ def _camel_case_literals(path: Path) -> set[str]:
 
 
 def test_converter_dispatches_on_class_names_that_telethon_still_has():
-    """Каждое имя класса, по которому ветвится конвертер, есть в telethon.tl.types."""
+    """Каждое имя класса, по которому ветвится конвертер, есть в telethon.tl.types.
+
+    Исключение — классы кнопок другого поколения Telethon: их в установленной
+    версии нет, и они сверяются со снимком этого поколения.
+    """
+    _, other_generation = _button_generations()
     unknown = sorted(
         name
         for name in _camel_case_literals(CONVERTER)
-        if not hasattr(tl_types, name) and not hasattr(models, name) and name not in NOT_TL_CLASS_NAMES
+        if not hasattr(tl_types, name)
+        and not hasattr(models, name)
+        and name not in NOT_TL_CLASS_NAMES
+        and name not in other_generation
     )
     assert not unknown, (
         "converter.py ветвится по именам классов, которых нет ни в telethon.tl.types, "
         f"ни в tg_export.models: {unknown}. Класс переименован в Telethon либо строка набрана с опечаткой — "
         "и то, и другое молча уводит разбор в ветку unknown."
     )
+
+
+def test_button_snapshots_split_by_the_installed_telethon():
+    """Снимок текущего поколения кнопок есть в telethon.tl.types целиком, другого — отсутствует целиком.
+
+    Иначе снимок устарел: часть классов вернулась или исчезла, и исключение для
+    другого поколения в сверке выше стало бы прикрывать настоящую опечатку.
+    """
+    installed, other = _button_generations()
+    missing = sorted(name for name in installed if not hasattr(tl_types, name))
+    present = sorted(name for name in other if hasattr(tl_types, name))
+    assert not missing, f"Классов кнопок текущего поколения нет в telethon.tl.types: {missing}."
+    assert not present, f"Классы кнопок другого поколения есть в telethon.tl.types: {present}."
+
+
+def test_converter_handles_every_button_class_of_both_generations():
+    """Конвертер ветвится по каждому классу кнопок из обоих снимков."""
+    literals = _camel_case_literals(CONVERTER)
+    absent = sorted((BUTTON_CLASSES_BEFORE_LAYER_229 | BUTTON_CLASSES_SINCE_LAYER_229) - literals)
+    assert not absent, f"converter.py не разбирает классы кнопок: {absent}."
 
 
 def test_session_table_layout_matches_what_the_workaround_assumes(tmp_path):

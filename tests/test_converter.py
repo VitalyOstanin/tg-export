@@ -2,6 +2,7 @@ import logging
 from datetime import datetime
 from unittest.mock import MagicMock
 
+import pytest
 from telethon.tl.types import ChannelForbidden, ChatForbidden
 
 from tg_export.converter import convert_chat, convert_message
@@ -566,3 +567,171 @@ def test_the_reply_mark_names_the_chat_only_when_it_is_another_one():
     assert reply_mark(None, None) == ""
     assert reply_mark(4708, None) == "↪ 4708"
     assert reply_mark(4708, 1234567890) == "↪ 1234567890/4708"
+
+
+# Keyboard buttons came in two shapes. Up to Telethon 1.44 (layer 227) the kind
+# was the class of the button itself; from 1.45 (layer 229) a button is a bare
+# KeyboardButton or KeyboardInlineButton, and the kind and its payload sit in
+# its `type` field. Each case pairs the two shapes of one button with the result
+# both must give. The fakes carry the class names and fields of the real TL
+# classes, so the cases hold whichever Telethon is installed.
+
+
+def _tl(name: str, **fields):
+    return type(name, (), fields)()
+
+
+def _inline_layer_229(kind):
+    return _tl("KeyboardInlineButton", text="Open", type=kind, style=None)
+
+
+def _reply_layer_229(kind):
+    return _tl("KeyboardButton", text="Open", type=kind, style=None)
+
+
+BUTTON_SHAPES = [
+    (
+        _tl("KeyboardButtonUrl", text="Open", url="https://example.com"),
+        _inline_layer_229(_tl("InlineButtonTypeUrl", url="https://example.com")),
+        ("url", "https://example.com"),
+    ),
+    (
+        _tl("KeyboardButtonCallback", text="Open", data=b"open", requires_password=None),
+        _inline_layer_229(_tl("InlineButtonTypeCallback", data=b"open", requires_password=None)),
+        ("callback", "open"),
+    ),
+    (
+        _tl("KeyboardButtonGame", text="Open"),
+        _inline_layer_229(_tl("InlineButtonTypeGame")),
+        ("game", None),
+    ),
+    (
+        _tl("KeyboardButtonBuy", text="Open"),
+        _inline_layer_229(_tl("InlineButtonTypeBuy")),
+        ("buy", None),
+    ),
+    (
+        _tl("KeyboardButtonSwitchInline", text="Open", query="open", same_peer=None, peer_types=None),
+        _inline_layer_229(_tl("InlineButtonTypeSwitchInline", query="open", same_peer=None, peer_types=None)),
+        ("switch_inline", None),
+    ),
+    (
+        _tl("KeyboardButtonWebView", text="Open", url="https://example.com/app"),
+        _inline_layer_229(_tl("InlineButtonTypeWebView", url="https://example.com/app")),
+        ("web_view", "https://example.com/app"),
+    ),
+    (
+        _tl("KeyboardButtonSimpleWebView", text="Open", url="https://example.com/app"),
+        _reply_layer_229(_tl("ButtonTypeSimpleWebView", url="https://example.com/app")),
+        ("simple_web_view", "https://example.com/app"),
+    ),
+    (
+        _tl("KeyboardButtonUserProfile", text="Open", user_id=1001),
+        _inline_layer_229(_tl("InlineButtonTypeUserProfile", user_id=1001)),
+        ("user_profile", None),
+    ),
+    (
+        _tl("KeyboardButtonRequestPhone", text="Open"),
+        _reply_layer_229(_tl("ButtonTypeRequestPhone")),
+        ("request_phone", None),
+    ),
+    (
+        _tl("KeyboardButtonRequestGeoLocation", text="Open"),
+        _reply_layer_229(_tl("ButtonTypeRequestGeoLocation")),
+        ("request_location", None),
+    ),
+    (
+        _tl("KeyboardButtonRequestPoll", text="Open", quiz=None),
+        _reply_layer_229(_tl("ButtonTypeRequestPoll", quiz=None)),
+        ("request_poll", None),
+    ),
+    (
+        _tl("KeyboardButtonRequestPeer", text="Open", button_id=1, peer_type=None, max_quantity=1),
+        _reply_layer_229(_tl("ButtonTypeRequestPeer", button_id=1, peer_type=None, max_quantity=1)),
+        ("request_peer", None),
+    ),
+    (
+        _tl("KeyboardButtonCopy", text="Open", copy_text="open"),
+        _inline_layer_229(_tl("InlineButtonTypeCopy", copy_text="open")),
+        ("copy_text", None),
+    ),
+    (
+        _tl(
+            "KeyboardButtonUrlAuth", text="Open", url="https://example.com/login", button_id=1, fwd_text=None
+        ),
+        _inline_layer_229(
+            _tl("InlineButtonTypeUrlAuth", url="https://example.com/login", button_id=1, fwd_text=None)
+        ),
+        ("default", "https://example.com/login"),
+    ),
+    (
+        _tl("KeyboardButton", text="Open"),
+        _reply_layer_229(_tl("ButtonTypeDefault")),
+        ("default", None),
+    ),
+]
+
+
+def _parsed_buttons(*buttons):
+    from tg_export.converter import _convert_inline_buttons
+
+    tl_msg = MagicMock()
+    tl_msg.reply_markup = MagicMock(rows=[MagicMock(buttons=list(buttons))])
+    rows = _convert_inline_buttons(tl_msg)
+    assert rows is not None
+    return [(str(button.type), button.text, button.data) for button in rows[0]]
+
+
+@pytest.mark.parametrize(
+    ("before_229", "since_229", "expected"),
+    BUTTON_SHAPES,
+    ids=[shapes[0].__class__.__name__ for shapes in BUTTON_SHAPES],
+)
+def test_a_button_parses_the_same_in_both_telethon_shapes(before_229, since_229, expected):
+    kind, data = expected
+
+    assert _parsed_buttons(before_229, since_229) == [(kind, "Open", data), (kind, "Open", data)]
+
+
+def test_a_disabled_inline_button_of_layer_229_is_a_plain_button():
+    disabled = _inline_layer_229(_tl("InlineButtonTypeDisabled"))
+
+    assert _parsed_buttons(disabled) == [("default", "Open", None)]
+
+
+def test_a_button_type_that_telethon_adds_later_falls_back_to_default():
+    novel = _inline_layer_229(_tl("InlineButtonTypeSomethingNew", url="https://example.com"))
+
+    assert _parsed_buttons(novel) == [("default", "Open", "https://example.com")]
+
+
+def test_buttons_built_by_the_installed_telethon_parse_into_their_kinds():
+    """Настоящие TL-объекты установленного Telethon, собранные его же помощниками."""
+    from telethon.tl.custom import Button
+
+    def raw(button):
+        return button.button if isinstance(button, Button) else button
+
+    buttons = [
+        Button.url("Open", "https://example.com"),
+        Button.inline("Open", b"open"),
+        Button.switch_inline("Open", "open"),
+        Button.game("Open"),
+        Button.buy("Open"),
+        Button.text("Open"),
+        Button.request_phone("Open"),
+        Button.request_location("Open"),
+        Button.request_poll("Open"),
+    ]
+
+    assert _parsed_buttons(*(raw(button) for button in buttons)) == [
+        ("url", "Open", "https://example.com"),
+        ("callback", "Open", "open"),
+        ("switch_inline", "Open", None),
+        ("game", "Open", None),
+        ("buy", "Open", None),
+        ("default", "Open", None),
+        ("request_phone", "Open", None),
+        ("request_location", "Open", None),
+        ("request_poll", "Open", None),
+    ]

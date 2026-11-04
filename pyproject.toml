@@ -51,8 +51,11 @@ dependencies = [
     "jinja2>=3.1.6",
     # 8.3.3 fixes the command injection in click.edit() (CVE-2026-7246). The
     # project never calls that function; the floor keeps it out of anyone's
-    # environment regardless.
-    "click>=8.3.3",
+    # environment regardless. 8.4.0 hands the prompt text to readline instead
+    # of printing it apart; under 8.3.x CliRunner echoes the answer to a
+    # confirmation question into stdout, and the test keeping stdout for the
+    # machine-readable output fails there.
+    "click>=8.4.0",
     "rich>=15.0",
     # A dependency of the tool rather than an option of it: Telethon ignores
     # `proxy=` when python_socks is missing, so an installation without it
@@ -121,6 +124,11 @@ dev = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# Explicit, so that a pytest-asyncio release warning about the unset value does
+# not turn into an error through the DeprecationWarning filter below: 1.4.1
+# does exactly that, and the run stops before the first test is collected.
+# No async fixture in the suite is wider than a test.
+asyncio_default_fixture_loop_scope = "function"
 # --cov lives here, not only in CI: without it the fail_under threshold is not
 # checked locally and a drop in coverage surfaces only after the push.
 addopts = "-ra --strict-markers --strict-config --cov=tg_export"
@@ -151,7 +159,7 @@ fail_under = 50
 "tg_export/__init__.py" = 100
 "tg_export/html/__init__.py" = 100
 "tg_export/__main__.py" = 0
-"tg_export/api.py" = 73
+"tg_export/api.py" = 74
 "tg_export/auth.py" = 88
 "tg_export/catalog.py" = 77
 "tg_export/cli/__init__.py" = 90
@@ -165,7 +173,7 @@ fail_under = 50
 "tg_export/cli/tg.py" = 85
 "tg_export/config.py" = 92
 "tg_export/console.py" = 100
-"tg_export/converter.py" = 84
+"tg_export/converter.py" = 85
 "tg_export/errors.py" = 100
 "tg_export/exporter.py" = 77
 "tg_export/format.py" = 92
@@ -179,7 +187,7 @@ fail_under = 50
 "tg_export/state.py" = 88
 "tg_export/upload.py" = 90
 "tg_export/verify.py" = 94
-"tg_export/watch.py" = 76
+"tg_export/watch.py" = 90
 "tg_export/waits.py" = 93
 
 [tool.ruff]

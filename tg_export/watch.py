@@ -7,10 +7,12 @@ the gap, and Telethon 1.44 does not close that gap either (`_handle_auto_re-
 connect` in its updates client still carries a `TODO Catch-up` and only makes
 one high-level request). So the marks are kept here, one message id per chat.
 
-Back-fill leans on the dialog list rather than on the marks: one pass over
-`iter_dialogs` names every chat together with its last message, and history is
-asked for only where that id has moved past the mark. The cost of a start then
-follows the number of active chats, not the number of chats overall.
+Back-fill leans on the dialog list rather than on the marks: the dialogs name
+each chat together with its last message, and history is asked for only where
+that id has moved past the mark. With chats named on the command line their
+dialogs are asked for directly, in one request; with every chat watched, one
+pass over `iter_dialogs` covers them. The cost of a start then follows the
+number of active chats, not the number of chats overall.
 """
 
 from __future__ import annotations
@@ -20,15 +22,15 @@ import json
 import logging
 import os
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 from tg_export.converter import reply_mark, reply_target, text_links, with_link_targets
 from tg_export.format import class_suffix, display_name, format_moment, strip_control_chars
-from tg_export.privacy import ensure_private_dir, write_private_text
+from tg_export.privacy import ensure_private_dir, tighten_if_loose, write_private_text
 
 logger = logging.getLogger(__name__)
 
@@ -148,14 +150,28 @@ async def missed_messages(
 ) -> AsyncIterator[tuple[int, str | None, Any]]:
     """Messages that arrived while nothing was listening, oldest first.
 
-    Each message comes with the name of its chat: the dialog list already
-    carries it, and a back-filled message used to reach the reader with an
-    empty chat while a live one carried the name.
+    Each message comes with the name of its chat: the dialog already carries
+    it, and a back-filled message used to reach the reader with an empty chat
+    while a live one carried the name.
 
     A chat with no mark is not replayed: it was never listened to, and handing
     over its history would flood the reader with an archive it did not ask for.
+    For the same reason named chats without a mark are not even asked for.
+
+    At most `limit` messages per chat are handed over, and they are the latest
+    ones: a reader that falls that far behind wants to know what is happening
+    now. What the limit leaves out is named in the log, since the mark moves
+    past it and no later catch-up returns to it.
     """
-    async for dialog in api.iter_dialogs():
+    if wanted is None:
+        dialogs = api.iter_dialogs()
+    else:
+        asked = sorted(chat_id for chat_id in wanted if state.last_seen(chat_id) is not None)
+        if not asked:
+            return
+        dialogs = api.peer_dialogs(asked)
+
+    async for dialog in dialogs:
         chat_id = getattr(dialog, "id", None)
         if chat_id is None or chat_id in excluded:
             continue
@@ -168,14 +184,39 @@ async def missed_messages(
         if top is None or top <= mark:
             continue
         title = getattr(dialog, "title", None) or getattr(dialog, "name", None)
-        async for message in api.client.iter_messages(dialog.entity, min_id=mark, limit=limit, reverse=True):
+        for message in await _latest_after(api, dialog.entity, chat_id, mark, limit):
             yield chat_id, title, message
+
+
+async def _latest_after(api: Any, entity: Any, chat_id: int, mark: int, limit: int) -> list[Any]:
+    """The last `limit` messages after `mark`, oldest first.
+
+    Telethon's `iter_messages` with `reverse=True` starts right after `min_id`
+    and climbs, so its `limit` keeps the oldest messages; without `reverse` it
+    walks down from the newest and stops at `min_id`, which is what keeps the
+    latest. One message more than the limit is asked for: its presence is how
+    a cut is told from a gap that fits.
+    """
+    newest_first = [
+        message async for message in api.client.iter_messages(entity, min_id=mark, limit=limit + 1)
+    ]
+    if len(newest_first) > limit:
+        newest_first = newest_first[:limit]
+        logger.warning(
+            "chat %s: more than %d messages were missed; the ones after %d and before %d are skipped",
+            chat_id,
+            limit,
+            mark,
+            newest_first[-1].id,
+        )
+    newest_first.reverse()
+    return newest_first
 
 
 def message_record(chat_id: int | None, chat: str | None, message: Any, *, event: str = "message") -> dict:
     """One message as the reader of the stream sees it.
 
-    The names repeat what `tg messages --json` already prints, so a program
+    `tg messages --json` takes its fields from here as well, so a program
     reading both parses them with one piece of code. Attachments are named, not
     fetched: the listener stays light, and `tg download` fetches a file when
     the reader decides it wants one.
@@ -234,13 +275,25 @@ def text_line(record: dict) -> str:
     reply = reply_mark(record.get("reply_to"), record.get("reply_to_peer"))
     if reply:
         mark = f"{mark} {reply}"
+    sender = strip_control_chars(record.get("sender") or "")
+    text = strip_control_chars(record_text(record))
+    return f"  {record['date']}  {chat}  [{record['id']}]{mark}  {sender}: {text}"
+
+
+def record_text(record: dict) -> str:
+    """The text of a message record as a terminal line shows it.
+
+    Link targets follow their words, media shows as its type in square
+    brackets, and a service message as its action in round ones. `tg messages`
+    and `tg info` print their lines through this too, so the listing of a chat
+    and the live stream cannot drift apart.
+    """
     text = with_link_targets(record.get("text") or "", record.get("links") or [])
     if record.get("media"):
-        text = f"[{record['media']}] {text}".strip()
+        text = f"[{record['media']}] {text}" if text else f"[{record['media']}]"
     if record.get("action"):
         text = f"({record['action']})"
-    sender = strip_control_chars(record.get("sender") or "")
-    return f"  {record['date']}  {chat}  [{record['id']}]{mark}  {sender}: {strip_control_chars(text)}"
+    return text
 
 
 class RecordSink:
@@ -255,20 +308,60 @@ class RecordSink:
         self._stream = stream
         self._as_json = as_json
         self._log_path = Path(log_path) if log_path is not None else None
+        self._log: TextIO | None = None
+        # One writer at a time, in arrival order: handlers run as separate
+        # tasks, and two threads writing at once would interleave the records.
+        self._lock = asyncio.Lock()
+
+    async def __aenter__(self) -> RecordSink:
+        return self
+
+    async def __aexit__(self, *exc_info: object) -> None:
+        await self.aclose()
 
     async def emit(self, record: dict) -> None:
+        """Write one record, off the event loop.
+
+        A pipe whose reader falls behind blocks the write; done on the loop,
+        that would stop the updates and the pings that keep the connection.
+        """
         document = json.dumps(record, ensure_ascii=False)
-        self._stream.write((document if self._as_json else text_line(record)) + "\n")
+        line = document if self._as_json else text_line(record)
+        async with self._lock:
+            await asyncio.to_thread(self._write, line, document)
+
+    async def aclose(self) -> None:
+        """Close the log; the sink may be closed more than once."""
+        async with self._lock:
+            log, self._log = self._log, None
+            if log is not None:
+                await asyncio.to_thread(log.close)
+
+    def _write(self, line: str, document: str) -> None:
+        self._stream.write(line + "\n")
         self._stream.flush()
         if self._log_path is not None:
-            await asyncio.to_thread(self._append, document)
+            if self._log is None:
+                self._log = _open_log(self._log_path)
+            self._log.write(document + "\n")
 
-    def _append(self, document: str) -> None:
-        """Add one line to the log, creating it closed to other users."""
-        ensure_private_dir(self._log_path.parent)  # pyright: ignore[reportOptionalMemberAccess]
-        fd = os.open(str(self._log_path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-        with os.fdopen(fd, "a", encoding="utf-8") as fh:
-            fh.write(document + "\n")
+
+def _open_log(path: Path) -> TextIO:
+    """Open the log for appending, closed to other users.
+
+    A new file is born private; one left by an earlier run, or made by the
+    user, is tightened before the first message goes into it. The file stays
+    open for the whole run and is line-buffered, so every record reaches it at
+    once.
+    """
+    ensure_private_dir(path.parent)
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    try:
+        tighten_if_loose(path)
+        return os.fdopen(fd, "a", encoding="utf-8", buffering=1)
+    except BaseException:
+        os.close(fd)
+        raise
 
 
 def subscribe(
@@ -300,12 +393,15 @@ def subscribe(
         blacklist = False
 
     # `incoming=True` is how Telethon spells "not mine"; leaving both unset
-    # means no filter at all, which is the default this command wants.
+    # means no filter at all, which is the default this command wants. New
+    # messages are never filtered by direction: an own one is not shown with
+    # `outgoing` off, but it still moves the mark of its chat, which the
+    # handler can only do if it sees the message.
     incoming = None if outgoing else True
 
     client.add_event_handler(
         partial(handler, kind="message"),
-        events.NewMessage(chats=chats, blacklist_chats=blacklist, incoming=incoming),
+        events.NewMessage(chats=chats, blacklist_chats=blacklist),
     )
     if edits:
         client.add_event_handler(
@@ -318,22 +414,42 @@ def subscribe(
         )
 
 
-async def connection_watchdog(client: Any, on_reconnect: Any, *, interval: float = 30.0) -> None:
-    """Run `on_reconnect` after the connection comes back.
+def follow_reconnects(client: Any, on_reconnect: Callable[[], Awaitable[None]]) -> Callable[[], None]:
+    """Run `on_reconnect` each time Telethon brings the connection back.
 
-    Telethon reconnects on its own and says nothing about the gap, so the
-    catch-up has to be driven from outside. Asking the client whether it is
-    connected keeps this independent of the library's internals, which is where
-    the missing catch-up already lives.
+    Telethon reconnects on its own and says nothing about the gap, and asking
+    `is_connected` from outside does not see it either: the flag stays up for
+    the whole automatic reconnect and drops only once the client gives up, at
+    which point `run_until_disconnected` returns. The one signal the library
+    has is the callback its sender (`MTProtoSender._reconnect` in Telethon
+    1.44) runs after every successful reconnect, so the catch-up is chained in
+    front of it. It goes first: the sender schedules the callback as soon as
+    the socket is back, while an update needs the receive loop, the updates
+    queue and a handler task -- later steps of the loop -- so the catch-up opens
+    its gap before any live message can move a mark. The library's own request
+    still runs when the catch-up fails.
+
+    Returns the function that puts the library's callback back.
     """
-    was_connected = client.is_connected()
-    while True:
-        await asyncio.sleep(interval)
-        connected = client.is_connected()
-        if connected and not was_connected:
-            logger.info("connection is back; asking for what was missed")
+    sender = getattr(client, "_sender", None)
+    original: Callable[[], Awaitable[Any]] | None = getattr(sender, "_auto_reconnect_callback", None)
+    if sender is None or not callable(original):
+        logger.warning("Telethon offers no reconnect callback; what a reconnect misses is not replayed")
+        return lambda: None
+
+    async def chained() -> None:
+        try:
             await on_reconnect()
-        was_connected = connected
+        except Exception as e:  # a failed catch-up must not stop the updates
+            logger.warning("catch-up after reconnect failed (%s); the next reconnect will retry it", e)
+        await original()
+
+    sender._auto_reconnect_callback = chained
+
+    def restore() -> None:
+        sender._auto_reconnect_callback = original
+
+    return restore
 
 
 class LiveStream:
@@ -352,6 +468,7 @@ class LiveStream:
         wanted: set[int] | None,
         excluded: set[int],
         catchup_limit: int,
+        outgoing: bool,
     ) -> None:
         self._api = api
         self._state = state
@@ -359,7 +476,21 @@ class LiveStream:
         self._wanted = wanted
         self._excluded = excluded
         self._catchup_limit = catchup_limit
+        self._outgoing = outgoing
         self._titles: dict[int, str] = {}
+        # While a gap is open, a live message is shown but does not move the
+        # mark of its chat: the mark is where the catch-up asks history from,
+        # and a live id above it would make the chat look up to date while the
+        # messages in between were never shown. Every id shown during the gap
+        # is kept instead, so that neither side prints what the other already
+        # has, and the marks move over the live ones once every gap is filled.
+        # A gap whose catch-up failed stays open until a later one succeeds.
+        self._open_gaps = 0
+        self._gap_unfilled = False
+        self._shown_in_gap: dict[int, set[int]] = {}
+        # One catch-up at a time: a reconnect during the first one would
+        # otherwise ask the same history twice and print it twice.
+        self._filling = asyncio.Lock()
 
     async def handle(self, event: Any, *, kind: str) -> None:
         """Turn one event into a record and hand it over."""
@@ -368,7 +499,7 @@ class LiveStream:
             ids = list(getattr(event, "deleted_ids", []) or [])
             known = self._titles.get(chat_id) if chat_id is not None else None
             await self._emit(
-                deletion_record(chat_id, known, ids, datetime.now()),
+                deletion_record(chat_id, known, ids, datetime.now(UTC)),
                 chat_id=None,
                 message_id=None,
             )
@@ -381,6 +512,24 @@ class LiveStream:
         seen = self._state.last_seen(chat_id) if chat_id is not None else None
         if kind == "message" and seen is not None and message.id <= seen:
             return
+        # An own message the reader asked to leave out is passed over as if it
+        # had been shown: it is not printed, but the mark moves over it -- in a
+        # gap only once the gap is filled, like any live message.
+        hidden = not self._outgoing and bool(getattr(message, "out", False))
+        if hidden and kind != "message":
+            return
+        if kind == "message" and chat_id is not None and (self._open_gaps or self._gap_unfilled):
+            seen_in_gap = self._shown_in_gap.setdefault(chat_id, set())
+            if message.id in seen_in_gap:
+                return
+            seen_in_gap.add(message.id)
+            if not hidden:
+                await self._sink.emit(message_record(chat_id, await self._title_of(event, chat_id), message))
+            return
+        if hidden:
+            if chat_id is not None:
+                await self._pass_over(chat_id, message.id)
+            return
         record = message_record(chat_id, await self._title_of(event, chat_id), message, event=kind)
         await self._emit(
             record,
@@ -388,8 +537,85 @@ class LiveStream:
             message_id=message.id if kind == "message" else None,
         )
 
+    async def run(self, *, catchup: bool, edits: bool, announce: Callable[[str], None]) -> None:
+        """Listen until the connection ends, then leave nothing behind.
+
+        Whatever ends the run -- a disconnect, an error, an interrupt -- the
+        reconnect callback of Telethon is put back, the marks reach the disk
+        and the log is closed. An interrupt is the ordinary way to stop and is
+        only announced; any other error goes on to the caller. `announce`
+        carries the lines meant for the person at the terminal.
+        """
+        client = self._api.client
+        async with self._sink:
+            # The gap is open before the first event can arrive: a live message
+            # handled ahead of the catch-up would otherwise move the mark of its
+            # chat past what was missed.
+            if catchup:
+                self.open_gap()
+            subscribe(
+                client,
+                self.handle,
+                wanted=self._wanted,
+                excluded=self._excluded,
+                edits=edits,
+                outgoing=self._outgoing,
+            )
+            wanted = self._wanted
+            named = "every chat" if wanted is None else f"{len(wanted)} chat{'' if len(wanted) == 1 else 's'}"
+            announce(f"Watching {named}")
+            # Without the catch-up the run listens from the current moment,
+            # after a reconnect as well as at the start.
+            stop_following = follow_reconnects(client, self.catch_up) if catchup else None
+            try:
+                if catchup:
+                    await self.fill_gap()
+                await client.run_until_disconnected()
+            except (KeyboardInterrupt, asyncio.CancelledError):
+                announce("Stopped")
+            finally:
+                if stop_following is not None:
+                    stop_following()
+                await self._state.save(force=True)
+
+    def open_gap(self) -> None:
+        """Stop live messages from moving the marks until a catch-up fills the gap.
+
+        Synchronous on purpose: called before the first await, nothing that
+        arrives after the gap began can be dispatched ahead of it.
+        """
+        self._open_gaps += 1
+
     async def catch_up(self) -> None:
-        """Hand over what arrived while nothing was listening."""
+        """Hand over what arrived while nothing was listening.
+
+        Opens its own gap before the first await, which is what lets the
+        reconnect callback run it directly.
+        """
+        self.open_gap()
+        await self.fill_gap()
+
+    async def fill_gap(self) -> None:
+        """Fill the gap opened by `open_gap` from history, then let live messages move marks again.
+
+        A catch-up that fails leaves the marks where they were before the gap:
+        the next one asks history from there, and the live messages shown in
+        the meantime are skipped by id rather than lost.
+        """
+        try:
+            async with self._filling:
+                await self._replay_missed()
+        except BaseException:
+            self._gap_unfilled = True
+            raise
+        else:
+            self._gap_unfilled = False
+        finally:
+            self._open_gaps -= 1
+        if not self._open_gaps and not self._gap_unfilled:
+            await self._close_gaps()
+
+    async def _replay_missed(self) -> None:
         async for chat_id, title, message in missed_messages(
             self._api,
             self._state,
@@ -399,17 +625,46 @@ class LiveStream:
         ):
             if title:
                 self._titles[chat_id] = title
+            shown = self._shown_in_gap.setdefault(chat_id, set())
+            if message.id in shown:
+                # Already shown live; history only confirms the mark may move.
+                self._state.note(chat_id, message.id)
+                continue
+            shown.add(message.id)
+            if not self._outgoing and getattr(message, "out", False):
+                # Left out, yet covered: without the mark moving over it, a
+                # chat whose last message is an own one would be asked for
+                # the same interval at every start.
+                await self._pass_over(chat_id, message.id)
+                continue
             await self._emit(
                 message_record(chat_id, title or self._titles.get(chat_id), message),
                 chat_id=chat_id,
                 message_id=message.id,
             )
 
+    async def _close_gaps(self) -> None:
+        """Move the marks over what was shown while the gaps were open.
+
+        Everything up to those ids is shown by now: history covered each chat
+        up to the moment it was asked, and the connection carried the rest.
+        """
+        shown, self._shown_in_gap = self._shown_in_gap, {}
+        for chat_id, ids in shown.items():
+            if ids:
+                self._state.note(chat_id, max(ids))
+        if shown:
+            await self._state.save()
+
     async def _emit(self, record: dict, *, chat_id: int | None, message_id: int | None) -> None:
         await self._sink.emit(record)
         if chat_id is not None and message_id is not None:
-            self._state.note(chat_id, message_id)
-            await self._state.save()
+            await self._pass_over(chat_id, message_id)
+
+    async def _pass_over(self, chat_id: int, message_id: int) -> None:
+        """Move the mark of a chat over a message, whether it was printed or left out."""
+        self._state.note(chat_id, message_id)
+        await self._state.save()
 
     async def _title_of(self, event: Any, chat_id: int | None) -> str | None:
         """The name of the chat an event came from, asked for once per chat."""

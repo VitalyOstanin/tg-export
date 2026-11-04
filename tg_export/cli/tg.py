@@ -24,13 +24,13 @@ from tg_export.cli.common import (
     DEFAULT_MESSAGE_TEXT_LENGTH,
     fail,
 )
-from tg_export.converter import reply_mark, reply_target, text_links, with_link_targets
+from tg_export.converter import reply_mark, reply_target, text_links
 from tg_export.errors import (
     EXIT_FAILURE,
     EXIT_OK,
     ChatResolveError,
 )
-from tg_export.format import class_suffix, display_name, format_moment, strip_control_chars
+from tg_export.format import display_name, format_moment, strip_control_chars
 from tg_export.privacy import ensure_private_dir, write_private_text
 
 logger = logging.getLogger(__name__)
@@ -81,18 +81,20 @@ def _sender_name(sender) -> str:
 def _message_preview(msg, *, truncate: int = DEFAULT_MESSAGE_TEXT_LENGTH) -> tuple[str, str]:
     """The (sender, text) pair of one line of a message listing.
 
-    Media shows as its type in square brackets, a service message as its action
-    in round ones. This was copied into `tg messages` and `tg info`, and the
-    copies drifted: one cut the text by the setting, the other by a literal.
+    Built from the same record as a line of `tg watch`: this was once copied
+    into `tg messages` and `tg info`, and the copies drifted -- one cut the text
+    by the setting, the other by a literal.
     """
-    sender = _sender_name(msg.sender) if msg.sender else ""
-    text = with_link_targets(msg.message or "", text_links(msg.message, msg.entities))
-    if msg.media:
-        media_type = msg.media.__class__.__name__.replace("MessageMedia", "")
-        text = f"[{media_type}] {text}" if text else f"[{media_type}]"
-    if msg.action:
-        text = f"({msg.action.__class__.__name__.replace('MessageAction', '')})"
-    return sender, text[:truncate] if truncate else text
+    from tg_export.watch import message_record, record_text
+
+    record = message_record(None, None, msg)
+    text = record_text(record)
+    return record["sender"], text[:truncate] if truncate else text
+
+
+# The fields of `tg messages --json`, in the order they are printed. The values
+# come from the record of `tg watch`; only the cut of the text is done here.
+_LISTING_FIELDS = ("id", "date", "sender", "text", "links", "media", "action", "reply_to", "reply_to_peer")
 
 
 async def _tg_messages(chat_id, account, limit, truncate=DEFAULT_MESSAGE_TEXT_LENGTH, as_json=False) -> None:
@@ -105,34 +107,25 @@ async def _tg_messages(chat_id, account, limit, truncate=DEFAULT_MESSAGE_TEXT_LE
         else:
             click.echo(f"# {title} (id={chat_id})\n")
 
+        from tg_export.watch import message_record
+
         collected = []
         async for msg in api.client.iter_messages(entity, limit=limit):  # pyright: ignore[reportArgumentType]
-            date_str = format_moment(msg.date, missing="?")
-            sender, text = _message_preview(msg, truncate=truncate)
-            reply_to, reply_to_peer = reply_target(msg)
             if as_json:
-                # The line for the terminal carries the media type and the
-                # service action inside the text; a program reading this wants
-                # the text as it was sent and the rest in fields of its own.
-                body = msg.message or ""
-                collected.append(
-                    {
-                        "id": msg.id,
-                        "date": date_str,
-                        "sender": sender,
-                        "text": body[:truncate] if truncate else body,
-                        "links": text_links(body, msg.entities),
-                        "media": class_suffix(msg.media, "MessageMedia"),
-                        "action": class_suffix(msg.action, "MessageAction"),
-                        "reply_to": reply_to,
-                        "reply_to_peer": reply_to_peer,
-                    }
-                )
+                record = message_record(None, None, msg)
+                if truncate:
+                    # Links are counted over the cut text: a link reaching past
+                    # the cut would point outside the `text` it travels with.
+                    record["text"] = record["text"][:truncate]
+                    record["links"] = text_links(record["text"], msg.entities)
+                collected.append({field: record[field] for field in _LISTING_FIELDS})
             else:
                 # Telegram controls both, and a terminal executes escape
                 # sequences it is handed: the same rule already applied to
                 # names on the way to the filesystem.
-                mark = reply_mark(reply_to, reply_to_peer)
+                sender, text = _message_preview(msg, truncate=truncate)
+                mark = reply_mark(*reply_target(msg))
+                date_str = format_moment(msg.date, missing="?")
                 head = f"  {date_str}  [{msg.id}] {mark}" if mark else f"  {date_str}  [{msg.id}]"
                 click.echo(f"{head}  {strip_control_chars(sender)}: {strip_control_chars(text)}")
         if as_json:
@@ -412,11 +405,11 @@ def tg_send(account, files, text, text_file, as_document, recipients) -> None:
     if text and text_file:
         raise click.UsageError("give the text either with --text or with --text-file, not both")
     if text_file:
-        text = (
-            click.get_text_stream("stdin").read()
-            if str(text_file) == "-"
-            else Path(text_file).read_text(encoding="utf-8")
-        )
+        if str(text_file) == "-":
+            with click.open_file("-", encoding="utf-8") as stdin:
+                text = stdin.read()
+        else:
+            text = Path(text_file).read_text(encoding="utf-8")
     if not text and not files:
         raise click.UsageError("specify --text, --text-file and/or --file")
 
@@ -775,15 +768,23 @@ async def _tg_download(
     "--no-catchup",
     is_flag=True,
     default=False,
-    help="Start from the current moment instead of replaying what was missed",
+    help="Start from the current moment and do not replay what was missed, at start or after a reconnect",
 )
 @click.option(
     "--catchup-limit",
     type=click.IntRange(min=1),
     default=100,
-    help="At most this many missed messages per chat",
+    help=(
+        "Replay at most this many missed messages per chat -- the latest ones; "
+        "anything older is skipped, and the skip is reported on stderr"
+    ),
 )
-@click.option("--no-outgoing", is_flag=True, default=False, help="Leave out messages sent from this account")
+@click.option(
+    "--no-outgoing",
+    is_flag=True,
+    default=False,
+    help="Leave out messages sent from this account, live and in the replay of what was missed",
+)
 @click.option("--no-edits", is_flag=True, default=False, help="Leave out edits and deletions")
 @click.option(
     "--state",
@@ -872,13 +873,7 @@ async def _tg_watch(
     state_path: Path | None,
 ) -> int:
     """Listen until the connection ends, printing what arrives and what was missed."""
-    from tg_export.watch import (
-        LiveStream,
-        RecordSink,
-        WatchState,
-        connection_watchdog,
-        subscribe,
-    )
+    from tg_export.watch import LiveStream, RecordSink, WatchState
 
     async with common.connected_api(account_name) as (api, account):
         try:
@@ -891,37 +886,14 @@ async def _tg_watch(
             return EXIT_FAILURE
 
         path = state_path or common.account_manager().watch_state_path(account)
-        state = WatchState.load(path, account)
         stream = LiveStream(
             api,
-            state,
+            WatchState.load(path, account),
             RecordSink(sys.stdout, as_json=as_json, log_path=log_path),
             wanted=wanted,
             excluded=excluded_ids,
             catchup_limit=catchup_limit,
-        )
-
-        subscribe(
-            api.client,
-            stream.handle,
-            wanted=wanted,
-            excluded=excluded_ids,
-            edits=edits,
             outgoing=outgoing,
         )
-        named = "every chat" if wanted is None else f"{len(wanted)} chat{'' if len(wanted) == 1 else 's'}"
-        common.diag(f"Watching {named}")
-        if catchup:
-            await stream.catch_up()
-
-        watchdog = asyncio.create_task(connection_watchdog(api.client, stream.catch_up))
-        try:
-            await api.client.run_until_disconnected()
-        except (KeyboardInterrupt, asyncio.CancelledError):
-            common.diag("Stopped")
-        finally:
-            watchdog.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await watchdog
-            await state.save(force=True)
+        await stream.run(catchup=catchup, edits=edits, announce=common.diag)
         return EXIT_OK

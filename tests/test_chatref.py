@@ -42,6 +42,27 @@ class TestParseChatRef:
         with pytest.raises(ValueError, match="invite link"):
             parse_chat_ref(value)
 
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            ("https://t.me/s/examplechannel", "examplechannel"),
+            ("https://t.me/s/examplechannel/1234", "examplechannel"),
+            ("https://t.me/examplechannel?start=abc", "examplechannel"),
+            ("https://t.me/examplechannel/1234?single", "examplechannel"),
+            ("https://t.me/examplechannel#top", "examplechannel"),
+            ("https://t.me/c/1234567890/42?thread=7", -1001234567890),
+        ],
+    )
+    def test_link_preview_and_query_forms(self, value, expected):
+        """Веб-превью `t.me/s/<канал>`, ?query и #fragment не искажают имя чата."""
+        assert parse_chat_ref(value) == expected
+
+    def test_phone_number_refused_with_truthful_message(self):
+        """Номер телефона отвергается сообщением про телефон, а не про приглашение."""
+        with pytest.raises(ValueError, match="phone") as excinfo:
+            parse_chat_ref("+12025550123")
+        assert "invite" not in str(excinfo.value)
+
     @pytest.mark.parametrize("value", ["", "   ", "два слова", "name/with/slashes"])
     def test_malformed_refused(self, value):
         """Пустая строка и строка, не похожая на имя, отвергаются."""

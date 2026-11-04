@@ -15,7 +15,7 @@ import sqlite3
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 from urllib.parse import quote
 
 import aiosqlite
@@ -622,7 +622,23 @@ class ExportState:
         """Get full export state for a chat."""
         async with self.db.execute("SELECT * FROM export_state WHERE chat_id=?", (chat_id,)) as cur:
             row = await cur.fetchone()
-            return dict(row) if row else None
+            return self._with_progress_defaults(dict(row)) if row else None
+
+    # Progress columns that databases from earlier versions lack. A reader must
+    # not migrate (it never writes), so it fills in what the schema would have.
+    _PROGRESS_DEFAULTS: ClassVar[dict[str, Any]] = {
+        "last_msg_id": 0,
+        "oldest_msg_id": 0,
+        "full_history": 0,
+        "messages_count": 0,
+        "updated_at": None,
+    }
+
+    @classmethod
+    def _with_progress_defaults(cls, row: dict[str, Any]) -> dict[str, Any]:
+        for name, default in cls._PROGRESS_DEFAULTS.items():
+            row.setdefault(name, default)
+        return row
 
     # Column whitelist for _upsert_chat_state. Guards against an unknown key
     # passed via **fields and against SQL injection through a column name.
@@ -1028,7 +1044,7 @@ class ExportState:
             "ON m.chat_id = es.chat_id "
             "ORDER BY es.updated_at DESC"
         ) as cur:
-            return [dict(row) for row in await cur.fetchall()]
+            return [self._with_progress_defaults(dict(row)) for row in await cur.fetchall()]
 
     async def count_messages(self, chat_id: int) -> int:
         """Count messages for a chat."""

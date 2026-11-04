@@ -994,3 +994,65 @@ class TestReadOnlyState:
             with pytest.raises(StateLockError):
                 async with ExportState(db_path):
                     pass
+
+
+class TestReadOnlyOldSchema:
+    """Читатель видит базу старой схемы и не меняет её файл."""
+
+    @staticmethod
+    def _make_old_db(db_path):
+        """База версии, в которой у export_state ещё не было двух колонок прогресса."""
+        con = sqlite3.connect(db_path)
+        con.executescript(
+            """
+            CREATE TABLE export_state (
+                chat_id        INTEGER PRIMARY KEY,
+                last_msg_id    INTEGER NOT NULL,
+                messages_count INTEGER DEFAULT 0,
+                updated_at     TIMESTAMP
+            );
+            INSERT INTO export_state VALUES (7, 42, 3, '2026-01-01T00:00:00+00:00');
+            CREATE TABLE messages (chat_id INTEGER NOT NULL, msg_id INTEGER NOT NULL);
+            INSERT INTO messages VALUES (7, 1), (7, 2);
+            """
+        )
+        con.commit()
+        con.close()
+
+    @pytest.mark.asyncio
+    async def test_reader_returns_defaults_for_columns_the_old_schema_lacks(self, tmp_path):
+        """Колонок oldest_msg_id и full_history в старой базе нет: читатель отдаёт нули."""
+        from tg_export.state import ExportState
+
+        db_path = tmp_path / "state.db"
+        self._make_old_db(db_path)
+
+        async with ExportState(db_path, read_only=True) as reader:
+            one = await reader.get_chat_state(7)
+            listed = await reader.list_chat_states()
+
+        assert one is not None
+        assert one["last_msg_id"] == 42
+        assert one["oldest_msg_id"] == 0
+        assert one["full_history"] == 0
+        assert listed[0]["oldest_msg_id"] == 0
+        assert listed[0]["full_history"] == 0
+        assert listed[0]["msg_count"] == 2
+
+    @pytest.mark.asyncio
+    async def test_reader_leaves_the_old_database_unchanged(self, tmp_path):
+        """Режим только чтения не добавляет колонки и не трогает user_version."""
+        from tg_export.state import ExportState
+
+        db_path = tmp_path / "state.db"
+        self._make_old_db(db_path)
+
+        async with ExportState(db_path, read_only=True) as reader:
+            await reader.list_chat_states()
+
+        con = sqlite3.connect(db_path)
+        columns = [row[1] for row in con.execute("PRAGMA table_info(export_state)")]
+        version = con.execute("PRAGMA user_version").fetchone()[0]
+        con.close()
+        assert columns == ["chat_id", "last_msg_id", "messages_count", "updated_at"]
+        assert version == 0

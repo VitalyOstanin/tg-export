@@ -610,9 +610,9 @@ def _convert_inline_buttons(tl_msg: Any) -> list[list[InlineButton]] | None:
         rows.append(
             [
                 InlineButton(
-                    type=_classify_button(btn),
+                    type=_classify_button(kind := _button_kind(btn)),
                     text=btn.text or "",
-                    data=_to_str(getattr(btn, "url", None) or getattr(btn, "data", None)),
+                    data=_to_str(getattr(kind, "url", None) or getattr(kind, "data", None)),
                 )
                 for btn in row.buttons
             ]
@@ -678,7 +678,15 @@ def convert_message(tl_msg: Any, chat_id: int) -> Message:
 # Kind of a keyboard button by its Telethon class, like the other tables of this
 # module. It used to be built inside the function, which runs once per button of
 # every row of every message.
+#
+# Telethon has two shapes of buttons. Up to 1.44 (layer 227) the kind is the
+# class of the button itself, and the url or data are its fields. From 1.45
+# (layer 229) every button is a bare KeyboardButton (reply keyboard) or
+# KeyboardInlineButton (inline keyboard) whose `type` field holds a
+# ButtonType* or InlineButtonType* object with the kind and its payload. Both
+# generations stay in the table while pyproject admits Telethon below 1.45.
 _BUTTON_TYPES = {
+    # Telethon <= 1.44
     "KeyboardButtonUrl": InlineButtonType.url,
     "KeyboardButtonCallback": InlineButtonType.callback,
     "KeyboardButtonGame": InlineButtonType.game,
@@ -692,11 +700,38 @@ _BUTTON_TYPES = {
     "KeyboardButtonRequestPoll": InlineButtonType.request_poll,
     "KeyboardButtonRequestPeer": InlineButtonType.request_peer,
     "KeyboardButtonCopy": InlineButtonType.copy_text,
+    # Telethon >= 1.45: the class of `button.type`
+    "InlineButtonTypeUrl": InlineButtonType.url,
+    "InlineButtonTypeCallback": InlineButtonType.callback,
+    "InlineButtonTypeGame": InlineButtonType.game,
+    "InlineButtonTypeBuy": InlineButtonType.buy,
+    "InlineButtonTypeSwitchInline": InlineButtonType.switch_inline,
+    "InlineButtonTypeWebView": InlineButtonType.web_view,
+    "ButtonTypeSimpleWebView": InlineButtonType.simple_web_view,
+    "InlineButtonTypeUserProfile": InlineButtonType.user_profile,
+    "ButtonTypeRequestPhone": InlineButtonType.request_phone,
+    "ButtonTypeRequestGeoLocation": InlineButtonType.request_location,
+    "ButtonTypeRequestPoll": InlineButtonType.request_poll,
+    "ButtonTypeRequestPeer": InlineButtonType.request_peer,
+    "InlineButtonTypeCopy": InlineButtonType.copy_text,
 }
 
+# Buttons of layer 229 that carry their kind in the `type` field. The reply one
+# has the same name as the plain button of the older layer, which has no `type`.
+_TYPED_BUTTON_CLASSES = frozenset({"KeyboardButton", "KeyboardInlineButton"})
 
-def _classify_button(btn: Any) -> InlineButtonType:
-    return _BUTTON_TYPES.get(btn.__class__.__name__, InlineButtonType.default)
+
+def _button_kind(btn: Any) -> Any:
+    """The object whose class names the kind of the button and whose fields hold its url or data."""
+    if btn.__class__.__name__ in _TYPED_BUTTON_CLASSES:
+        kind = getattr(btn, "type", None)
+        if kind is not None:
+            return kind
+    return btn
+
+
+def _classify_button(kind: Any) -> InlineButtonType:
+    return _BUTTON_TYPES.get(kind.__class__.__name__, InlineButtonType.default)
 
 
 # ---------------------------------------------------------------------------

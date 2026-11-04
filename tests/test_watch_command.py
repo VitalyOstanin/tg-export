@@ -1,5 +1,6 @@
 """Проверки команды `tg watch`: отбор чатов, отказы и завершение."""
 
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -138,3 +139,147 @@ class TestWatchSelection:
 
         assert result.exit_code == 1
         assert "nosuchchat" in result.output
+
+
+def _api_with_reconnect():
+    """Заглушка API, в которой Telethon один раз переподключается посреди прослушивания.
+
+    Переподключение -- это вызов колбэка, который отправитель Telethon
+    запускает после каждого успешного автоматического переподключения.
+    """
+    api = _api()
+    original = AsyncMock()
+    api.client._sender = SimpleNamespace(_auto_reconnect_callback=original)
+    api.dialog_passes = 0
+
+    async def _counted_dialogs(archived=None):
+        api.dialog_passes += 1
+        return
+        yield  # pragma: no cover -- makes this an async generator
+
+    async def _listen():
+        await api.client._sender._auto_reconnect_callback()
+
+    api.iter_dialogs = _counted_dialogs
+    api.client.run_until_disconnected = AsyncMock(side_effect=_listen)
+    api.original_reconnect_callback = original
+    return api
+
+
+class TestWatchReconnect:
+    def test_reconnect_asks_for_what_was_missed(self, tmp_path):
+        """После автоматического переподключения догонка запускается сразу, без опроса связи."""
+        api = _api_with_reconnect()
+
+        result, api = _run([], api=api, tmp_path=tmp_path)
+
+        assert result.exit_code == 0, result.output
+        assert api.dialog_passes == 2
+        api.original_reconnect_callback.assert_awaited_once()
+
+    def test_no_catchup_leaves_reconnects_alone(self, tmp_path):
+        """С --no-catchup пропущенное не добирается и после переподключения."""
+        api = _api_with_reconnect()
+
+        result, api = _run(["--no-catchup"], api=api, tmp_path=tmp_path)
+
+        assert result.exit_code == 0, result.output
+        assert api.dialog_passes == 0
+        api.original_reconnect_callback.assert_awaited_once()
+
+    def test_reconnect_hook_is_removed_on_exit(self, tmp_path):
+        """По завершении колбэк переподключения Telethon возвращается прежним."""
+        api = _api_with_reconnect()
+
+        _run([], api=api, tmp_path=tmp_path)
+
+        assert api.client._sender._auto_reconnect_callback is api.original_reconnect_callback
+
+
+def _seed_marks(tmp_path, marks):
+    """Файл отметок, как его оставил прошлый запуск."""
+    (tmp_path / "watch.json").write_text(
+        json.dumps({"version": 1, "account": "testaccount", "chats": {str(k): v for k, v in marks.items()}}),
+        encoding="utf-8",
+    )
+
+
+def _history_api(chat_id, history, entity=None):
+    """Заглушка API, у которой в чате `chat_id` есть история после отметки."""
+    api = _api(entity)
+    dialog = SimpleNamespace(
+        id=chat_id,
+        title="alfa",
+        message=SimpleNamespace(id=history[-1].id),
+        dialog=SimpleNamespace(top_message=history[-1].id),
+        entity=SimpleNamespace(),
+    )
+    api.dialog_passes = 0
+    api.peer_requests = []
+
+    async def _dialogs(archived=None):
+        api.dialog_passes += 1
+        yield dialog
+
+    async def _peer_dialogs(chat_ids):
+        api.peer_requests.append(list(chat_ids))
+        yield dialog
+
+    def _iter_messages(entity, *, min_id=0, limit=None, reverse=False):
+        async def _gen():
+            picked = [m for m in history if m.id > min_id]
+            if not reverse:
+                picked.reverse()
+            for message in picked if limit is None else picked[:limit]:
+                yield message
+
+        return _gen()
+
+    api.iter_dialogs = _dialogs
+    api.peer_dialogs = _peer_dialogs
+    api.client.iter_messages = _iter_messages
+    return api
+
+
+def _message(message_id, *, out=False):
+    return SimpleNamespace(
+        id=message_id,
+        date=None,
+        message="beta",
+        entities=None,
+        media=None,
+        action=None,
+        out=out,
+        file=None,
+        sender=None,
+        sender_id=None,
+        reply_to=None,
+    )
+
+
+class TestWatchCatchUp:
+    def test_no_outgoing_reaches_the_catch_up(self, tmp_path):
+        """С --no-outgoing догонка не выдаёт своё сообщение, но отметку сдвигает."""
+        _seed_marks(tmp_path, {111: 10})
+        api = _history_api(111, [_message(11, out=True)])
+
+        result, _ = _run(["--no-outgoing", "--json"], api=api, tmp_path=tmp_path)
+
+        assert result.exit_code == 0, result.output
+        assert result.stdout == ""
+        saved = json.loads((tmp_path / "watch.json").read_text(encoding="utf-8"))
+        assert saved["chats"] == {"111": 11}
+
+    def test_named_chat_is_caught_up_without_the_dialog_list(self, tmp_path):
+        """Для названного чата догонка берёт его диалог напрямую, не обходя весь список."""
+        _seed_marks(tmp_path, {-1001234567890: 10})
+        api = _history_api(-1001234567890, [_message(11)], entity=_channel())
+
+        result, api = _run(["@examplechat", "--json"], api=api, tmp_path=tmp_path)
+
+        assert result.exit_code == 0, result.output
+        assert api.dialog_passes == 0
+        assert api.peer_requests == [[-1001234567890]]
+        record = json.loads(result.stdout)
+        assert record["id"] == 11
+        assert record["chat"] == "alfa"

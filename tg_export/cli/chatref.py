@@ -25,6 +25,8 @@ from telethon.errors.rpcerrorlist import (
     UsernameInvalidError,
     UsernameNotOccupiedError,
 )
+from telethon.tl.types import PeerChannel
+from telethon.utils import get_peer_id
 
 from tg_export.errors import ChatResolveError
 
@@ -34,17 +36,14 @@ from tg_export.errors import ChatResolveError
 _USERNAME = re.compile(r"^[A-Za-z0-9_]+$")
 _NUMERIC = re.compile(r"^-?\d+$")
 _SCHEME = re.compile(r"^https?://")
+_PHONE = re.compile(r"^\+\d+$")
 _LINK_HOSTS = ("t.me/", "telegram.me/")
-
-# `https://t.me/c/<internal>/<message>` names a private supergroup by the id
-# that has the channel prefix stripped; adding it back gives the id the rest of
-# the codebase uses.
-_CHANNEL_ID_PREFIX = -1000000000000
 
 _INVITE_REFUSAL = (
     "invite link: tg-export cannot open one. Join the chat in Telegram first, "
     "then name it by its id or username"
 )
+_PHONE_REFUSAL = "phone number: tg-export cannot open a chat by phone number. Name it by its id or username"
 
 
 def parse_chat_ref(value: str) -> int | str:
@@ -62,6 +61,8 @@ def parse_chat_ref(value: str) -> int | str:
         if body.startswith(host):
             return _from_link(body[len(host) :])
 
+    if _PHONE.match(text):
+        raise ValueError(_PHONE_REFUSAL)
     if text.startswith("+"):
         raise ValueError(_INVITE_REFUSAL)
     if text.startswith("@"):
@@ -76,13 +77,20 @@ def _from_link(path: str) -> int | str:
     if path.startswith("+") or path.startswith("joinchat/"):
         raise ValueError(_INVITE_REFUSAL)
 
+    # A query or a fragment belongs to the link, not to the chat it names.
+    path = re.split(r"[?#]", path, maxsplit=1)[0]
     segments = [s for s in path.split("/") if s]
+    # `t.me/s/<channel>` is the web preview of a channel.
+    if segments and segments[0] == "s":
+        segments = segments[1:]
     if not segments:
         raise ValueError("link names no chat")
     if segments[0] == "c":
         if len(segments) < 2 or not segments[1].isdigit():
             raise ValueError("private link carries no chat id")
-        return _CHANNEL_ID_PREFIX - int(segments[1])
+        # `t.me/c/<internal>` carries the id with the channel prefix stripped;
+        # Telethon adds it back, as it does for every other id in the codebase.
+        return get_peer_id(PeerChannel(int(segments[1])))
     return _as_username(segments[0])
 
 

@@ -24,7 +24,7 @@ from telethon.tl.functions.account import (
 )
 from telethon.tl.functions.channels import GetLeftChannelsRequest
 from telethon.tl.functions.contacts import GetContactsRequest, GetTopPeersRequest
-from telethon.tl.functions.messages import GetDialogFiltersRequest
+from telethon.tl.functions.messages import GetDialogFiltersRequest, GetPeerDialogsRequest
 from telethon.tl.functions.updates import GetStateRequest
 from telethon.tl.functions.users import GetFullUserRequest
 from telethon.tl.types import InputPeerSelf, InputUserSelf
@@ -42,6 +42,10 @@ _MAX_LEFT_CHANNEL_PAGES = 100
 # Page size asked of the RPC methods that return a slice (top peers, stories,
 # ringtones). Telegram may return fewer; it never returns more.
 _DEFAULT_PAGE_LIMIT = 100
+
+# Chats named in one GetPeerDialogs request. The schema sets no bound; the
+# server is assumed to take as many as a dialog page holds.
+_PEER_DIALOGS_CHUNK = 100
 
 
 def one_message(result) -> Any:
@@ -229,6 +233,39 @@ class TgApi:
         kwargs = {} if archived is None else {"archived": archived}
         async for dialog in self.client.iter_dialogs(**kwargs):
             yield dialog
+
+    async def peer_dialogs(self, chat_ids: list[int]) -> AsyncIterator[Any]:
+        """The dialogs of the named chats, shaped like those of `iter_dialogs`.
+
+        One `GetPeerDialogs` request per `_PEER_DIALOGS_CHUNK` chats instead of
+        walking the whole dialog list page by page. The input peers come from
+        the session cache, which already holds every chat the caller resolved,
+        so they cost no request of their own. A chat Telegram does not return
+        a dialog for -- one the account has left -- is simply absent.
+        """
+        from telethon import utils as tl_utils
+        from telethon.tl.custom import Dialog
+        from telethon.tl.types import InputDialogPeer, PeerChannel, TypeInputDialogPeer
+
+        for start in range(0, len(chat_ids), _PEER_DIALOGS_CHUNK):
+            peers: list[TypeInputDialogPeer] = [
+                InputDialogPeer(await self.client.get_input_entity(chat_id))
+                for chat_id in chat_ids[start : start + _PEER_DIALOGS_CHUNK]
+            ]
+            result = await self.client(GetPeerDialogsRequest(peers=peers))
+            entities = {tl_utils.get_peer_id(x): x for x in [*result.users, *result.chats]}
+            # Keyed as Telethon keys them in `iter_dialogs`: channels share
+            # message ids, so the channel takes part in the key.
+            messages = {}
+            for message in result.messages:
+                message._finish_init(self.client, entities, None)
+                channel = message.peer_id.channel_id if isinstance(message.peer_id, PeerChannel) else None
+                messages[(channel, message.id)] = message
+            for dialog in result.dialogs:
+                if tl_utils.get_peer_id(dialog.peer) not in entities:
+                    continue
+                channel = dialog.peer.channel_id if isinstance(dialog.peer, PeerChannel) else None
+                yield Dialog(self.client, dialog, entities, messages.get((channel, dialog.top_message)))
 
     async def get_left_channels(self) -> list[Any]:
         """Return every left channel, following the offset pages.
