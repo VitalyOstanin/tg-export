@@ -24,7 +24,7 @@ from tg_export.cli.common import (
     DEFAULT_MESSAGE_TEXT_LENGTH,
     fail,
 )
-from tg_export.converter import text_links, with_link_targets
+from tg_export.converter import reply_mark, reply_target, text_links, with_link_targets
 from tg_export.errors import (
     EXIT_FAILURE,
     EXIT_OK,
@@ -109,6 +109,7 @@ async def _tg_messages(chat_id, account, limit, truncate=DEFAULT_MESSAGE_TEXT_LE
         async for msg in api.client.iter_messages(entity, limit=limit):  # pyright: ignore[reportArgumentType]
             date_str = format_moment(msg.date, missing="?")
             sender, text = _message_preview(msg, truncate=truncate)
+            reply_to, reply_to_peer = reply_target(msg)
             if as_json:
                 # The line for the terminal carries the media type and the
                 # service action inside the text; a program reading this wants
@@ -123,15 +124,17 @@ async def _tg_messages(chat_id, account, limit, truncate=DEFAULT_MESSAGE_TEXT_LE
                         "links": text_links(body, msg.entities),
                         "media": class_suffix(msg.media, "MessageMedia"),
                         "action": class_suffix(msg.action, "MessageAction"),
+                        "reply_to": reply_to,
+                        "reply_to_peer": reply_to_peer,
                     }
                 )
             else:
                 # Telegram controls both, and a terminal executes escape
                 # sequences it is handed: the same rule already applied to
                 # names on the way to the filesystem.
-                click.echo(
-                    f"  {date_str}  [{msg.id}]  {strip_control_chars(sender)}: {strip_control_chars(text)}"
-                )
+                mark = reply_mark(reply_to, reply_to_peer)
+                head = f"  {date_str}  [{msg.id}] {mark}" if mark else f"  {date_str}  [{msg.id}]"
+                click.echo(f"{head}  {strip_control_chars(sender)}: {strip_control_chars(text)}")
         if as_json:
             click.echo(json.dumps(collected, ensure_ascii=False, indent=2))
 

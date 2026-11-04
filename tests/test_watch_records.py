@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+from telethon.tl.types import MessageReplyHeader
 
 from tg_export.watch import (
     RecordSink,
@@ -34,7 +35,7 @@ def _message(**kwargs):
         "file": None,
         "sender": SimpleNamespace(first_name="Иван", last_name="Иванов"),
         "sender_id": 12345,
-        "reply_to_msg_id": 4708,
+        "reply_to": MessageReplyHeader(reply_to_msg_id=4708),
     }
     return SimpleNamespace(**{**defaults, **kwargs})
 
@@ -59,6 +60,7 @@ class TestMessageRecord:
             "action": None,
             "outgoing": False,
             "reply_to": 4708,
+            "reply_to_peer": None,
         }
 
     def test_media_is_named_by_its_type(self):
@@ -129,6 +131,7 @@ class TestTextLine:
         assert "[4711]" in line
         assert "Иван Иванов" in line
         assert "смотри вложение" in line
+        assert "[4711] ↪ 4708  " in line
 
     def test_message_line_shows_the_address_of_a_link(self):
         """В терминале адрес ссылки встаёт в скобках за её словами."""

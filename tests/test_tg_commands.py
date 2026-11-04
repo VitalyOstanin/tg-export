@@ -120,7 +120,9 @@ class TestDownloadIfNew:
 # ---------------------------------------------------------------------------
 
 
-def _invoke_tg_messages(args: list[str], text: str = "hello", media: str | None = None, entities=None):
+def _invoke_tg_messages(
+    args: list[str], text: str = "hello", media: str | None = None, entities=None, reply_to=None
+):
     """Выполнить `tg messages` поверх заглушки API, отдающей одно сообщение."""
     from click.testing import CliRunner
 
@@ -138,6 +140,7 @@ def _invoke_tg_messages(args: list[str], text: str = "hello", media: str | None 
     mock_msg.sender.last_name = ""
     mock_msg.message = text
     mock_msg.entities = entities
+    mock_msg.reply_to = reply_to
     if media is None:
         mock_msg.media = None
     else:
@@ -176,6 +179,15 @@ class TestTgMessagesOutput:
         assert "[42]" in result.output
         assert "Alice" in result.output
         assert "hello" in result.output
+
+    def test_a_reply_is_marked_after_the_id(self):
+        """В строке для терминала ответ отмечен номером исходного сообщения."""
+        from telethon.tl.types import MessageReplyHeader
+
+        result = _invoke_tg_messages(["-n", "1"], reply_to=MessageReplyHeader(reply_to_msg_id=40))
+
+        assert "[42] ↪ 40  Alice: hello" in result.output
+        assert "↪" not in _invoke_tg_messages(["-n", "1"]).output
 
     def test_text_truncated_to_200_chars_by_default(self):
         """Без опций текст обрезается до 200 знаков."""
@@ -267,6 +279,20 @@ class TestTgMessagesJson:
         entry = json.loads(result.stdout)[0]
         assert entry["media"] == "Photo"
         assert entry["text"] == "hello", entry
+
+    def test_json_names_the_message_a_reply_answers(self):
+        """Ответ связан с исходным сообщением полем `reply_to`, как в `tg watch`."""
+        import json
+
+        from telethon.tl.types import MessageReplyHeader
+
+        plain = json.loads(_invoke_tg_messages(["-n", "1", "--json"]).stdout)[0]
+        reply = json.loads(
+            _invoke_tg_messages(["-n", "1", "--json"], reply_to=MessageReplyHeader(reply_to_msg_id=40)).stdout
+        )[0]
+
+        assert (plain["reply_to"], plain["reply_to_peer"]) == (None, None)
+        assert (reply["reply_to"], reply["reply_to_peer"]) == (40, None)
 
     def test_json_lists_the_links_hidden_under_words(self):
         """Текст остаётся как отправлен, а адреса ссылок идут отдельным полем."""

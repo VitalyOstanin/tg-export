@@ -26,7 +26,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
-from tg_export.converter import text_links, with_link_targets
+from tg_export.converter import reply_mark, reply_target, text_links, with_link_targets
 from tg_export.format import class_suffix, display_name, format_moment, strip_control_chars
 from tg_export.privacy import ensure_private_dir, write_private_text
 
@@ -183,6 +183,7 @@ def message_record(chat_id: int | None, chat: str | None, message: Any, *, event
     file = getattr(message, "file", None)
     sender = getattr(message, "sender", None)
     text = getattr(message, "message", "") or ""
+    reply_to, reply_to_peer = reply_target(message)
     return {
         "event": event,
         "chat_id": chat_id,
@@ -201,7 +202,8 @@ def message_record(chat_id: int | None, chat: str | None, message: Any, *, event
         ),
         "action": class_suffix(getattr(message, "action", None), "MessageAction"),
         "outgoing": bool(getattr(message, "out", False)),
-        "reply_to": getattr(message, "reply_to_msg_id", None),
+        "reply_to": reply_to,
+        "reply_to_peer": reply_to_peer,
     }
 
 
@@ -229,6 +231,9 @@ def text_line(record: dict) -> str:
         ids = ", ".join(str(i) for i in record.get("ids", []))
         return f"  {record['date']}  {chat}  deleted: {ids}"
     mark = " (edited)" if record["event"] == "edited" else ""
+    reply = reply_mark(record.get("reply_to"), record.get("reply_to_peer"))
+    if reply:
+        mark = f"{mark} {reply}"
     text = with_link_targets(record.get("text") or "", record.get("links") or [])
     if record.get("media"):
         text = f"[{record['media']}] {text}".strip()

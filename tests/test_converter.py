@@ -524,3 +524,43 @@ def test_a_message_without_a_keyboard_has_no_buttons():
     tl_msg.reply_markup = None
 
     assert _convert_inline_buttons(tl_msg) is None
+
+
+def test_a_reply_names_the_message_it_answers():
+    """`tg messages` не связывал ответ с исходным сообщением, пары приходилось угадывать."""
+    from telethon.tl.types import MessageReplyHeader, MessageReplyStoryHeader, PeerChannel, PeerUser
+
+    from tg_export.converter import reply_target
+
+    def message(header):
+        return MagicMock(reply_to=header)
+
+    assert reply_target(message(None)) == (None, None)
+    assert reply_target(message(MessageReplyHeader(reply_to_msg_id=4708))) == (4708, None)
+    assert reply_target(
+        message(MessageReplyHeader(reply_to_msg_id=4708, reply_to_peer_id=PeerChannel(1234567890)))
+    ) == (4708, 1234567890)
+    assert reply_target(message(MessageReplyStoryHeader(peer=PeerUser(1), story_id=5))) == (None, None)
+
+
+def test_a_message_inside_a_topic_is_not_a_reply_to_its_first_message():
+    """Заголовок темы форума указывает на её первое сообщение и у сообщения без ответа."""
+    from telethon.tl.types import MessageReplyHeader
+
+    from tg_export.converter import reply_target
+
+    in_topic = MagicMock(reply_to=MessageReplyHeader(forum_topic=True, reply_to_msg_id=100))
+    answer_in_topic = MagicMock(
+        reply_to=MessageReplyHeader(forum_topic=True, reply_to_msg_id=4708, reply_to_top_id=100)
+    )
+
+    assert reply_target(in_topic) == (None, None)
+    assert reply_target(answer_in_topic) == (4708, None)
+
+
+def test_the_reply_mark_names_the_chat_only_when_it_is_another_one():
+    from tg_export.converter import reply_mark
+
+    assert reply_mark(None, None) == ""
+    assert reply_mark(4708, None) == "↪ 4708"
+    assert reply_mark(4708, 1234567890) == "↪ 1234567890/4708"

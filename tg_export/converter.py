@@ -561,6 +561,31 @@ def _convert_reply(tl_msg: Any) -> tuple[int | None, int | None, int | None]:
     return reply_to_msg_id, reply_to_peer_id, topic_id
 
 
+def reply_target(tl_msg: Any) -> tuple[int | None, int | None]:
+    """The (message id, peer id) a message answers, for a listing; Nones when none.
+
+    The peer is set only when the answered message lives in another chat. A
+    message inside a forum topic carries a reply header pointing at the topic's
+    first message even when it answers nothing; that header names the topic,
+    not an answer, and gives Nones here. A reply to a story is not a reply to
+    a message either.
+    """
+    header = getattr(tl_msg, "reply_to", None)
+    if header is None or header.__class__.__name__ == "MessageReplyStoryHeader":
+        return None, None
+    if getattr(header, "forum_topic", False) and getattr(header, "reply_to_top_id", None) is None:
+        return None, None
+    peer = getattr(header, "reply_to_peer_id", None)
+    return getattr(header, "reply_to_msg_id", None), peer_id(peer) if peer is not None else None
+
+
+def reply_mark(reply_to: int | None, reply_to_peer: int | None) -> str:
+    """The reply sign of a listing line: ``↪ 4708``, ``↪ 1234567890/4708`` for another chat, or nothing."""
+    if reply_to is None:
+        return ""
+    return f"↪ {reply_to_peer}/{reply_to}" if reply_to_peer is not None else f"↪ {reply_to}"
+
+
 def _convert_forward(tl_msg: Any) -> ForwardInfo | None:
     """Who the message was forwarded from, when Telegram discloses it."""
     if not tl_msg.fwd_from:
