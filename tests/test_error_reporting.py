@@ -284,7 +284,7 @@ async def test_a_failed_global_section_is_recorded_and_the_rest_go_on():
 
     await exporter.export_global_data(stats)
 
-    exporter._export_sessions.assert_awaited_once(), "отказ одной секции прервал остальные"
+    assert exporter._export_sessions.await_count == 1, "отказ одной секции прервал остальные"
     assert stats.errors, "отказ подвыгрузки не попал в сводку и не изменит код возврата"
     assert "contacts" in stats.errors[0] and "RuntimeError" in stats.errors[0], (
         f"по записи не видно, что именно не выгрузилось: {stats.errors}"
@@ -330,7 +330,7 @@ async def test_rerender_rebuilds_pages_that_no_new_message_would_touch(tmp_path)
 
     await exporter._render_chat_html(MagicMock(id=1, name="Chat"), chat_dir, stats)
 
-    state.list_message_months.assert_awaited_once(), "рендер пропущен вопреки --rerender"
+    assert state.list_message_months.await_count == 1, "рендер пропущен вопреки --rerender"
 
 
 def test_a_database_failure_in_purge_is_not_read_as_a_missing_chat(tmp_path, account_env, monkeypatch):
@@ -441,6 +441,7 @@ async def test_a_failed_close_still_releases_the_lock(tmp_path, caplog):
     broken = MagicMock()
     broken.close = AsyncMock(side_effect=RuntimeError("WAL flush failed"))
     real_db, state._db = state._db, broken
+    assert real_db is not None
 
     with caplog.at_level(logging.WARNING), pytest.raises(RuntimeError, match="WAL flush failed"):
         await state.close()
@@ -522,6 +523,7 @@ async def test_a_database_that_did_not_close_changes_the_outcome_of_the_run(tmp_
     broken = MagicMock()
     broken.close = AsyncMock(side_effect=RuntimeError("WAL flush failed"))
     real_db, state._db = state._db, broken
+    assert real_db is not None
 
     with pytest.raises(RuntimeError, match="WAL flush failed"):
         await state.close()

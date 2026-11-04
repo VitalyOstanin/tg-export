@@ -229,13 +229,15 @@ async def test_a_registered_file_reaches_the_database_even_if_the_caller_is_canc
     state = ExportState(tmp_path / "state.db")
     await state.open()
     try:
-        original = state._db.execute
+        db = state._db
+        assert db is not None
+        original = db.execute
 
         async def slow_execute(*args, **kwargs):
             await asyncio.sleep(0.05)
             return await original(*args, **kwargs)
 
-        state._db.execute = slow_execute  # pyright: ignore[reportAttributeAccessIssue]
+        db.execute = slow_execute  # pyright: ignore[reportAttributeAccessIssue]
 
         task = asyncio.create_task(
             state.register_file(
@@ -253,7 +255,7 @@ async def test_a_registered_file_reaches_the_database_even_if_the_caller_is_canc
         with pytest.raises(asyncio.CancelledError):
             await task
 
-        state._db.execute = original  # pyright: ignore[reportAttributeAccessIssue]
+        db.execute = original  # pyright: ignore[reportAttributeAccessIssue]
         assert await state.get_file(7, 1), "запись о файле не дошла до базы"
     finally:
         await state.close()

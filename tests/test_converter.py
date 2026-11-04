@@ -298,7 +298,9 @@ def test_every_action_carries_the_name_of_its_own_class():
         assert cls().type == cls.__name__ == tl_name.replace("MessageAction", "Action", 1)
 
     unknown = type("MessageActionSomethingNew", (), {})()
-    assert convert_action(unknown).type == "ActionSomethingNew"
+    converted = convert_action(unknown)
+    assert converted is not None
+    assert converted.type == "ActionSomethingNew"
 
 
 def test_an_animation_is_classified_as_a_gif_not_a_video():

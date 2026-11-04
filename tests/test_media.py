@@ -83,10 +83,10 @@ def _downloader(api, tmp_path):
     return dl
 
 
-def _photo(file_id=1, name="photo.jpg"):
+def _photo(file_id=1, name="photo.jpg", size=4):
     return PhotoMedia(
         type=MediaType.photo,
-        file=FileInfo(id=file_id, size=4, name=name, mime_type="image/jpeg", local_path=None),
+        file=FileInfo(id=file_id, size=size, name=name, mime_type="image/jpeg", local_path=None),
         width=1,
         height=1,
     )
@@ -349,21 +349,17 @@ async def test_two_files_with_the_same_name_do_not_land_on_one_path(tmp_path, mo
 
     monkeypatch.setattr(media_module, "_link_or_copy", link_or_copy)
 
-    def _media(file_id, size):
-        m = _photo(file_id=file_id)
-        m.file.size = size
-        return m
-
     msg1, msg2 = MagicMock(id=11), MagicMock(id=12)
     results = await asyncio.gather(
-        dl.download(msg1, _media(1, len(b"first")), chat_dir, 1),
-        dl.download(msg2, _media(2, len(b"second file")), chat_dir, 1),
+        dl.download(msg1, _photo(file_id=1, size=len(b"first")), chat_dir, 1),
+        dl.download(msg2, _photo(file_id=2, size=len(b"second file")), chat_dir, 1),
     )
 
-    paths = [p for p, _status in results]
-    assert paths[0] != paths[1], "оба файла записаны по одному пути"
-    assert paths[0].read_bytes() == b"first"
-    assert paths[1].read_bytes() == b"second file"
+    (first, _), (second, _) = results
+    assert first is not None and second is not None
+    assert first != second, "оба файла записаны по одному пути"
+    assert first.read_bytes() == b"first"
+    assert second.read_bytes() == b"second file"
 
 
 def test_a_long_name_fits_the_progress_column():
