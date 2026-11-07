@@ -390,8 +390,18 @@ async def _tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_fi
     default=False,
     help="Send files as documents without compression (keeps original quality)",
 )
+@click.option(
+    "--mime-type",
+    "mime_type",
+    default=None,
+    help=(
+        "MIME type to declare for every attached file instead of the one guessed "
+        "from its name; the receiving app opens a file by it when its own system "
+        "knows no type for the extension"
+    ),
+)
 @click.argument("recipients", type=CHAT_REF, nargs=-1, required=True)
-def tg_send(account, files, text, text_file, as_document, recipients) -> None:
+def tg_send(account, files, text, text_file, as_document, mime_type, recipients) -> None:
     """Send message to one or more recipients.
 
     RECIPIENTS: chat ids, @usernames or t.me links (multiple allowed).
@@ -413,7 +423,12 @@ def tg_send(account, files, text, text_file, as_document, recipients) -> None:
     if not text and not files:
         raise click.UsageError("specify --text, --text-file and/or --file")
 
-    exit_code = asyncio.run(_tg_send(account, list(recipients), text, files, as_document))
+    if mime_type and not files:
+        raise click.UsageError("--mime-type applies to files; give them with --file")
+
+    exit_code = asyncio.run(
+        _tg_send(account, list(recipients), text, files, as_document, mime_type=mime_type)
+    )
     if exit_code:
         fail(code=exit_code)
 
@@ -470,17 +485,18 @@ def _upload_progress(by_bytes: bool) -> Iterator[Any]:
         yield progress
 
 
-async def _send_files(client, recipient, file_paths, text, as_document) -> None:
+async def _send_files(client, recipient, file_paths, text, as_document, mime_type=None) -> None:
     """Send attachments to one recipient, reporting upload progress.
 
     Documents never join an album, so with ``as_document`` files go one by one
     and progress is counted in bytes. Compressed photos keep the album grouping
     Telethon does in chunks of 10; there the callback counts files, not bytes.
+    A declared ``mime_type`` sends the files one by one as well, each with it.
     """
     from tg_export.exporter import file_progress_description
 
     caption = text or ""
-    by_bytes = as_document or len(file_paths) == 1
+    by_bytes = as_document or len(file_paths) == 1 or mime_type is not None
 
     with _upload_progress(by_bytes) as progress:
         if not by_bytes:
@@ -535,6 +551,7 @@ async def _send_files(client, recipient, file_paths, text, as_document) -> None:
                 path,
                 caption=caption if index == 0 else "",
                 as_document=as_document,
+                mime_type=mime_type,
                 progress_callback=file_progress,
             )
             done_bytes += sizes[index]
@@ -548,7 +565,9 @@ async def _send_files(client, recipient, file_paths, text, as_document) -> None:
                     )
 
 
-async def _send_one_file(client, recipient, path, *, caption, as_document, progress_callback) -> None:
+async def _send_one_file(
+    client, recipient, path, *, caption, as_document, progress_callback, mime_type=None
+) -> None:
     """Send one file, uploading its parts over several connections at once.
 
     The upload is done here rather than inside `send_file` so that a large
@@ -564,7 +583,8 @@ async def _send_one_file(client, recipient, path, *, caption, as_document, progr
     from tg_export.upload import upload_file
 
     handle = await upload_file(client, path, progress_callback=progress_callback)
-    attributes, mime_type = utils.get_attributes(str(path), force_document=as_document)
+    # A declared type is kept as given; otherwise it is guessed from the name.
+    attributes, mime_type = utils.get_attributes(str(path), force_document=as_document, mime_type=mime_type)
     await client.send_file(
         recipient,
         handle,
@@ -575,7 +595,7 @@ async def _send_one_file(client, recipient, path, *, caption, as_document, progr
     )
 
 
-async def _tg_send(account_name, recipients, text, files, as_document=False) -> int:
+async def _tg_send(account_name, recipients, text, files, as_document=False, mime_type=None) -> int:
     async with common.connected_api(account_name) as (api, _):
         file_paths = [Path(f) for f in files] if files else None
         sent_count = 0
@@ -585,7 +605,7 @@ async def _tg_send(account_name, recipients, text, files, as_document=False) -> 
         for recipient in recipients:
             try:
                 if file_paths:
-                    await _send_files(api.client, recipient, file_paths, text, as_document)
+                    await _send_files(api.client, recipient, file_paths, text, as_document, mime_type)
                 elif text:
                     await api.client.send_message(recipient, text)
 

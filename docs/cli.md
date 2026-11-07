@@ -413,6 +413,7 @@ tg-export tg send myfriend --text "Привет"
 tg-export tg send myfriend --text-file letter.txt
 echo "Привет" | tg-export tg send myfriend --text-file -
 tg-export tg send 123456789 --file photo.jpg --file video.mp4 --as-document
+tg-export tg send 123456789 --file settings.nodepick --as-document --mime-type application/vnd.nodepick+json
 ```
 
 | № | Опция               | Назначение                                                             |
@@ -422,6 +423,7 @@ tg-export tg send 123456789 --file photo.jpg --file video.mp4 --as-document
 | 3 | `--text-file PATH`  | Прочитать текст из файла, а при значении `-` -- со стандартного ввода: текст не проходит через командную строку. |
 | 4 | `--file`, `-f`      | Файл вложения; опцию можно повторять.                                   |
 | 5 | `--as-document`     | Отправить файлы без сжатия, как документы: изображения и видео сохраняют исходное качество. |
+| 6 | `--mime-type TYPE`  | Тип MIME, который указывается у каждого вложения вместо угаданного по имени файла. Приложение получателя открывает файл по этому типу, если его система не знает типа для расширения: например, `.nodepick` с `application/vnd.nodepick+json` Telegram на Android открывает сразу в nodepick. Файлы с этой опцией уходят по одному, не альбомом. |
 
 Команду нельзя запускать, пока идёт экспорт того же аккаунта: файл сессии
 рассчитан на одного пользователя, и попытка будет отклонена с указанием, какой

@@ -974,7 +974,7 @@ def test_the_message_text_can_be_given_without_the_command_line(tmp_path, monkey
 
     sent: list[str | None] = []
 
-    async def fake_send(account, parsed, text, files, as_document):
+    async def fake_send(account, parsed, text, files, as_document, mime_type=None):
         sent.append(text)
         return 0
 
@@ -1158,3 +1158,50 @@ def test_tg_download_json_puts_a_document_on_stdout(tmp_path):
     assert payload["chat_id"] == 123 and payload["msg_id"] == 42, payload
     assert payload["text_file"] is not None, payload
     assert Path(payload["text_file"]).read_text(encoding="utf-8") == "привет"
+
+
+@pytest.mark.asyncio
+async def test_send_files_declares_the_given_mime_type(tmp_path, monkeypatch):
+    """Заданный тип уходит в сообщение вместо угаданного по имени. Telegram на
+    Android открывает файл с неизвестным системе расширением по типу из
+    сообщения, поэтому `.nodepick` с собственным типом открывается сразу в
+    nodepick, а угаданный `application/octet-stream` даёт выбор приложения.
+    Две картинки без --as-document иначе ушли бы альбомом, где тип не задаётся.
+    """
+    import contextlib
+    from unittest.mock import AsyncMock, MagicMock
+
+    monkeypatch.setattr(cli_tg, "_upload_progress", lambda by_bytes: contextlib.nullcontext())
+
+    files = [tmp_path / "a.nodepick", tmp_path / "b.nodepick"]
+    for f in files:
+        f.write_text("{}")
+
+    client = MagicMock()
+    client.send_file = AsyncMock()
+    client.upload_file = AsyncMock(return_value="handle")
+
+    await cli_tg._send_files(client, 1, files, "text", False, "application/vnd.nodepick+json")
+
+    declared = [call.kwargs.get("mime_type") for call in client.send_file.await_args_list]
+    assert declared == ["application/vnd.nodepick+json"] * 2, declared
+
+
+@pytest.mark.asyncio
+async def test_send_files_guesses_the_mime_type_without_one(tmp_path, monkeypatch):
+    """Без --mime-type тип по-прежнему угадывается по имени."""
+    import contextlib
+    from unittest.mock import AsyncMock, MagicMock
+
+    monkeypatch.setattr(cli_tg, "_upload_progress", lambda by_bytes: contextlib.nullcontext())
+
+    doc = tmp_path / "notes.txt"
+    doc.write_text("x")
+
+    client = MagicMock()
+    client.send_file = AsyncMock()
+    client.upload_file = AsyncMock(return_value="handle")
+
+    await cli_tg._send_files(client, 1, [doc], "text", True)
+
+    assert client.send_file.await_args.kwargs.get("mime_type") == "text/plain"
