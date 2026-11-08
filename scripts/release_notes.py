@@ -53,7 +53,20 @@ def _section(changelog: str, version: str) -> tuple[str, str]:
 
 # A line that starts a block of its own rather than continuing the one above:
 # a heading, a list item, a table row, a quote or a code fence.
-_BLOCK_START_RE = re.compile(r"(#{1,6} |[-*+] |[0-9]+[.)] |\||> |```)")
+_BLOCK_START_RE = re.compile(r"(#{1,6} |[-*+] |[0-9]+[.)] |\||> |```|~~~)")
+
+# A line made of dashes, equals signs or asterisks only: the underline of a
+# Setext heading or a horizontal rule. Nothing is glued to it, nor it to the line above.
+_RULE_RE = re.compile(r"(?:-+|=+|\*+|(?:\* ){2,}\*)")
+
+# What the line *above* must not start with for the next line to continue it.
+# Narrower than _BLOCK_START_RE on purpose: a list item continues on the next
+# line (a wrapped item), whereas a heading, a table row or a code fence is
+# complete on its own line and never takes a continuation.
+_NO_CONTINUATION_PREFIXES = ("#", "|", "```", "~~~")
+
+# A line ending with two spaces or a backslash is a hard break in Markdown.
+_HARD_BREAK_SUFFIXES = ("  ", "\\")
 
 
 def _unwrap(body: str) -> str:
@@ -68,17 +81,21 @@ def _unwrap(body: str) -> str:
     in_code = False
     for line in body.splitlines():
         stripped = line.strip()
-        if stripped.startswith("```"):
+        if stripped.startswith(("```", "~~~")):
             in_code = not in_code
             out.append(line)
             continue
         previous = out[-1].strip() if out else ""
+        hard_break = bool(out) and out[-1].endswith(_HARD_BREAK_SUFFIXES)
         continues = (
             not in_code
             and stripped
             and previous
+            and not hard_break
             and not _BLOCK_START_RE.match(stripped)
-            and not previous.startswith(("#", "|", "```"))
+            and not _RULE_RE.fullmatch(stripped)
+            and not _RULE_RE.fullmatch(previous)
+            and not previous.startswith(_NO_CONTINUATION_PREFIXES)
         )
         if continues:
             out[-1] = f"{out[-1].rstrip()} {stripped}"

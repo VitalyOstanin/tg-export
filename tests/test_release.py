@@ -812,3 +812,45 @@ def test_wrapped_changelog_lines_become_whole_paragraphs(tmp_path):
     assert "| № | столбец |\n|---|---------|\n| 1 | alfa    |\n" in notes
     assert "```\ncode line one\ncode line two\n```" in notes
     assert "### Исправлено\n\n- Первый" in notes
+
+
+def _unwrapped(body: str) -> str:
+    """Прогнать тело раздела через `_unwrap` скрипта."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("release_notes", SCRIPT)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module._unwrap(body)
+
+
+@pytest.mark.parametrize("underline", ["---", "===", "***", "-----", "* * *"])
+def test_unwrap_keeps_setext_underline_and_rule_on_their_own_line(underline):
+    """Подчёркивание Setext-заголовка и горизонтальная черта не клеятся к абзацу.
+
+    Строка из одних `-`/`=`/`*` без пробела не начинала блок по регулярному
+    выражению и приклеивалась к предыдущей строке, ломая заголовок.
+    """
+    body = f"Заголовок раздела\n{underline}\nтекст после\n"
+
+    assert _unwrapped(body).startswith(f"Заголовок раздела\n{underline}\n")
+
+
+def test_unwrap_keeps_tilde_fence_and_does_not_glue_into_it():
+    """Фенс `~~~` открывает блок кода так же, как три обратных апострофа."""
+    body = "Абзац перед кодом\n~~~\nline one\nline two\n~~~\nабзац после\n"
+
+    assert _unwrapped(body) == body.rstrip("\n")
+
+
+@pytest.mark.parametrize("hard_break", ["  ", "\\"])
+def test_unwrap_keeps_a_hard_line_break(hard_break):
+    """Строка, оканчивающаяся жёстким переносом, не склеивается со следующей.
+
+    Два пробела или `\\` в конце строки -- явный перенос Markdown; склейка его
+    стирала.
+    """
+    body = f"Первая строка{hard_break}\nвторая строка\n"
+
+    assert _unwrapped(body) == f"Первая строка{hard_break}\nвторая строка"
