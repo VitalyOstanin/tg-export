@@ -576,7 +576,7 @@ async def test_send_files_escapes_the_file_name_for_rich(tmp_path, monkeypatch):
     client.send_file = AsyncMock()
     client.upload_file = AsyncMock(return_value="handle")
 
-    await cli_tg._send_files(client, 1, [tricky], "text", True)
+    await cli_tg._upload_files(client, [tricky], True)
 
     assert descriptions == ["\\[draft]report.txt"], descriptions
 
@@ -690,7 +690,9 @@ async def test_album_progress_never_passes_the_file_count(tmp_path, monkeypatch)
     client = MagicMock()
     client.send_file = send_file
 
-    await cli_tg._send_files(client, 1, files, "text", False)
+    uploads = await cli_tg._upload_files(client, files, False)
+    assert uploads is None
+    await cli_tg._send_files(client, 1, files, "text", False, uploads=uploads)
 
     assert totals[1] == 25, totals
     assert max(updates) <= 25, max(updates)
@@ -1162,48 +1164,223 @@ def test_tg_download_json_puts_a_document_on_stdout(tmp_path):
     assert Path(payload["text_file"]).read_text(encoding="utf-8") == "привет"
 
 
+@pytest.fixture
+def upload_client(monkeypatch):
+    """Подставной клиент для выгрузки и отправки файлов, без полос прогресса."""
+    import contextlib
+    from unittest.mock import AsyncMock, MagicMock
+
+    monkeypatch.setattr(cli_tg, "_upload_progress", lambda by_bytes: contextlib.nullcontext())
+    client = MagicMock()
+    client.send_file = AsyncMock()
+    client.upload_file = AsyncMock(return_value="handle")
+    return client
+
+
 @pytest.mark.asyncio
-async def test_send_files_declares_the_given_mime_type(tmp_path, monkeypatch):
+async def test_send_files_declares_the_given_mime_type(tmp_path, upload_client):
     """Заданный тип уходит в сообщение вместо угаданного по имени. Telegram на
     Android открывает файл с неизвестным системе расширением по типу из
     сообщения, поэтому `.nodepick` с собственным типом открывается сразу в
     nodepick, а угаданный `application/octet-stream` даёт выбор приложения.
     Две картинки без --as-document иначе ушли бы альбомом, где тип не задаётся.
     """
-    import contextlib
-    from unittest.mock import AsyncMock, MagicMock
-
-    monkeypatch.setattr(cli_tg, "_upload_progress", lambda by_bytes: contextlib.nullcontext())
-
     files = [tmp_path / "a.nodepick", tmp_path / "b.nodepick"]
     for f in files:
         f.write_text("{}")
+    client = upload_client
 
-    client = MagicMock()
-    client.send_file = AsyncMock()
-    client.upload_file = AsyncMock(return_value="handle")
-
-    await cli_tg._send_files(client, 1, files, "text", False, "application/vnd.nodepick+json")
+    uploads = await cli_tg._upload_files(client, files, False, mime_type="application/vnd.nodepick+json")
+    await cli_tg._send_files(client, 1, files, "text", False, uploads=uploads)
 
     declared = [call.kwargs.get("mime_type") for call in client.send_file.await_args_list]
     assert declared == ["application/vnd.nodepick+json"] * 2, declared
 
 
 @pytest.mark.asyncio
-async def test_send_files_guesses_the_mime_type_without_one(tmp_path, monkeypatch):
+async def test_send_files_guesses_the_mime_type_without_one(tmp_path, upload_client):
     """Без --mime-type тип по-прежнему угадывается по имени."""
-    import contextlib
-    from unittest.mock import AsyncMock, MagicMock
-
-    monkeypatch.setattr(cli_tg, "_upload_progress", lambda by_bytes: contextlib.nullcontext())
-
     doc = tmp_path / "notes.txt"
     doc.write_text("x")
+    client = upload_client
 
-    client = MagicMock()
-    client.send_file = AsyncMock()
-    client.upload_file = AsyncMock(return_value="handle")
-
-    await cli_tg._send_files(client, 1, [doc], "text", True)
+    uploads = await cli_tg._upload_files(client, [doc], True)
+    await cli_tg._send_files(client, 1, [doc], "text", True, uploads=uploads)
 
     assert client.send_file.await_args.kwargs.get("mime_type") == "text/plain"
+
+
+# ---------------------------------------------------------------------------
+# _tg_send: однократная выгрузка и проверка момента перед отправкой
+# ---------------------------------------------------------------------------
+
+
+class TestUploadOnceAndCheckBeforeSend:
+    """Файлы выгружаются один раз до цикла по получателям, а момент `--schedule`
+    проверяется непосредственно перед каждым `send_file`, а не до выгрузки."""
+
+    @staticmethod
+    def _files(tmp_path, names):
+        paths = []
+        for name in names:
+            f = tmp_path / name
+            f.write_bytes(b"data")
+            paths.append(str(f))
+        return paths
+
+    @staticmethod
+    def _run(client, recipients, files, *, as_document=False, mime_type=None, schedule=None):
+        api = MagicMock()
+        api.client = client
+
+        @contextlib.asynccontextmanager
+        async def connected(_account):
+            yield api, "acc"
+
+        with (
+            patch("tg_export.cli.common.connected_api", connected),
+            patch.object(cli_common, "_QUIET", True),
+        ):
+            return asyncio.run(
+                cli_tg._tg_send(
+                    "acc", recipients, "подпись", files, as_document, mime_type=mime_type, schedule=schedule
+                )
+            )
+
+    def test_moment_passed_during_upload_is_refused_without_sending(self, tmp_path, monkeypatch):
+        """Выгрузка длится минуту, а до момента оставалось 30 с: сообщение не
+        отправляется вовсе -- ни сразу, ни с прошедшим моментом."""
+        from datetime import datetime, timedelta
+
+        now = [datetime(2030, 1, 1, 12, 0).astimezone()]
+        monkeypatch.setattr(cli_tg, "local_now", lambda: now[0])
+
+        async def slow_upload(client, path, *, progress_callback=None):
+            now[0] += timedelta(minutes=1)
+            return "handle"
+
+        monkeypatch.setattr("tg_export.upload.upload_file", slow_upload)
+        client = MagicMock()
+        client.send_file = AsyncMock()
+
+        code = self._run(
+            client,
+            [101],
+            self._files(tmp_path, ["report.bin"]),
+            as_document=True,
+            schedule=now[0] + timedelta(seconds=30),
+        )
+
+        assert code == 1
+        client.send_file.assert_not_awaited()
+
+    def test_files_are_uploaded_once_for_all_recipients(self, tmp_path, monkeypatch):
+        """Два получателя -- одна выгрузка; обоим уходит один и тот же дескриптор."""
+        upload = AsyncMock(return_value="handle")
+        monkeypatch.setattr("tg_export.upload.upload_file", upload)
+        client = MagicMock()
+        client.send_file = AsyncMock()
+
+        code = self._run(client, [101, 202], self._files(tmp_path, ["report.bin"]), as_document=True)
+
+        assert code == 0
+        assert upload.await_count == 1
+        calls = client.send_file.await_args_list
+        assert [c.args for c in calls] == [(101, "handle"), (202, "handle")]
+
+    def test_every_document_is_uploaded_once(self, tmp_path, monkeypatch):
+        """Несколько документов на несколько получателей: каждый файл выгружается
+        один раз, подпись по-прежнему только у первого файла каждого получателя."""
+        upload = AsyncMock(side_effect=lambda client, path, **kw: f"h-{path.name}")
+        monkeypatch.setattr("tg_export.upload.upload_file", upload)
+        client = MagicMock()
+        client.send_file = AsyncMock()
+
+        code = self._run(client, [101, 202], self._files(tmp_path, ["a.bin", "b.bin"]), as_document=True)
+
+        assert code == 0
+        assert upload.await_count == 2
+        calls = client.send_file.await_args_list
+        assert [(c.args, c.kwargs["caption"]) for c in calls] == [
+            ((101, "h-a.bin"), "подпись"),
+            ((101, "h-b.bin"), ""),
+            ((202, "h-a.bin"), "подпись"),
+            ((202, "h-b.bin"), ""),
+        ]
+
+    def test_declared_mime_type_reaches_every_recipient(self, tmp_path, monkeypatch):
+        """Тип, вычисленный при выгрузке, уходит в сообщение каждому получателю."""
+        monkeypatch.setattr("tg_export.upload.upload_file", AsyncMock(return_value="handle"))
+        client = MagicMock()
+        client.send_file = AsyncMock()
+
+        self._run(client, [101, 202], self._files(tmp_path, ["a.dat"]), mime_type="application/x-sample")
+
+        declared = [c.kwargs["mime_type"] for c in client.send_file.await_args_list]
+        assert declared == ["application/x-sample"] * 2
+
+    def test_moment_is_checked_before_each_file_of_a_recipient(self, tmp_path, monkeypatch):
+        """Момент, ставший слишком близким после первого документа, не даёт
+        отправить второй с тем же моментом."""
+        from datetime import datetime, timedelta
+
+        now = [datetime(2030, 1, 1, 12, 0).astimezone()]
+        monkeypatch.setattr(cli_tg, "local_now", lambda: now[0])
+        monkeypatch.setattr("tg_export.upload.upload_file", AsyncMock(return_value="handle"))
+
+        async def send_file(*args, **kwargs):
+            now[0] += timedelta(minutes=1)
+
+        client = MagicMock()
+        client.send_file = AsyncMock(side_effect=send_file)
+
+        code = self._run(
+            client,
+            [101],
+            self._files(tmp_path, ["a.bin", "b.bin"]),
+            as_document=True,
+            schedule=now[0] + timedelta(seconds=30),
+        )
+
+        assert code == 1
+        assert client.send_file.await_count == 1
+
+    def test_album_moment_is_checked_right_before_its_send(self, tmp_path, monkeypatch):
+        """Альбом выгружается внутри send_file, поэтому момент проверяется прямо
+        перед ним: после долгого альбома первому получателю второй не получает
+        сообщение с моментом, который уже прошёл."""
+        from datetime import datetime, timedelta
+
+        now = [datetime(2030, 1, 1, 12, 0).astimezone()]
+        monkeypatch.setattr(cli_tg, "local_now", lambda: now[0])
+
+        async def send_file(*args, **kwargs):
+            now[0] += timedelta(minutes=1)
+
+        client = MagicMock()
+        client.send_file = AsyncMock(side_effect=send_file)
+
+        code = self._run(
+            client,
+            [101, 202],
+            self._files(tmp_path, ["a.jpg", "b.jpg"]),
+            schedule=now[0] + timedelta(seconds=30),
+        )
+
+        assert code == 1
+        assert [c.args[0] for c in client.send_file.await_args_list] == [101]
+
+    def test_failed_upload_fails_every_recipient_without_sending(self, tmp_path, monkeypatch, capsys):
+        """Если выгрузка не удалась, не отправляется никому, а итог называет всех
+        получателей неудачными."""
+        monkeypatch.setattr("tg_export.upload.upload_file", AsyncMock(side_effect=RuntimeError("boom")))
+        client = MagicMock()
+        client.send_file = AsyncMock()
+
+        code = self._run(client, [101, 202], self._files(tmp_path, ["a.bin"]), as_document=True)
+
+        assert code == 1
+        client.send_file.assert_not_awaited()
+        err = capsys.readouterr().err
+        assert "boom" in err
+        assert "Delivered to 0/2" in err

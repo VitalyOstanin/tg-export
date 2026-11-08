@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import time
 from datetime import UTC, datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -30,7 +31,25 @@ TZ = timezone(timedelta(hours=3))
 NOW = datetime(2030, 5, 10, 14, 30, tzinfo=TZ)
 
 
+@pytest.fixture
+def system_zone(monkeypatch):
+    """Подменяет системный пояс процесса на время теста и восстанавливает прежний после."""
+
+    def use(name: str) -> None:
+        monkeypatch.setenv("TZ", name)
+        time.tzset()
+
+    yield use
+    monkeypatch.undo()
+    time.tzset()
+
+
 class TestParse:
+    @pytest.fixture(autouse=True)
+    def _moscow(self, system_zone):
+        """Системный пояс совпадает с поясом NOW (+03:00 без перехода), чтобы разбор не зависел от машины."""
+        system_zone("Europe/Moscow")
+
     @pytest.mark.parametrize(
         ("value", "expected"),
         [
@@ -66,11 +85,58 @@ class TestParse:
         moment = parse_schedule("2030-05-12T08:15+00:00", NOW)
         assert moment == datetime(2030, 5, 12, 11, 15, tzinfo=TZ)
 
+    def test_iso_with_another_separator_is_understood(self):
+        """ISO 8601 с разделителем `t` вместо `T` понимается: время в значении есть."""
+        assert parse_schedule("2030-05-12t08:15", NOW) == datetime(2030, 5, 12, 8, 15, tzinfo=TZ)
+
+    @pytest.mark.parametrize("value", ["+99999999999d", "+999999999w", "+99999999999999999999s"])
+    def test_huge_relative_value_is_an_input_error(self, value):
+        """Огромное относительное значение -- ошибка ввода, а не OverflowError."""
+        with pytest.raises(ValueError, match="too far ahead"):
+            parse_schedule(value, NOW)
+
     @pytest.mark.parametrize("value", ["2030-05-12", "", "soon", "+", "+5x", "25:00", "tomorrow"])
     def test_unclear_values_are_refused(self, value):
         """Дата без времени и непонятные строки отвергаются, а не угадываются."""
         with pytest.raises(ValueError):
             parse_schedule(value, NOW)
+
+
+class TestParseAcrossDaylightSaving:
+    """Время без пояса берёт смещение местного пояса на ту дату, которую оно называет."""
+
+    @pytest.fixture(autouse=True)
+    def _berlin(self, system_zone):
+        system_zone("Europe/Berlin")
+
+    def test_iso_in_summer_named_in_winter_gets_the_summer_offset(self):
+        """Дата летом, названная зимой, понимается по летнему смещению, а не по текущему зимнему."""
+        now = datetime(2026, 11, 8, 12, 0).astimezone()
+        moment = parse_schedule("2027-06-01 10:00", now)
+        assert moment.utcoffset() == timedelta(hours=2)
+        assert (moment.hour, moment.minute) == (10, 0)
+
+    def test_tomorrow_after_the_switch_gets_the_new_offset(self):
+        """`tomorrow 10:00` через ночь перехода на летнее время -- 10:00 по летнему смещению."""
+        now = datetime(2027, 3, 27, 12, 0).astimezone()
+        assert now.utcoffset() == timedelta(hours=1)
+        moment = parse_schedule("tomorrow 10:00", now)
+        assert moment.utcoffset() == timedelta(hours=2)
+        assert (moment.date().isoformat(), moment.hour) == ("2027-03-28", 10)
+
+    def test_passed_time_moved_to_tomorrow_gets_the_new_offset(self):
+        """Прошедшее сегодня время, перенесённое на завтра через переход, берёт завтрашнее смещение."""
+        now = datetime(2027, 3, 27, 22, 0).astimezone()
+        moment = parse_schedule("9:00", now)
+        assert moment.utcoffset() == timedelta(hours=2)
+        assert (moment.date().isoformat(), moment.hour) == ("2027-03-28", 9)
+
+    def test_time_still_ahead_today_stays_today(self):
+        """Время, ещё не наступившее сегодня, остаётся сегодняшним и в поясе с переходом."""
+        now = datetime(2027, 3, 27, 8, 0).astimezone()
+        moment = parse_schedule("9:00", now)
+        assert moment == datetime(2027, 3, 27, 9, 0).astimezone()
+        assert moment.utcoffset() == timedelta(hours=1)
 
 
 class TestBounds:
@@ -244,6 +310,14 @@ def test_cli_refuses_a_past_time_before_connecting():
     assert result.exit_code == 2
     assert "in the past" in result.output
     send.assert_not_called()
+
+
+def test_cli_refuses_a_huge_relative_value():
+    """Огромное относительное значение отвергается сообщением Click с кодом 2, без трассировки."""
+    result = CliRunner().invoke(cli_tg.tg, ["send", "101", "-t", "x", "--schedule", "+99999999999d"])
+
+    assert result.exit_code == 2
+    assert "too far ahead" in result.output
 
 
 # ---------------------------------------------------------------------------

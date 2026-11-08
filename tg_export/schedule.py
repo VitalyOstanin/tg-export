@@ -16,8 +16,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, time, timedelta
-
-import click
+from typing import overload
 
 # Telegram sends a message scheduled closer than this at once.
 MIN_LEAD = timedelta(seconds=10)
@@ -28,6 +27,7 @@ _RELATIVE = re.compile(r"^\+((?:\d+[smhdw])+)$")
 _RELATIVE_PART = re.compile(r"(\d+)([smhdw])")
 _UNITS = {"s": "seconds", "m": "minutes", "h": "hours", "d": "days", "w": "weeks"}
 _CLOCK = re.compile(r"^(?:(tomorrow)\s+)?(\d{1,2}):(\d{2})$")
+_BARE_DATE = re.compile(r"^\d{4}-?\d{2}-?\d{2}$")
 
 FORMATS_HELP = (
     "+30m, +2h, +1d12h (from now); 10:00 (the next such time); tomorrow 10:00; "
@@ -38,8 +38,9 @@ FORMATS_HELP = (
 def parse_schedule(value: str, now: datetime) -> datetime:
     """The moment ``value`` names, as an aware datetime.
 
-    ``now`` is an aware datetime in the local time zone. Raises ValueError with
-    a message meant for the user.
+    ``now`` is an aware datetime in the local time zone. A moment named without
+    a zone is local time with the offset the system zone has on that date, not
+    now's. Raises ValueError with a message meant for the user.
     """
     text = value.strip()
     if not text:
@@ -47,10 +48,14 @@ def parse_schedule(value: str, now: datetime) -> datetime:
 
     relative = _RELATIVE.match(text.lower())
     if relative:
-        delta = timedelta()
-        for amount, unit in _RELATIVE_PART.findall(relative.group(1)):
-            delta += timedelta(**{_UNITS[unit]: int(amount)})
-        return now + delta
+        try:
+            delta = timedelta()
+            for amount, unit in _RELATIVE_PART.findall(relative.group(1)):
+                delta += timedelta(**{_UNITS[unit]: int(amount)})
+            return now + delta
+        except OverflowError:
+            # Past the range of a date: a typo of extra zeros, not a moment.
+            raise ValueError(f"{text!r} is too far ahead to be a date") from None
 
     clock = _CLOCK.match(text.lower())
     if clock:
@@ -60,13 +65,15 @@ def parse_schedule(value: str, now: datetime) -> datetime:
         except ValueError:
             raise ValueError(f"{text!r} is not a time of day") from None
         day = now.date() + timedelta(days=1 if tomorrow else 0)
-        moment = datetime.combine(day, at, tzinfo=now.tzinfo)
+        # astimezone() on a naive value takes the offset the local zone has on
+        # that day, which differs from now's across a daylight saving switch.
+        moment = datetime.combine(day, at).astimezone()
         # A bare time that has already passed today means the same time tomorrow.
         if not tomorrow and moment <= now:
-            moment += timedelta(days=1)
+            moment = datetime.combine(day + timedelta(days=1), at).astimezone()
         return moment
 
-    if "T" not in text and " " not in text:
+    if _BARE_DATE.match(text):
         # fromisoformat takes a bare date as midnight -- a guess the user did
         # not make.
         raise ValueError(f"{text!r} names no time: expected one of {FORMATS_HELP}")
@@ -77,7 +84,7 @@ def parse_schedule(value: str, now: datetime) -> datetime:
             f"{text!r} is not a time tg-export understands: expected one of {FORMATS_HELP}"
         ) from None
     if moment.tzinfo is None:
-        moment = moment.replace(tzinfo=now.tzinfo)
+        moment = moment.astimezone()
     return moment
 
 
@@ -98,8 +105,16 @@ def check_schedule(moment: datetime, now: datetime) -> None:
         )
 
 
-def describe(moment: datetime) -> str:
-    """The moment in the local time zone, to the minute, with its offset."""
+@overload
+def describe(moment: datetime | None) -> str: ...
+@overload
+def describe(moment: datetime | None, *, missing: str) -> str: ...
+@overload
+def describe(moment: datetime | None, *, missing: None) -> str | None: ...
+def describe(moment: datetime | None, *, missing: str | None = "?") -> str | None:
+    """The moment in the local time zone, to the minute, with its offset; ``missing`` when there is none."""
+    if moment is None:
+        return missing
     return moment.astimezone().isoformat(sep=" ", timespec="minutes")
 
 
@@ -133,23 +148,3 @@ def explain_refusal(error: Exception) -> str | None:
     if isinstance(error, ScheduleBotNotAllowedError):
         return "Telegram does not allow scheduling messages from this account or into this chat"
     return None
-
-
-class ScheduleTime(click.ParamType):
-    """A Click type for `--schedule`: parsed and checked against the present."""
-
-    name = "time"
-
-    def convert(self, value, param, ctx) -> datetime:
-        if isinstance(value, datetime):
-            return value
-        now = local_now()
-        try:
-            moment = parse_schedule(value, now)
-            check_schedule(moment, now)
-        except ValueError as e:
-            self.fail(str(e), param, ctx)
-        return moment
-
-
-SCHEDULE_TIME = ScheduleTime()

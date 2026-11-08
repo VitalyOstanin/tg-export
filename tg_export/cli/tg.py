@@ -14,7 +14,7 @@ import logging
 import sys
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import click
 
@@ -24,6 +24,7 @@ from tg_export.cli.common import (
     DEFAULT_MESSAGE_TEXT_LENGTH,
     fail,
 )
+from tg_export.cli.schedule_param import SCHEDULE_TIME
 from tg_export.console import confirm
 from tg_export.converter import reply_mark, reply_target, text_links
 from tg_export.errors import (
@@ -35,7 +36,6 @@ from tg_export.format import display_name, format_moment, strip_control_chars
 from tg_export.privacy import ensure_private_dir, write_private_text
 from tg_export.schedule import (
     FORMATS_HELP,
-    SCHEDULE_TIME,
     check_schedule,
     describe,
     explain_refusal,
@@ -58,7 +58,7 @@ def tg() -> None:
 @click.option("--limit", "-n", type=click.IntRange(min=1), default=10, help="Number of messages to show")
 @click.option(
     "--truncate",
-    type=int,
+    type=click.IntRange(min=0),
     default=None,
     help=f"Cut message text to N characters (0 = no cut, default: {DEFAULT_MESSAGE_TEXT_LENGTH})",
 )
@@ -77,8 +77,6 @@ def tg_messages(chat_id, account, limit, truncate, no_truncate, as_json) -> None
         # Cutting is for the terminal: a program reading the JSON wants the
         # text as it was sent, and asks for a cut explicitly when it wants one.
         truncate = 0 if as_json else DEFAULT_MESSAGE_TEXT_LENGTH
-    elif truncate < 0:
-        raise click.BadParameter("--truncate must be 0 or greater")
     asyncio.run(_tg_messages(chat_id, account, limit, truncate, as_json))
 
 
@@ -106,6 +104,19 @@ def _message_preview(msg, *, truncate: int = DEFAULT_MESSAGE_TEXT_LENGTH) -> tup
 _LISTING_FIELDS = ("id", "date", "sender", "text", "links", "media", "action", "reply_to", "reply_to_peer")
 
 
+def _listing_record(msg, truncate: int) -> dict:
+    """One message of `tg messages --json` and `tg scheduled list --json`."""
+    from tg_export.watch import message_record
+
+    record = message_record(None, None, msg)
+    if truncate:
+        # Links are counted over the cut text: a link reaching past the cut
+        # would point outside the `text` it travels with.
+        record["text"] = record["text"][:truncate]
+        record["links"] = text_links(record["text"], msg.entities)
+    return {field: record[field] for field in _LISTING_FIELDS}
+
+
 async def _tg_messages(chat_id, account, limit, truncate=DEFAULT_MESSAGE_TEXT_LENGTH, as_json=False) -> None:
     """Print the last messages of a chat: date, sender and the cut text."""
     async with common.connected_api(account) as (api, account):
@@ -116,18 +127,10 @@ async def _tg_messages(chat_id, account, limit, truncate=DEFAULT_MESSAGE_TEXT_LE
         else:
             click.echo(f"# {title} (id={chat_id})\n")
 
-        from tg_export.watch import message_record
-
         collected = []
         async for msg in api.client.iter_messages(entity, limit=limit):  # pyright: ignore[reportArgumentType]
             if as_json:
-                record = message_record(None, None, msg)
-                if truncate:
-                    # Links are counted over the cut text: a link reaching past
-                    # the cut would point outside the `text` it travels with.
-                    record["text"] = record["text"][:truncate]
-                    record["links"] = text_links(record["text"], msg.entities)
-                collected.append({field: record[field] for field in _LISTING_FIELDS})
+                collected.append(_listing_record(msg, truncate))
             else:
                 # Telegram controls both, and a terminal executes escape
                 # sequences it is handed: the same rule already applied to
@@ -506,57 +509,59 @@ def _upload_progress(by_bytes: bool) -> Iterator[Any]:
         yield progress
 
 
-async def _send_files(
-    client, recipient, file_paths, text, as_document, mime_type=None, schedule=None
-) -> list[Any]:
-    """Send attachments to one recipient, reporting upload progress.
+class _UploadedFile(NamedTuple):
+    """A file already on Telegram's servers, with what its message needs.
 
-    Documents never join an album, so with ``as_document`` files go one by one
-    and progress is counted in bytes. Compressed photos keep the album grouping
-    Telethon does in chunks of 10; there the callback counts files, not bytes.
-    A declared ``mime_type`` sends the files one by one as well, each with it.
-    ``schedule`` puts every message into the scheduled queue for that moment.
-
-    Returns the messages Telegram answered with -- with ``schedule``, their ids
-    are those of the scheduled queue.
+    The attributes and the mime type are read from the file on disk at upload
+    time: taken from the handle when sending, they would come from its name
+    alone, and a video would lose its duration and dimensions.
     """
+
+    handle: Any
+    attributes: list[Any]
+    mime_type: str
+
+
+def _sends_as_album(file_paths, as_document, mime_type) -> bool:
+    """Whether the files leave as Telethon albums of compressed photos rather than one by one."""
+    return not (as_document or len(file_paths) == 1 or mime_type is not None)
+
+
+def _check_moment(schedule) -> None:
+    """Refuse a scheduled moment that came too close or passed; nothing to check without one.
+
+    Called right before every send that carries the moment: an upload before it
+    takes time, and a moment that came close meanwhile would be sent at once
+    rather than scheduled.
+    """
+    if schedule is not None:
+        check_schedule(schedule, local_now())
+
+
+async def _upload_files(client, file_paths, as_document, *, mime_type=None) -> list[_UploadedFile] | None:
+    """Upload the attachments once, before any recipient, reporting progress in bytes.
+
+    Returns one handle per file, to be sent to every recipient by `_send_files`.
+    Returns None for an album of compressed photos: Telethon builds an album
+    only from what it uploads itself -- from a handle it would lose the photo
+    resize and a video's metadata -- so the album is uploaded inside its
+    `send_file`, once per recipient.
+    """
+    from telethon import utils
+
     from tg_export.exporter import file_progress_description
+    from tg_export.upload import upload_file
 
-    caption = text or ""
-    by_bytes = as_document or len(file_paths) == 1 or mime_type is not None
+    if _sends_as_album(file_paths, as_document, mime_type):
+        return None
 
-    with _upload_progress(by_bytes) as progress:
-        if not by_bytes:
-            task = (
-                progress.add_task(f"{len(file_paths)} files", total=len(file_paths))
-                if progress is not None
-                else None
-            )
-
-            def album_progress(sent, total) -> None:
-                # `total` from Telethon is the tail of the album still to send:
-                # it slices the list into chunks of 10 and reports 25, then 15,
-                # then 5, while `sent` keeps counting from the start. Adopting
-                # that total pushed the bar past 100% for more than ten files.
-                if progress is not None and task is not None:
-                    progress.update(task, completed=min(sent, len(file_paths)))
-
-            sent = await client.send_file(
-                recipient,
-                [str(p) for p in file_paths],
-                caption=caption,
-                force_document=as_document,
-                progress_callback=album_progress,
-                schedule=schedule,
-            )
-            return _as_list(sent)
-
-        sizes = [p.stat().st_size for p in file_paths]
+    sizes = [p.stat().st_size for p in file_paths]
+    uploads: list[_UploadedFile] = []
+    with _upload_progress(by_bytes=True) as progress:
         total_task = None
         if progress is not None and len(file_paths) > 1:
             total_task = progress.add_task(f"total 0/{len(file_paths)} files", total=sum(sizes))
         done_bytes = 0
-        messages: list[Any] = []
 
         for index, path in enumerate(file_paths):
             # rich parses the description as markup, so an unescaped name is
@@ -574,17 +579,12 @@ async def _send_files(
                 if total_task is not None:
                     progress.update(total_task, completed=done + sent)
 
-            sent = await _send_one_file(
-                client,
-                recipient,
-                path,
-                caption=caption if index == 0 else "",
-                as_document=as_document,
-                mime_type=mime_type,
-                progress_callback=file_progress,
-                schedule=schedule,
+            handle = await upload_file(client, path, progress_callback=file_progress)
+            # A declared type is kept as given; otherwise it is guessed from the name.
+            attributes, file_mime = utils.get_attributes(
+                str(path), force_document=as_document, mime_type=mime_type
             )
-            messages.extend(_as_list(sent))
+            uploads.append(_UploadedFile(handle, attributes, file_mime))
             done_bytes += sizes[index]
             if progress is not None and task is not None:
                 progress.remove_task(task)
@@ -594,7 +594,69 @@ async def _send_files(
                         completed=done_bytes,
                         description=f"total {index + 1}/{len(file_paths)} files",
                     )
+    return uploads
+
+
+async def _send_files(
+    client, recipient, file_paths, text, as_document, *, uploads, schedule=None
+) -> list[Any]:
+    """Send attachments to one recipient, checking the scheduled moment before every send.
+
+    ``uploads`` comes from `_upload_files`: with handles, each file goes as its
+    own message -- documents never join an album, and a declared mime type is
+    set per file -- and nothing is uploaded here. With None, the files are
+    compressed photos kept in the album grouping Telethon does in chunks of 10;
+    Telethon uploads them inside this very `send_file`, so the moment is checked
+    before the upload rather than after it, and the progress shown counts files.
+    Past ten photos Telethon sends the album in several requests, and a later
+    chunk is uploaded after the first one is already queued, out of reach of
+    the check.
+    ``schedule`` puts every message into the scheduled queue for that moment.
+
+    Returns the messages Telegram answered with -- with ``schedule``, their ids
+    are those of the scheduled queue.
+    """
+    caption = text or ""
+
+    if uploads is not None:
+        messages: list[Any] = []
+        for index, upload in enumerate(uploads):
+            sent = await _send_one_file(
+                client,
+                recipient,
+                upload,
+                caption=caption if index == 0 else "",
+                as_document=as_document,
+                schedule=schedule,
+            )
+            messages.extend(_as_list(sent))
         return messages
+
+    with _upload_progress(by_bytes=False) as progress:
+        task = (
+            progress.add_task(f"{len(file_paths)} files", total=len(file_paths))
+            if progress is not None
+            else None
+        )
+
+        def album_progress(sent, total) -> None:
+            # `total` from Telethon is the tail of the album still to send:
+            # it slices the list into chunks of 10 and reports 25, then 15,
+            # then 5, while `sent` keeps counting from the start. Adopting
+            # that total pushed the bar past 100% for more than ten files.
+            if progress is not None and task is not None:
+                progress.update(task, completed=min(sent, len(file_paths)))
+
+        _check_moment(schedule)
+        sent = await client.send_file(
+            recipient,
+            [str(p) for p in file_paths],
+            caption=caption,
+            force_document=as_document,
+            progress_callback=album_progress,
+            schedule=schedule,
+        )
+        return _as_list(sent)
 
 
 def _ids_suffix(messages, label: str = "id") -> str:
@@ -612,33 +674,20 @@ def _as_list(sent) -> list[Any]:
     return list(sent) if isinstance(sent, list | tuple) else [sent]
 
 
-async def _send_one_file(
-    client, recipient, path, *, caption, as_document, progress_callback, mime_type=None, schedule=None
-) -> Any:
-    """Send one file, uploading its parts over several connections at once.
+async def _send_one_file(client, recipient, upload, *, caption, as_document, schedule=None) -> Any:
+    """Send one file already uploaded by `_upload_files`, checking the moment first.
 
-    The upload is done here rather than inside `send_file` so that a large
-    file leaves at the speed of the line instead of one part per round trip;
-    small files still go the library's way. Because the message is then built
-    from a handle rather than from a path, the attributes and the mime type
-    are read from the file on disk and passed along -- taken from the handle
-    they would come from its name alone, and a video would lose its duration
-    and dimensions.
+    The handle is reusable: Telegram keeps an uploaded file for several hours,
+    so every recipient gets the same one instead of a new upload.
     """
-    from telethon import utils
-
-    from tg_export.upload import upload_file
-
-    handle = await upload_file(client, path, progress_callback=progress_callback)
-    # A declared type is kept as given; otherwise it is guessed from the name.
-    attributes, mime_type = utils.get_attributes(str(path), force_document=as_document, mime_type=mime_type)
+    _check_moment(schedule)
     return await client.send_file(
         recipient,
-        handle,
+        upload.handle,
         caption=caption,
         force_document=as_document,
-        attributes=attributes,
-        mime_type=mime_type,
+        attributes=upload.attributes,
+        mime_type=upload.mime_type,
         schedule=schedule,
     )
 
@@ -646,40 +695,59 @@ async def _send_one_file(
 async def _tg_send(
     account_name, recipients, text, files, as_document=False, mime_type=None, schedule=None
 ) -> int:
+    if schedule is None:
+        verb, done = "sending to", "Delivered to"
+
+        def outcome(recipient, messages) -> str:
+            return f"  sent to {recipient}{_ids_suffix(messages)}"
+    else:
+        verb, done = "scheduling for", "Scheduled for"
+
+        def outcome(recipient, messages) -> str:
+            suffix = _ids_suffix(messages, "scheduled id")
+            return f"  scheduled to {recipient} for {describe(schedule)}{suffix}"
+
     async with common.connected_api(account_name) as (api, _):
         file_paths = [Path(f) for f in files] if files else None
         sent_count = 0
         failed: list[tuple[object, str]] = []
         total = len(recipients)
 
-        for recipient in recipients:
+        uploads = None
+        pending = list(recipients)
+        if file_paths:
+            # Once for everyone: the handles are sent to each recipient in turn.
             try:
-                if schedule is not None:
-                    # Uploads to the recipients before this one take time, and a
-                    # moment that came close meanwhile would be sent at once
-                    # rather than scheduled.
-                    check_schedule(schedule, local_now())
+                uploads = await _upload_files(api.client, file_paths, as_document, mime_type=mime_type)
+            except Exception as e:
+                reason = explain_refusal(e) or str(e)
+                common.error(f"  error uploading the files: {reason}")
+                failed = [(recipient, reason) for recipient in pending]
+                pending = []
+
+        for recipient in pending:
+            try:
                 if file_paths:
                     messages = await _send_files(
-                        api.client, recipient, file_paths, text, as_document, mime_type, schedule
+                        api.client,
+                        recipient,
+                        file_paths,
+                        text,
+                        as_document,
+                        uploads=uploads,
+                        schedule=schedule,
                     )
                 else:
+                    _check_moment(schedule)
                     messages = _as_list(await api.client.send_message(recipient, text, schedule=schedule))
-
-                if schedule is None:
-                    common.diag(f"  sent to {recipient}{_ids_suffix(messages)}")
-                else:
-                    suffix = _ids_suffix(messages, "scheduled id")
-                    common.diag(f"  scheduled to {recipient} for {describe(schedule)}{suffix}")
+                common.diag(outcome(recipient, messages))
                 sent_count += 1
             except Exception as e:
                 reason = explain_refusal(e) or str(e)
-                verb = "scheduling for" if schedule is not None else "sending to"
                 common.error(f"  error {verb} {recipient}: {reason}")
                 failed.append((recipient, reason))
 
         if failed:
-            done = "Delivered to" if schedule is None else "Scheduled for"
             common.diag(
                 f"\n{done} {sent_count}/{total} recipients. "
                 f"{len(failed)} failed. Re-running this command will resend "
@@ -726,14 +794,8 @@ async def _scheduled_messages(client, entity) -> list[Any]:
 
 def _scheduled_record(msg, truncate: int) -> dict:
     """One scheduled message for `--json`: the listing fields plus the moment it leaves."""
-    from tg_export.watch import message_record
-
-    record = message_record(None, None, msg)
-    if truncate:
-        record["text"] = record["text"][:truncate]
-        record["links"] = text_links(record["text"], msg.entities)
-    out = {field: record[field] for field in _LISTING_FIELDS}
-    out["scheduled_for"] = describe(msg.date) if msg.date is not None else None
+    out = _listing_record(msg, truncate)
+    out["scheduled_for"] = describe(msg.date, missing=None)
     return out
 
 
@@ -758,7 +820,10 @@ async def _tg_scheduled_list(chat_ids, account, truncate, as_json) -> int:
             click.echo(f"# {strip_control_chars(title)} (id={chat_id}): {len(messages)} scheduled")
             for msg in messages:
                 _, text = _message_preview(msg, truncate=truncate)
-                when = describe(msg.date) if msg.date is not None else "?"
+                # The local moment with its offset, unlike the plain date of
+                # `tg messages`: what matters here is when, on this clock, the
+                # message leaves -- the same form --schedule printed it in.
+                when = describe(msg.date, missing="?")
                 click.echo(f"  {when}  [{msg.id}]  {strip_control_chars(text)}")
     if as_json:
         click.echo(json.dumps(collected, ensure_ascii=False, indent=2))
