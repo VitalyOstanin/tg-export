@@ -1,4 +1,4 @@
-"""``tg`` group: direct API calls -- info, messages, send, scheduled, download.
+"""``tg`` group: direct API calls -- info, messages, send, scheduled, delete, download.
 
 These commands talk to Telegram outside an export: they read a chat, send a
 file, fetch one message. Nothing here writes to the state database.
@@ -24,6 +24,7 @@ from tg_export.cli.common import (
     DEFAULT_MESSAGE_TEXT_LENGTH,
     fail,
 )
+from tg_export.console import confirm
 from tg_export.converter import reply_mark, reply_target, text_links
 from tg_export.errors import (
     EXIT_FAILURE,
@@ -596,6 +597,14 @@ async def _send_files(
         return messages
 
 
+def _ids_suffix(messages, label: str = "id") -> str:
+    """` (id 5)` or ` (ids 5, 6)` for the messages a send returned; empty when none has an id."""
+    ids = [str(m.id) for m in messages if isinstance(getattr(m, "id", None), int)]
+    if not ids:
+        return ""
+    return f" ({label}{'s' if len(ids) > 1 else ''} {', '.join(ids)})"
+
+
 def _as_list(sent) -> list[Any]:
     """What a send returned, as a list: one message, an album, or nothing."""
     if sent is None:
@@ -658,10 +667,9 @@ async def _tg_send(
                     messages = _as_list(await api.client.send_message(recipient, text, schedule=schedule))
 
                 if schedule is None:
-                    common.diag(f"  sent to {recipient}")
+                    common.diag(f"  sent to {recipient}{_ids_suffix(messages)}")
                 else:
-                    ids = ", ".join(str(m.id) for m in messages if getattr(m, "id", None) is not None)
-                    suffix = f" (scheduled id {ids})" if ids else ""
+                    suffix = _ids_suffix(messages, "scheduled id")
                     common.diag(f"  scheduled to {recipient} for {describe(schedule)}{suffix}")
                 sent_count += 1
             except Exception as e:
@@ -806,6 +814,174 @@ async def _tg_scheduled_delete(chat_id, message_ids, account, delete_all) -> int
         for i in missing:
             common.error(f"  {chat_id} has no scheduled message {i}")
         return EXIT_FAILURE if missing else EXIT_OK
+
+
+@tg.command("delete")
+@click.argument("chat_id", type=CHAT_REF)
+@click.argument("message_ids", type=click.IntRange(min=1), nargs=-1, required=True)
+@click.option("--account", default=None, help=common.ACCOUNT_HELP)
+@click.option(
+    "--for-everyone",
+    "revoke",
+    is_flag=True,
+    default=False,
+    help=(
+        "In a private chat, delete the messages for the other side as well; by default "
+        "they disappear only for you. In groups and channels Telegram deletes them for "
+        "everyone either way"
+    ),
+)
+@click.option(
+    "--whole-album",
+    is_flag=True,
+    default=False,
+    help="When a named message is part of an album, delete every part of that album",
+)
+@click.option("--yes", "skip_confirm", is_flag=True, default=False, help="Delete without asking")
+def tg_delete(chat_id, message_ids, account, revoke, whole_album, skip_confirm) -> None:
+    """Delete messages of a chat by their ids. This cannot be undone.
+
+    CHAT_ID: chat id, @username, bare username, a t.me link or `me` for Saved
+    Messages. MESSAGE_IDS: the ids `tg messages` shows in square brackets and
+    `tg send` prints after sending.
+
+    The messages are read first and listed -- date, file name, start of the
+    text -- and the deletion waits for a yes; --yes answers it beforehand. An
+    id the chat does not hold stops the command before anything is deleted.
+    """
+    exit_code = asyncio.run(
+        _tg_delete(
+            chat_id,
+            list(message_ids),
+            account,
+            revoke=revoke,
+            whole_album=whole_album,
+            skip_confirm=skip_confirm,
+        )
+    )
+    if exit_code:
+        fail(code=exit_code)
+
+
+# Parts of one album are sent together and get consecutive ids, at most ten of them.
+_ALBUM_REACH = 9
+
+
+async def _album_parts(client, entity, messages) -> dict[int, list[int]]:
+    """The ids of every album the messages belong to, keyed by the album's grouped id."""
+    groups = {m.grouped_id for m in messages if getattr(m, "grouped_id", None)}
+    if not groups:
+        return {}
+    ids = [m.id for m in messages]
+    around = list(range(max(1, min(ids) - _ALBUM_REACH), max(ids) + _ALBUM_REACH + 1))
+    parts: dict[int, list[int]] = {}
+    for m in await client.get_messages(entity, ids=around):
+        if m is not None and getattr(m, "grouped_id", None) in groups:
+            parts.setdefault(m.grouped_id, []).append(m.id)
+    return {group: sorted(found) for group, found in parts.items()}
+
+
+def _deletion_scope(entity, revoke: bool) -> str:
+    """For whom the messages disappear, said the way the preview prints it."""
+    if getattr(entity, "is_self", False):
+        return "Saved Messages: there is no other side"
+    if getattr(entity, "broadcast", False) or getattr(entity, "megagroup", False) or hasattr(entity, "title"):
+        return "a group or channel: Telegram deletes them for everyone"
+    if revoke:
+        return "deleted for everyone in the chat (--for-everyone)"
+    return "deleted only for you; the other side keeps them (--for-everyone deletes them there too)"
+
+
+def _deletion_line(msg) -> str:
+    """One message of the preview: id, date, file name, start of the text."""
+    _, text = _message_preview(msg)
+    file = getattr(msg, "file", None)
+    name = getattr(file, "name", None) if file is not None else None
+    parts = [f"  [{msg.id}]", format_moment(msg.date, missing="?")]
+    if name:
+        parts.append(f"file {strip_control_chars(name)}")
+    if text:
+        parts.append(strip_control_chars(text))
+    if not getattr(msg, "out", True):
+        parts.append("(not yours)")
+    return "  ".join(parts)
+
+
+async def _tg_delete(chat_id, message_ids, account, *, revoke, whole_album, skip_confirm) -> int:
+    """Delete messages after listing them; nothing is deleted when an id is wrong.
+
+    In private chats and small groups Telegram takes the ids alone, without
+    the chat: a message id there is counted across all of them, and a mistyped
+    id would delete a message of another conversation. Reading the messages
+    through the chat first filters those out -- Telethon drops a message that
+    belongs elsewhere -- so only what the listing showed is deleted.
+    """
+    from telethon.errors.rpcerrorlist import MessageDeleteForbiddenError
+
+    async with common.connected_api(account) as (api, _):
+        client = api.client
+        entity = await resolve_chat(client, chat_id)
+        wanted = list(dict.fromkeys(message_ids))
+        found = await client.get_messages(entity, ids=wanted)
+        missing = [i for i, m in zip(wanted, found, strict=True) if m is None]
+        if missing:
+            for i in missing:
+                common.error(f"  {chat_id} has no message {i}")
+            common.error("Nothing was deleted.")
+            return EXIT_FAILURE
+        messages = list(found)
+
+        albums = await _album_parts(client, entity, messages)
+        if whole_album:
+            extra = sorted({i for ids in albums.values() for i in ids} - set(wanted))
+            if extra:
+                messages += [m for m in await client.get_messages(entity, ids=extra) if m is not None]
+        chosen = {m.id for m in messages}
+        messages.sort(key=lambda m: m.id)
+
+        # essential: this is what the question below asks to authorise.
+        title = getattr(entity, "title", None) or _entity_name(entity)
+        common.diag(f"Chat: {strip_control_chars(title)} (id={chat_id})", essential=True)
+        for msg in messages:
+            common.diag(_deletion_line(msg), essential=True)
+        for ids in albums.values():
+            if not set(ids) <= chosen:
+                named = ", ".join(str(i) for i in ids if i in chosen)
+                common.diag(
+                    f"  {named}: part of an album of {', '.join(map(str, ids))}; only the named "
+                    f"part is deleted (--whole-album deletes all of it)",
+                    essential=True,
+                )
+        common.diag(f"  {_deletion_scope(entity, revoke)}", essential=True)
+
+        question = f"Delete {len(messages)} message(s)? This cannot be undone."
+        if not skip_confirm and not confirm(question, without_an_answer="--yes"):
+            common.diag("Cancelled.", essential=True)
+            return EXIT_OK
+
+        ids = [m.id for m in messages]
+        try:
+            await client.delete_messages(entity, ids, revoke=revoke)
+        except MessageDeleteForbiddenError:
+            common.error(
+                f"  Telegram refused to delete messages of {chat_id}: deleting other members' "
+                f"messages in a group or channel needs admin rights"
+            )
+            return EXIT_FAILURE
+        except Exception as e:
+            common.error(f"  error deleting messages of {chat_id}: {e}")
+            return EXIT_FAILURE
+
+        # Telegram skips what it may not delete without a word, so the result
+        # is read back rather than assumed.
+        left = [m.id for m in await client.get_messages(entity, ids=ids) if m is not None]
+        gone = [i for i in ids if i not in left]
+        if gone:
+            common.diag(f"  deleted {len(gone)} message(s) of {chat_id}: {', '.join(map(str, gone))}")
+        if left:
+            common.error(f"  Telegram kept messages of {chat_id} still in place: {', '.join(map(str, left))}")
+            return EXIT_FAILURE
+        return EXIT_OK
 
 
 @tg.command("download")
