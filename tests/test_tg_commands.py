@@ -673,7 +673,9 @@ async def test_album_progress_never_passes_the_file_count(tmp_path, monkeypatch)
 
     monkeypatch.setattr(cli_tg, "_upload_progress", fake_progress)
 
-    async def send_file(recipient, paths, caption=None, force_document=False, progress_callback=None):
+    async def send_file(
+        recipient, paths, caption=None, force_document=False, progress_callback=None, schedule=None
+    ):
         # Воспроизводит нарезку Telethon: sent -- сквозной, total -- остаток.
         assert progress_callback is not None
         sent_count = 0
@@ -974,7 +976,7 @@ def test_the_message_text_can_be_given_without_the_command_line(tmp_path, monkey
 
     sent: list[str | None] = []
 
-    async def fake_send(account, parsed, text, files, as_document, mime_type=None):
+    async def fake_send(account, parsed, text, files, as_document, mime_type=None, schedule=None):
         sent.append(text)
         return 0
 

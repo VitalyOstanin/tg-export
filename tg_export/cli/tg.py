@@ -1,4 +1,4 @@
-"""``tg`` group: direct API calls -- info, messages, send, download.
+"""``tg`` group: direct API calls -- info, messages, send, scheduled, download.
 
 These commands talk to Telegram outside an export: they read a chat, send a
 file, fetch one message. Nothing here writes to the state database.
@@ -32,6 +32,14 @@ from tg_export.errors import (
 )
 from tg_export.format import display_name, format_moment, strip_control_chars
 from tg_export.privacy import ensure_private_dir, write_private_text
+from tg_export.schedule import (
+    FORMATS_HELP,
+    SCHEDULE_TIME,
+    check_schedule,
+    describe,
+    explain_refusal,
+    local_now,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -400,13 +408,25 @@ async def _tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_fi
         "knows no type for the extension"
     ),
 )
+@click.option(
+    "--schedule",
+    "schedule",
+    default=None,
+    type=SCHEDULE_TIME,
+    help=(
+        "Do not send now: put the message into the chat's scheduled messages, and "
+        f"Telegram sends it at this time. Accepted: {FORMATS_HELP}"
+    ),
+)
 @click.argument("recipients", type=CHAT_REF, nargs=-1, required=True)
-def tg_send(account, files, text, text_file, as_document, mime_type, recipients) -> None:
+def tg_send(account, files, text, text_file, as_document, mime_type, schedule, recipients) -> None:
     """Send message to one or more recipients.
 
     RECIPIENTS: chat ids, @usernames or t.me links (multiple allowed).
     Use --text for message text and --file for attachments.
-    At least --text or --file must be specified.
+    At least --text or --file must be specified. With --schedule the message
+    waits on Telegram's side and leaves at the given time; see and cancel it
+    with `tg scheduled list` and `tg scheduled delete`.
 
     Note: delivery is best-effort and not idempotent. If sending fails for some
     recipients (network/RPC error), re-running this command will resend to all
@@ -427,7 +447,7 @@ def tg_send(account, files, text, text_file, as_document, mime_type, recipients)
         raise click.UsageError("--mime-type applies to files; give them with --file")
 
     exit_code = asyncio.run(
-        _tg_send(account, list(recipients), text, files, as_document, mime_type=mime_type)
+        _tg_send(account, list(recipients), text, files, as_document, mime_type=mime_type, schedule=schedule)
     )
     if exit_code:
         fail(code=exit_code)
@@ -485,13 +505,19 @@ def _upload_progress(by_bytes: bool) -> Iterator[Any]:
         yield progress
 
 
-async def _send_files(client, recipient, file_paths, text, as_document, mime_type=None) -> None:
+async def _send_files(
+    client, recipient, file_paths, text, as_document, mime_type=None, schedule=None
+) -> list[Any]:
     """Send attachments to one recipient, reporting upload progress.
 
     Documents never join an album, so with ``as_document`` files go one by one
     and progress is counted in bytes. Compressed photos keep the album grouping
     Telethon does in chunks of 10; there the callback counts files, not bytes.
     A declared ``mime_type`` sends the files one by one as well, each with it.
+    ``schedule`` puts every message into the scheduled queue for that moment.
+
+    Returns the messages Telegram answered with -- with ``schedule``, their ids
+    are those of the scheduled queue.
     """
     from tg_export.exporter import file_progress_description
 
@@ -514,20 +540,22 @@ async def _send_files(client, recipient, file_paths, text, as_document, mime_typ
                 if progress is not None and task is not None:
                     progress.update(task, completed=min(sent, len(file_paths)))
 
-            await client.send_file(
+            sent = await client.send_file(
                 recipient,
                 [str(p) for p in file_paths],
                 caption=caption,
                 force_document=as_document,
                 progress_callback=album_progress,
+                schedule=schedule,
             )
-            return
+            return _as_list(sent)
 
         sizes = [p.stat().st_size for p in file_paths]
         total_task = None
         if progress is not None and len(file_paths) > 1:
             total_task = progress.add_task(f"total 0/{len(file_paths)} files", total=sum(sizes))
         done_bytes = 0
+        messages: list[Any] = []
 
         for index, path in enumerate(file_paths):
             # rich parses the description as markup, so an unescaped name is
@@ -545,7 +573,7 @@ async def _send_files(client, recipient, file_paths, text, as_document, mime_typ
                 if total_task is not None:
                     progress.update(total_task, completed=done + sent)
 
-            await _send_one_file(
+            sent = await _send_one_file(
                 client,
                 recipient,
                 path,
@@ -553,7 +581,9 @@ async def _send_files(client, recipient, file_paths, text, as_document, mime_typ
                 as_document=as_document,
                 mime_type=mime_type,
                 progress_callback=file_progress,
+                schedule=schedule,
             )
+            messages.extend(_as_list(sent))
             done_bytes += sizes[index]
             if progress is not None and task is not None:
                 progress.remove_task(task)
@@ -563,11 +593,19 @@ async def _send_files(client, recipient, file_paths, text, as_document, mime_typ
                         completed=done_bytes,
                         description=f"total {index + 1}/{len(file_paths)} files",
                     )
+        return messages
+
+
+def _as_list(sent) -> list[Any]:
+    """What a send returned, as a list: one message, an album, or nothing."""
+    if sent is None:
+        return []
+    return list(sent) if isinstance(sent, list | tuple) else [sent]
 
 
 async def _send_one_file(
-    client, recipient, path, *, caption, as_document, progress_callback, mime_type=None
-) -> None:
+    client, recipient, path, *, caption, as_document, progress_callback, mime_type=None, schedule=None
+) -> Any:
     """Send one file, uploading its parts over several connections at once.
 
     The upload is done here rather than inside `send_file` so that a large
@@ -585,17 +623,20 @@ async def _send_one_file(
     handle = await upload_file(client, path, progress_callback=progress_callback)
     # A declared type is kept as given; otherwise it is guessed from the name.
     attributes, mime_type = utils.get_attributes(str(path), force_document=as_document, mime_type=mime_type)
-    await client.send_file(
+    return await client.send_file(
         recipient,
         handle,
         caption=caption,
         force_document=as_document,
         attributes=attributes,
         mime_type=mime_type,
+        schedule=schedule,
     )
 
 
-async def _tg_send(account_name, recipients, text, files, as_document=False, mime_type=None) -> int:
+async def _tg_send(
+    account_name, recipients, text, files, as_document=False, mime_type=None, schedule=None
+) -> int:
     async with common.connected_api(account_name) as (api, _):
         file_paths = [Path(f) for f in files] if files else None
         sent_count = 0
@@ -604,26 +645,167 @@ async def _tg_send(account_name, recipients, text, files, as_document=False, mim
 
         for recipient in recipients:
             try:
+                if schedule is not None:
+                    # Uploads to the recipients before this one take time, and a
+                    # moment that came close meanwhile would be sent at once
+                    # rather than scheduled.
+                    check_schedule(schedule, local_now())
                 if file_paths:
-                    await _send_files(api.client, recipient, file_paths, text, as_document, mime_type)
-                elif text:
-                    await api.client.send_message(recipient, text)
+                    messages = await _send_files(
+                        api.client, recipient, file_paths, text, as_document, mime_type, schedule
+                    )
+                else:
+                    messages = _as_list(await api.client.send_message(recipient, text, schedule=schedule))
 
-                common.diag(f"  sent to {recipient}")
+                if schedule is None:
+                    common.diag(f"  sent to {recipient}")
+                else:
+                    ids = ", ".join(str(m.id) for m in messages if getattr(m, "id", None) is not None)
+                    suffix = f" (scheduled id {ids})" if ids else ""
+                    common.diag(f"  scheduled to {recipient} for {describe(schedule)}{suffix}")
                 sent_count += 1
             except Exception as e:
-                common.error(f"  error sending to {recipient}: {e}")
-                failed.append((recipient, str(e)))
+                reason = explain_refusal(e) or str(e)
+                verb = "scheduling for" if schedule is not None else "sending to"
+                common.error(f"  error {verb} {recipient}: {reason}")
+                failed.append((recipient, reason))
 
         if failed:
+            done = "Delivered to" if schedule is None else "Scheduled for"
             common.diag(
-                f"\nDelivered to {sent_count}/{total} recipients. "
+                f"\n{done} {sent_count}/{total} recipients. "
                 f"{len(failed)} failed. Re-running this command will resend "
                 f"to ALL {total} recipients (no idempotency).",
                 essential=True,
             )
             return EXIT_FAILURE
         return EXIT_OK
+
+
+@tg.group("scheduled")
+def tg_scheduled() -> None:
+    """Messages waiting in a chat's scheduled queue, put there by the --schedule option of tg send."""
+
+
+@tg_scheduled.command("list")
+@click.argument("chat_ids", type=CHAT_REF, nargs=-1, required=True)
+@click.option("--account", default=None, help=common.ACCOUNT_HELP)
+@click.option(
+    "--truncate",
+    type=click.IntRange(min=0),
+    default=None,
+    help=f"Cut message text to N characters (0 = no cut, default: {DEFAULT_MESSAGE_TEXT_LENGTH})",
+)
+@click.option("--json", "as_json", is_flag=True, help="Output as machine-readable JSON")
+def tg_scheduled_list(chat_ids, account, truncate, as_json) -> None:
+    """Show the scheduled messages of one or more chats, soonest first.
+
+    CHAT_IDS: chat ids, @usernames or t.me links. The id in square brackets is
+    the one `tg scheduled delete` takes.
+    """
+    if truncate is None:
+        truncate = 0 if as_json else DEFAULT_MESSAGE_TEXT_LENGTH
+    exit_code = asyncio.run(_tg_scheduled_list(list(chat_ids), account, truncate, as_json))
+    if exit_code:
+        fail(code=exit_code)
+
+
+async def _scheduled_messages(client, entity) -> list[Any]:
+    """The scheduled queue of one chat, soonest first."""
+    messages = [m async for m in client.iter_messages(entity, scheduled=True)]
+    return sorted(messages, key=lambda m: (m.date is None, m.date, m.id))
+
+
+def _scheduled_record(msg, truncate: int) -> dict:
+    """One scheduled message for `--json`: the listing fields plus the moment it leaves."""
+    from tg_export.watch import message_record
+
+    record = message_record(None, None, msg)
+    if truncate:
+        record["text"] = record["text"][:truncate]
+        record["links"] = text_links(record["text"], msg.entities)
+    out = {field: record[field] for field in _LISTING_FIELDS}
+    out["scheduled_for"] = describe(msg.date) if msg.date is not None else None
+    return out
+
+
+async def _tg_scheduled_list(chat_ids, account, truncate, as_json) -> int:
+    collected: list[dict] = []
+    failed = False
+    async with common.connected_api(account) as (api, _):
+        for chat_id in chat_ids:
+            try:
+                entity = await resolve_chat(api.client, chat_id)
+                messages = await _scheduled_messages(api.client, entity)
+            except Exception as e:
+                common.error(f"  error reading the scheduled messages of {chat_id}: {e}")
+                failed = True
+                continue
+            if as_json:
+                collected.append(
+                    {"chat": chat_id, "messages": [_scheduled_record(m, truncate) for m in messages]}
+                )
+                continue
+            title = getattr(entity, "title", None) or _entity_name(entity)
+            click.echo(f"# {strip_control_chars(title)} (id={chat_id}): {len(messages)} scheduled")
+            for msg in messages:
+                _, text = _message_preview(msg, truncate=truncate)
+                when = describe(msg.date) if msg.date is not None else "?"
+                click.echo(f"  {when}  [{msg.id}]  {strip_control_chars(text)}")
+    if as_json:
+        click.echo(json.dumps(collected, ensure_ascii=False, indent=2))
+    return EXIT_FAILURE if failed else EXIT_OK
+
+
+@tg_scheduled.command("delete")
+@click.argument("chat_id", type=CHAT_REF)
+@click.argument("message_ids", type=click.IntRange(min=1), nargs=-1)
+@click.option("--account", default=None, help=common.ACCOUNT_HELP)
+@click.option(
+    "--all",
+    "delete_all",
+    is_flag=True,
+    default=False,
+    help="Delete every scheduled message of the chat",
+)
+def tg_scheduled_delete(chat_id, message_ids, account, delete_all) -> None:
+    """Delete scheduled messages of a chat without sending them.
+
+    CHAT_ID: chat id, @username or t.me link. MESSAGE_IDS: the ids
+    `tg scheduled list` shows in square brackets; or --all instead of them.
+    """
+    if delete_all and message_ids:
+        raise click.UsageError("give either message ids or --all, not both")
+    if not delete_all and not message_ids:
+        raise click.UsageError("give the ids of the scheduled messages to delete, or --all")
+    exit_code = asyncio.run(_tg_scheduled_delete(chat_id, list(message_ids), account, delete_all))
+    if exit_code:
+        fail(code=exit_code)
+
+
+async def _tg_scheduled_delete(chat_id, message_ids, account, delete_all) -> int:
+    """Delete the scheduled messages asked for; an id the queue does not hold is a failure.
+
+    Telegram deletes what it finds and stays silent about the rest, so the
+    queue is read first: a mistyped id would otherwise pass for a deletion.
+    """
+    from telethon.tl.functions.messages import DeleteScheduledMessagesRequest
+
+    async with common.connected_api(account) as (api, _):
+        entity = await resolve_chat(api.client, chat_id)
+        queued = {m.id for m in await _scheduled_messages(api.client, entity)}
+        wanted = sorted(queued) if delete_all else list(dict.fromkeys(message_ids))
+        missing = [i for i in wanted if i not in queued]
+        present = [i for i in wanted if i in queued]
+        if present:
+            await api.client(DeleteScheduledMessagesRequest(peer=entity, id=present))
+            listed = ", ".join(map(str, present))
+            common.diag(f"  deleted {len(present)} scheduled message(s) of {chat_id}: {listed}")
+        elif delete_all:
+            common.diag(f"  {chat_id} has no scheduled messages")
+        for i in missing:
+            common.error(f"  {chat_id} has no scheduled message {i}")
+        return EXIT_FAILURE if missing else EXIT_OK
 
 
 @tg.command("download")

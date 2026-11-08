@@ -181,6 +181,7 @@ fail_under = 50
 "tg_export/importer.py" = 73
 "tg_export/locking.py" = 95
 "tg_export/privacy.py" = 87
+"tg_export/schedule.py" = 89
 "tg_export/media.py" = 84
 "tg_export/models.py" = 90
 "tg_export/session.py" = 82
