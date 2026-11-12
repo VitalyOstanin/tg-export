@@ -20,6 +20,8 @@ ROOT = Path(__file__).resolve().parent.parent
 LINK_RE = re.compile(r"\[([^\]]*)\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
 HEADING_RE = re.compile(r"^#{1,6}\s+(.*?)\s*$", re.M)
 FENCE_RE = re.compile(r"^```.*?^```", re.M | re.S)
+# Код в строке, в том числе в двойных и более обратных кавычках: `[a](b)` в нём -- пример.
+INLINE_CODE_RE = re.compile(r"(`+)(?!`).+?(?<!`)\1(?!`)")
 
 
 def _tracked_markdown() -> list[Path]:
@@ -81,8 +83,8 @@ def test_every_documentation_link_resolves():
     broken: list[str] = []
     for path in _tracked_markdown():
         source = path.read_text(encoding="utf-8")
-        # Ссылки внутри блоков кода -- примеры, а не навигация.
-        source_without_code = FENCE_RE.sub("", source)
+        # Ссылки внутри блоков кода и кода в строке -- примеры, а не навигация.
+        source_without_code = INLINE_CODE_RE.sub("", FENCE_RE.sub("", source))
         anchors = _anchors(source)  # _anchors сам отбрасывает блоки кода
         rel = path.relative_to(ROOT)
         for _, target in LINK_RE.findall(source_without_code):

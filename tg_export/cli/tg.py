@@ -1,4 +1,4 @@
-"""``tg`` group: direct API calls -- info, messages, send, scheduled, delete, download.
+"""``tg`` group: direct API calls -- info, messages, send, edit, scheduled, delete, download.
 
 These commands talk to Telegram outside an export: they read a chat, send a
 file, fetch one message. Nothing here writes to the state database.
@@ -18,6 +18,7 @@ from typing import Any, NamedTuple
 
 import click
 
+from tg_export import markup
 from tg_export.cli import common
 from tg_export.cli.chatref import CHAT_REF, resolve_chat
 from tg_export.cli.common import (
@@ -370,7 +371,37 @@ async def _tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_fi
         return EXIT_FAILURE if any("error" in r for r in results) else EXIT_OK
 
 
-@tg.command("send")
+_TEXT_HELP = (
+    "Message text (passing it here puts it on the command line, where other "
+    "local users can read it; use --text-file for anything private)"
+)
+_TEXT_FILE_HELP = "Read the message text from this file, or from standard input when given as -"
+
+
+def _parse_mode_option(command: Any) -> Any:
+    return click.option(
+        "--parse-mode",
+        "parse_mode_name",
+        type=click.Choice(markup.PARSE_MODES),
+        default=markup.DEFAULT_PARSE_MODE,
+        show_default=True,
+        help=markup.PARSE_MODE_HELP,
+    )(command)
+
+
+def _read_text(text, text_file) -> str | None:
+    """The text given with --text or read from --text-file; None when neither was given."""
+    if text is not None and text_file:
+        raise click.UsageError("give the text either with --text or with --text-file, not both")
+    if not text_file:
+        return text
+    if str(text_file) == "-":
+        with click.open_file("-", encoding="utf-8") as stdin:
+            return stdin.read()
+    return Path(text_file).read_text(encoding="utf-8")
+
+
+@tg.command("send", epilog=markup.MARKUP_EPILOG)
 @click.option("--account", default=None, help=common.ACCOUNT_HELP)
 @click.option(
     "--file",
@@ -384,18 +415,16 @@ async def _tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_fi
     "--text",
     "-t",
     default=None,
-    help=(
-        "Message text (passing it here puts it on the command line, where other "
-        "local users can read it; use --text-file for anything private)"
-    ),
+    help=_TEXT_HELP,
 )
 @click.option(
     "--text-file",
     "text_file",
     default=None,
     type=click.Path(path_type=Path, allow_dash=True),
-    help="Read the message text from this file, or from standard input when given as -",
+    help=_TEXT_FILE_HELP,
 )
+@_parse_mode_option
 @click.option(
     "--as-document",
     is_flag=True,
@@ -423,27 +452,40 @@ async def _tg_info(chat_ids, account, catalog_file, chat_type, last_n, output_fi
     ),
 )
 @click.argument("recipients", type=CHAT_REF, nargs=-1, required=True)
-def tg_send(account, files, text, text_file, as_document, mime_type, schedule, recipients) -> None:
+def tg_send(
+    account, files, text, text_file, parse_mode_name, as_document, mime_type, schedule, recipients
+) -> None:
     """Send message to one or more recipients.
 
     RECIPIENTS: chat ids, @usernames or t.me links (multiple allowed).
     Use --text for message text and --file for attachments.
-    At least --text or --file must be specified. With --schedule the message
-    waits on Telegram's side and leaves at the given time; see and cancel it
-    with `tg scheduled list` and `tg scheduled delete`.
+    At least --text or --file must be specified. With files, the text becomes
+    the caption of the first one. The text is Markdown unless --parse-mode
+    says otherwise (see MARKUP below). With --schedule the message waits on
+    Telegram's side and leaves at the given time; see and cancel it with
+    `tg scheduled list` and `tg scheduled delete`.
+
+    After each recipient the ids of the sent messages are printed --
+    `sent to me (id 4242)` -- as `tg edit` and `tg delete` take them.
 
     Note: delivery is best-effort and not idempotent. If sending fails for some
     recipients (network/RPC error), re-running this command will resend to all
     recipients, including those who already received the message.
+
+    \b
+    Examples:
+      tg-export tg send me --text-file note.md
+      tg-export tg send me --text 'id: `4242`' --parse-mode md
+      tg-export tg send me --text-file note.html --parse-mode html
+      tg-export tg send me -f a.pdf -f b.pdf --as-document --text-file caption.md
+
+    \b
+    Exit codes:
+      0  sent to every recipient
+      1  at least one recipient did not get the message
+      2  wrong usage (no text and no file, both --text and --text-file, a bad --schedule)
     """
-    if text and text_file:
-        raise click.UsageError("give the text either with --text or with --text-file, not both")
-    if text_file:
-        if str(text_file) == "-":
-            with click.open_file("-", encoding="utf-8") as stdin:
-                text = stdin.read()
-        else:
-            text = Path(text_file).read_text(encoding="utf-8")
+    text = _read_text(text, text_file)
     if not text and not files:
         raise click.UsageError("specify --text, --text-file and/or --file")
 
@@ -451,7 +493,16 @@ def tg_send(account, files, text, text_file, as_document, mime_type, schedule, r
         raise click.UsageError("--mime-type applies to files; give them with --file")
 
     exit_code = asyncio.run(
-        _tg_send(account, list(recipients), text, files, as_document, mime_type=mime_type, schedule=schedule)
+        _tg_send(
+            account,
+            list(recipients),
+            text,
+            files,
+            as_document,
+            mime_type=mime_type,
+            schedule=schedule,
+            parse_mode=markup.parse_mode(parse_mode_name),
+        )
     )
     if exit_code:
         fail(code=exit_code)
@@ -598,7 +649,7 @@ async def _upload_files(client, file_paths, as_document, *, mime_type=None) -> l
 
 
 async def _send_files(
-    client, recipient, file_paths, text, as_document, *, uploads, schedule=None
+    client, recipient, file_paths, text, as_document, *, uploads, schedule=None, parse_mode=None
 ) -> list[Any]:
     """Send attachments to one recipient, checking the scheduled moment before every send.
 
@@ -612,6 +663,7 @@ async def _send_files(
     chunk is uploaded after the first one is already queued, out of reach of
     the check.
     ``schedule`` puts every message into the scheduled queue for that moment.
+    ``parse_mode`` is the parse mode of the caption, from `markup.parse_mode`.
 
     Returns the messages Telegram answered with -- with ``schedule``, their ids
     are those of the scheduled queue.
@@ -628,6 +680,7 @@ async def _send_files(
                 caption=caption if index == 0 else "",
                 as_document=as_document,
                 schedule=schedule,
+                parse_mode=parse_mode,
             )
             messages.extend(_as_list(sent))
         return messages
@@ -655,6 +708,7 @@ async def _send_files(
             force_document=as_document,
             progress_callback=album_progress,
             schedule=schedule,
+            parse_mode=parse_mode,
         )
         return _as_list(sent)
 
@@ -674,7 +728,9 @@ def _as_list(sent) -> list[Any]:
     return list(sent) if isinstance(sent, list | tuple) else [sent]
 
 
-async def _send_one_file(client, recipient, upload, *, caption, as_document, schedule=None) -> Any:
+async def _send_one_file(
+    client, recipient, upload, *, caption, as_document, schedule=None, parse_mode=None
+) -> Any:
     """Send one file already uploaded by `_upload_files`, checking the moment first.
 
     The handle is reusable: Telegram keeps an uploaded file for several hours,
@@ -689,11 +745,12 @@ async def _send_one_file(client, recipient, upload, *, caption, as_document, sch
         attributes=upload.attributes,
         mime_type=upload.mime_type,
         schedule=schedule,
+        parse_mode=parse_mode,
     )
 
 
 async def _tg_send(
-    account_name, recipients, text, files, as_document=False, mime_type=None, schedule=None
+    account_name, recipients, text, files, as_document=False, mime_type=None, schedule=None, parse_mode=None
 ) -> int:
     if schedule is None:
         verb, done = "sending to", "Delivered to"
@@ -736,10 +793,14 @@ async def _tg_send(
                         as_document,
                         uploads=uploads,
                         schedule=schedule,
+                        parse_mode=parse_mode,
                     )
                 else:
                     _check_moment(schedule)
-                    messages = _as_list(await api.client.send_message(recipient, text, schedule=schedule))
+                    sent = await api.client.send_message(
+                        recipient, text, schedule=schedule, parse_mode=parse_mode
+                    )
+                    messages = _as_list(sent)
                 common.diag(outcome(recipient, messages))
                 sent_count += 1
             except Exception as e:
@@ -1046,6 +1107,131 @@ async def _tg_delete(chat_id, message_ids, account, *, revoke, whole_album, skip
         if left:
             common.error(f"  Telegram kept messages of {chat_id} still in place: {', '.join(map(str, left))}")
             return EXIT_FAILURE
+        return EXIT_OK
+
+
+@tg.command("edit", epilog=markup.MARKUP_EPILOG)
+@click.argument("chat_id", type=CHAT_REF)
+@click.argument("message_id", type=click.IntRange(min=1))
+@click.option("--account", default=None, help=common.ACCOUNT_HELP)
+@click.option("--text", "-t", default=None, help=_TEXT_HELP)
+@click.option(
+    "--text-file",
+    "text_file",
+    default=None,
+    type=click.Path(path_type=Path, allow_dash=True),
+    help=_TEXT_FILE_HELP,
+)
+@_parse_mode_option
+def tg_edit(chat_id, message_id, account, text, text_file, parse_mode_name) -> None:
+    """Replace the text of a sent message, or the caption of a photo or file.
+
+    CHAT_ID: chat id, @username, bare username, a t.me link or `me` for Saved
+    Messages. MESSAGE_ID: the id `tg messages` shows in square brackets and
+    `tg send` prints after sending.
+
+    The new text replaces the old one whole; it is Markdown unless
+    --parse-mode says otherwise (see MARKUP below). On a photo, video or
+    document the text is its caption, and an empty text removes the caption.
+    An album keeps its caption on one part, as a rule the first: name that
+    part's id. A text message cannot be left empty -- `tg delete` removes it.
+
+    Only your own messages can be edited -- in a channel also the posts of
+    other admins, if your admin rights allow it -- and Telegram allows it for
+    a limited time after sending; past it Telegram refuses, and the command
+    says so.
+    The message is read through the chat first, so an id the chat does not
+    hold is an error rather than an edit elsewhere. Scheduled messages are
+    not edited by this command.
+
+    \b
+    Examples:
+      tg-export tg edit me 4242 --text-file fixed.md
+      tg-export tg edit me 4242 --text 'code: `12345`'
+      tg-export tg edit 123456789 4250 --text-file caption.html --parse-mode html
+      tg-export tg edit me 4250 --text ''        # remove the caption of a file
+
+    \b
+    Exit codes:
+      0  edited, or the message already had exactly this text
+      1  no such message, not yours, the time for editing has passed, or
+         Telegram refused the text (too long, empty)
+      2  wrong usage (no text given, both --text and --text-file)
+    """
+    new_text = _read_text(text, text_file)
+    if new_text is None:
+        raise click.UsageError("give the new text with --text or --text-file")
+    exit_code = asyncio.run(
+        _tg_edit(chat_id, message_id, account, new_text, parse_mode=markup.parse_mode(parse_mode_name))
+    )
+    if exit_code:
+        fail(code=exit_code)
+
+
+def _has_caption_slot(msg) -> bool:
+    """Whether the text of the message is the caption of a photo or file rather than a text.
+
+    The media type decides, not `msg.photo`: Telethon also gives the picture of
+    a link preview there, and a message with a preview is still a text.
+    """
+    from telethon.tl.types import MessageMediaDocument, MessageMediaPhoto
+
+    return isinstance(getattr(msg, "media", None), (MessageMediaPhoto, MessageMediaDocument))
+
+
+def _visible_text(text: str, parse_mode: Any) -> str:
+    """What is left of the text once the markup is taken out."""
+    return text if parse_mode is None else parse_mode.parse(text)[0]
+
+
+async def _tg_edit(chat_id, message_id, account, text, *, parse_mode) -> int:
+    from telethon.errors.rpcerrorlist import (
+        MessageAuthorRequiredError,
+        MessageEditTimeExpiredError,
+        MessageNotModifiedError,
+    )
+
+    not_yours = f"  message {message_id} of {chat_id} is not yours: only its author can edit it"
+    async with common.connected_api(account) as (api, _):
+        client = api.client
+        entity = await resolve_chat(client, chat_id)
+        msg = await client.get_messages(entity, ids=message_id)
+        if msg is None:
+            common.error(f"  {chat_id} has no message {message_id}")
+            return EXIT_FAILURE
+        caption = _has_caption_slot(msg)
+        if not caption and not _visible_text(text, parse_mode).strip():
+            common.error(
+                f"  message {message_id} of {chat_id} is a text message and cannot be left empty; "
+                f"`tg delete` removes it"
+            )
+            return EXIT_FAILURE
+        # A channel admin may edit the posts of other admins, so there Telegram
+        # alone decides.
+        if not getattr(msg, "out", True) and not getattr(entity, "broadcast", False):
+            common.error(not_yours)
+            return EXIT_FAILURE
+
+        try:
+            await client.edit_message(entity, message_id, text, parse_mode=parse_mode)
+        except MessageNotModifiedError:
+            common.diag(f"  message {message_id} of {chat_id} already has this text; nothing changed")
+            return EXIT_OK
+        except MessageAuthorRequiredError:
+            common.error(not_yours)
+            return EXIT_FAILURE
+        except MessageEditTimeExpiredError:
+            common.error(
+                f"  Telegram no longer allows editing message {message_id} of {chat_id}: "
+                f"the time for editing it has passed"
+            )
+            return EXIT_FAILURE
+        except Exception as e:
+            common.error(f"  error editing message {message_id} of {chat_id}: {e}")
+            return EXIT_FAILURE
+
+        what = "caption" if caption else "text"
+        common.diag(f"  edited the {what} of message {message_id} in {chat_id}")
         return EXIT_OK
 
 
