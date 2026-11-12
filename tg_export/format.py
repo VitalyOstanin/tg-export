@@ -34,16 +34,22 @@ CLOCK_FORMAT = "%H:%M:%S"
 # and the title of a chat, and a terminal reads these bytes as commands: an
 # escape sequence repaints the line, moves the cursor or sets a colour that
 # stays after the command ends.
-_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+_LINE_BREAK_RE = re.compile(r"\r\n|[\n\r\x0b\x0c\x85\u2028\u2029]")
+# Shows where a line of the message ended, so that its lines are not run
+# together on the one line of a listing.
+LINE_BREAK_MARK = " \u21b5 "
 
 
 def strip_control_chars(text: str) -> str:
-    """Text of a Telegram string with the control characters taken out.
+    """Text of a Telegram string on one terminal line, the control characters taken out.
 
-    For lines printed to a terminal. The machine-readable output needs none of
-    this -- `json.dumps` escapes what it writes -- and must not be touched: it
-    carries the message as it was sent.
+    A line break becomes `LINE_BREAK_MARK` and a tab a space: dropped, they
+    would glue the words on both sides together. The machine-readable output
+    needs none of this -- `json.dumps` escapes what it writes -- and must not
+    be touched: it carries the message as it was sent.
     """
+    text = _LINE_BREAK_RE.sub(LINE_BREAK_MARK, text).replace("\t", " ")
     return _CONTROL_CHARS_RE.sub("", text)
 
 

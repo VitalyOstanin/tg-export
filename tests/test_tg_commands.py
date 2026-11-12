@@ -1093,13 +1093,22 @@ class TestTerminalOutputIsNotControlledByTelegram:
         То же правило уже применялось к именам на пути к файловой системе, но
         не к строкам, которые печатает `tg messages`.
         """
-        text = "\x1b[2Kстёртая строка\x07"
+        text = "\x1b[2Kстёртая\x9b2K строка\x07"
 
         result = _invoke_tg_messages(["-n", "1"], text=text)
 
         assert "\x1b" not in result.output
+        assert "\x9b" not in result.output  # однобайтовый CSI из набора C1
         assert "\x07" not in result.output
-        assert "стёртая строка" in result.output
+        assert "стёртая2K строка" in result.output
+
+    @pytest.mark.parametrize("extra", [[], ["--truncate", "40"]])
+    def test_line_breaks_of_a_message_stay_visible(self, extra):
+        """Строки сообщения не склеиваются: перенос показан маркером, табуляция -- пробелом."""
+        result = _invoke_tg_messages(["-n", "1", *extra], text="первая\r\nвторая\nтретья\tчетвёртая")
+
+        assert "первая ↵ вторая ↵ третья четвёртая" in result.output
+        assert result.output.count("\n") == 3  # заголовок, пустая строка, одна строка сообщения
 
     def test_a_negative_limit_is_refused(self):
         """`-n -5` уходил в Telethon как предел выборки."""
