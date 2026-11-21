@@ -1,4 +1,4 @@
-"""``tg`` group: direct API calls -- info, messages, send, edit, scheduled, delete, download.
+"""``tg`` group: direct API calls -- info, messages, send, edit, scheduled, delete, download, archive.
 
 These commands talk to Telegram outside an export: they read a chat, send a
 file, fetch one message. Nothing here writes to the state database.
@@ -49,6 +49,24 @@ logger = logging.getLogger(__name__)
 @click.group()
 def tg() -> None:
     """Direct Telegram API commands."""
+
+
+@tg.command("archive")
+@click.argument("chat_id", type=CHAT_REF)
+@click.option("--account", default=None, help=common.ACCOUNT_HELP)
+def tg_archive(chat_id, account) -> None:
+    """Move a chat to the Telegram archive.
+
+    CHAT_ID: chat id, @username, bare username or a t.me link.
+    """
+    asyncio.run(_tg_archive(chat_id, account))
+
+
+async def _tg_archive(chat_id, account) -> None:
+    async with common.connected_api(account) as (api, _):
+        entity = await resolve_chat(api.client, chat_id)
+        await api.client.edit_folder(entity, folder=1)
+        logger.debug("Archived Telegram chat %s", entity.id)
 
 
 @tg.command("messages")
