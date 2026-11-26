@@ -7,15 +7,18 @@ from typing import Any, cast
 
 import pytest
 from telethon import TelegramClient
-from telethon.errors import FileMigrateError
+from telethon.errors import FileMigrateError, FileReferenceExpiredError
 from telethon.sessions import MemorySession
 from telethon.tl import functions, types
+
+from tg_export.thumbnails import fetch_thumbnail, select_thumbnail
 
 
 class RecordingSender:
     def __init__(self, *, migrate_once: bool = False) -> None:
         self.requests: list[Any] = []
         self.migrate_once = migrate_once
+        self.expire_once = False
 
     def send(self, request: Any, ordered: bool = False) -> asyncio.Future[Any]:
         self.requests.append(request)
@@ -23,6 +26,9 @@ class RecordingSender:
         if self.migrate_once:
             self.migrate_once = False
             result.set_exception(FileMigrateError(request, capture=2))
+        elif self.expire_once:
+            self.expire_once = False
+            result.set_exception(FileReferenceExpiredError(request))
         elif isinstance(request, functions.InvokeWithTakeoutRequest):
             result.set_result(object())
         else:
@@ -126,3 +132,96 @@ async def test_download_media_thumbnail_uses_same_sender_path(monkeypatch: pytes
         assert isinstance(request, functions.upload.GetFileRequest)
         assert isinstance(request.location, types.InputDocumentFileLocation)
         assert request.location.thumb_size == "m"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dc_id", [1, 2], ids=["main-dc", "media-dc"])
+@pytest.mark.parametrize("progressive", [False, True], ids=["ordinary-size", "progressive-size"])
+async def test_photo_selector_sends_only_smaller_size_on_sender(
+    monkeypatch: pytest.MonkeyPatch, dc_id: int, progressive: bool
+):
+    """При любом DC фото запрашивает выбранный thumb, не основной размер."""
+    client, main, media, _, _ = _client_and_senders(monkeypatch)
+    small = (
+        types.PhotoSizeProgressive(type="p", w=160, h=160, sizes=[1, 2])
+        if progressive
+        else types.PhotoSize(type="s", w=90, h=90, size=1)
+    )
+    source = types.Photo(
+        id=1,
+        access_hash=2,
+        file_reference=b"ref",
+        date=None,
+        sizes=[small, types.PhotoSize(type="x", w=800, h=800, size=100_000)],
+        dc_id=dc_id,
+    )
+    selected = select_thumbnail(source)
+    assert selected is not None
+
+    assert await fetch_thumbnail(client.takeout(finalize=False), source, selected) == b"x"
+
+    sender = main if dc_id == 1 else media
+    assert len(sender.requests) == 1
+    request = sender.requests[0]
+    assert isinstance(request, functions.upload.GetFileRequest)
+    assert isinstance(request.location, types.InputPhotoFileLocation)
+    assert request.location.thumb_size == ("p" if progressive else "s")
+
+
+@pytest.mark.asyncio
+async def test_video_selector_keeps_thumb_after_file_migrate(monkeypatch: pytest.MonkeyPatch):
+    """После миграции DC размер видео остаётся миниатюрой."""
+    client, main, media, borrowed, _ = _client_and_senders(monkeypatch)
+    main.migrate_once = True
+    source = types.Document(
+        id=1,
+        access_hash=2,
+        file_reference=b"ref",
+        date=None,
+        mime_type="video/mp4",
+        size=2 * 1024**3,
+        dc_id=1,
+        attributes=[],
+        thumbs=[types.PhotoSize(type="m", w=160, h=160, size=1)],
+    )
+    selected = select_thumbnail(source)
+    assert selected is not None
+
+    assert await fetch_thumbnail(client.takeout(finalize=False), source, selected) == b"x"
+
+    assert borrowed == [2]
+    assert len(main.requests) == len(media.requests) == 1
+    for request in [*main.requests, *media.requests]:
+        assert isinstance(request, functions.upload.GetFileRequest)
+        assert isinstance(request.location, types.InputDocumentFileLocation)
+        assert request.location.thumb_size == "m"
+
+
+@pytest.mark.asyncio
+async def test_expired_reference_does_not_retry_as_original(monkeypatch: pytest.MonkeyPatch):
+    """Просроченная ссылка завершает выбор, без запроса основного документа."""
+    client, main, media, _, _ = _client_and_senders(monkeypatch)
+    main.expire_once = True
+    source = types.Document(
+        id=1,
+        access_hash=2,
+        file_reference=b"ref",
+        date=None,
+        mime_type="video/mp4",
+        size=2 * 1024**3,
+        dc_id=1,
+        attributes=[],
+        thumbs=[types.PhotoSize(type="m", w=160, h=160, size=1)],
+    )
+    selected = select_thumbnail(source)
+    assert selected is not None
+
+    with pytest.raises(FileReferenceExpiredError):
+        await fetch_thumbnail(client.takeout(finalize=False), source, selected)
+
+    assert len(main.requests) == 1
+    assert media.requests == []
+    request = main.requests[0]
+    assert isinstance(request, functions.upload.GetFileRequest)
+    assert isinstance(request.location, types.InputDocumentFileLocation)
+    assert request.location.thumb_size == "m"
