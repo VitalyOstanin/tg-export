@@ -11,6 +11,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import os
 import sqlite3
 from collections.abc import Iterator
 from datetime import UTC, datetime
@@ -19,8 +20,14 @@ from typing import Any, ClassVar
 from urllib.parse import quote
 
 import aiosqlite
+from telethon import types
 
 from tg_export.errors import ProcessLockError
+from tg_export.history_capture import (
+    ENCODING_VERSION,
+    THUMBNAIL_POLICY_DIGEST,
+    HistoryCapture,
+)
 from tg_export.locking import ProcessLock
 from tg_export.models import (
     SKIPPED_FILE_STATUSES,
@@ -318,10 +325,9 @@ async def _shielded(coro) -> Any:
 CHAT_TABLES = ("messages", "files", "export_state", "catalog_cache")
 
 
-# Bumped when the schema changes in a way `_add_missing_columns` cannot repair
-# on its own (a dropped column, a changed type, a rebuilt index). Plain column
-# additions are reconciled from the DDL and need no bump.
-SCHEMA_VERSION = 1
+# Version 1 is the legacy reconciled schema. Version 2 adds the fork's media
+# catalog in one transaction; legacy files are deliberately not inferred into it.
+SCHEMA_VERSION = 2
 
 
 SCHEMA_SQL = """
@@ -404,6 +410,131 @@ SCHEMA_SQL = """
 """
 
 
+# New objects are created in a single explicit transaction. Keep this separate
+# from SCHEMA_SQL: executescript commits any pending transaction before running.
+MEDIA_SCHEMA_SQL = """
+CREATE TABLE media_assets (
+    asset_id INTEGER PRIMARY KEY,
+    account_id INTEGER NOT NULL,
+    asset_kind TEXT NOT NULL CHECK (asset_kind IN ('photo', 'document')),
+    telegram_id INTEGER NOT NULL,
+    dc_id INTEGER,
+    access_hash INTEGER,
+    file_reference BLOB,
+    reference_captured_at TEXT,
+    file_name TEXT,
+    mime_type TEXT,
+    original_size INTEGER CHECK (original_size IS NULL OR original_size >= 0),
+    width INTEGER,
+    height INTEGER,
+    duration_ms INTEGER,
+    raw_media_json TEXT,
+    captured_at TEXT NOT NULL,
+    UNIQUE (account_id, asset_kind, telegram_id),
+    UNIQUE (asset_id, account_id)
+);
+CREATE TABLE media_sources (
+    source_id INTEGER PRIMARY KEY,
+    asset_id INTEGER NOT NULL,
+    account_id INTEGER NOT NULL,
+    chat_id INTEGER,
+    msg_id INTEGER,
+    source_kind TEXT NOT NULL,
+    source_locator TEXT NOT NULL,
+    position INTEGER NOT NULL DEFAULT 0 CHECK (position >= 0),
+    observed_at TEXT NOT NULL,
+    availability TEXT NOT NULL DEFAULT 'unknown',
+    CHECK ((chat_id IS NULL AND msg_id IS NULL) OR (chat_id IS NOT NULL AND msg_id IS NOT NULL)),
+    FOREIGN KEY (asset_id, account_id) REFERENCES media_assets(asset_id, account_id) ON DELETE RESTRICT,
+    FOREIGN KEY (chat_id, msg_id) REFERENCES messages(chat_id, msg_id) ON DELETE CASCADE,
+    UNIQUE (asset_id, source_kind, source_locator, position)
+);
+CREATE INDEX idx_media_sources_msg ON media_sources(account_id, chat_id, msg_id);
+CREATE TABLE media_variants (
+    variant_id INTEGER PRIMARY KEY,
+    asset_id INTEGER NOT NULL REFERENCES media_assets(asset_id) ON DELETE RESTRICT,
+    variant_key TEXT NOT NULL,
+    role TEXT NOT NULL CHECK (role IN ('original', 'static', 'animated', 'embedded')),
+    thumb_type TEXT,
+    tl_constructor TEXT,
+    width INTEGER,
+    height INTEGER,
+    expected_size INTEGER CHECK (expected_size IS NULL OR expected_size >= 0),
+    actual_size INTEGER CHECK (actual_size IS NULL OR actual_size >= 0),
+    mime_type TEXT,
+    local_path TEXT,
+    sha256 TEXT,
+    status TEXT NOT NULL DEFAULT 'available' CHECK
+        (status IN ('available', 'pending', 'done', 'failed', 'legacy_unverified')),
+    origin TEXT,
+    downloaded_at TEXT,
+    last_error_code TEXT,
+    UNIQUE (asset_id, variant_key),
+    UNIQUE (variant_id, asset_id)
+);
+CREATE INDEX idx_media_variants_status ON media_variants(status);
+CREATE TABLE media_requests (
+    request_id INTEGER PRIMARY KEY,
+    asset_id INTEGER NOT NULL REFERENCES media_assets(asset_id) ON DELETE RESTRICT,
+    variant_id INTEGER,
+    desired_role TEXT NOT NULL CHECK (desired_role IN ('embedded', 'thumbnail', 'preview', 'original')),
+    requested_by TEXT NOT NULL,
+    policy_digest TEXT NOT NULL,
+    dedupe_key TEXT NOT NULL UNIQUE,
+    result TEXT NOT NULL CHECK
+        (result IN ('selected', 'no_thumbnail', 'skipped_by_policy', 'satisfied', 'blocked')),
+    requested_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    CHECK (result NOT IN ('selected', 'satisfied') OR variant_id IS NOT NULL),
+    CHECK (result != 'no_thumbnail' OR variant_id IS NULL),
+    FOREIGN KEY (variant_id, asset_id) REFERENCES media_variants(variant_id, asset_id) ON DELETE RESTRICT
+);
+CREATE INDEX idx_media_requests_asset ON media_requests(asset_id, desired_role, result);
+CREATE TABLE media_jobs (
+    variant_id INTEGER PRIMARY KEY REFERENCES media_variants(variant_id) ON DELETE RESTRICT,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK
+        (status IN ('pending', 'leased', 'retry_wait', 'done', 'failed', 'cancelled')),
+    priority INTEGER NOT NULL DEFAULT 0,
+    attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+    retry_at TEXT,
+    lease_owner TEXT,
+    lease_until TEXT,
+    updated_at TEXT NOT NULL,
+    last_error_code TEXT,
+    CHECK ((lease_owner IS NULL) = (lease_until IS NULL)),
+    CHECK ((status = 'leased') = (lease_owner IS NOT NULL))
+);
+CREATE INDEX idx_media_jobs_ready ON media_jobs(status, retry_at, priority);
+CREATE TABLE message_raw (
+    account_id INTEGER NOT NULL,
+    chat_id INTEGER NOT NULL,
+    msg_id INTEGER NOT NULL,
+    captured_at TEXT NOT NULL,
+    api_layer INTEGER,
+    telethon_version TEXT NOT NULL,
+    encoding_version INTEGER NOT NULL,
+    raw_status TEXT NOT NULL CHECK (raw_status IN ('saved', 'raw_failed')),
+    raw_json TEXT,
+    raw_blob BLOB,
+    codec TEXT,
+    raw_sha256 TEXT,
+    error_code TEXT,
+    PRIMARY KEY (chat_id, msg_id),
+    FOREIGN KEY (chat_id, msg_id) REFERENCES messages(chat_id, msg_id) ON DELETE CASCADE,
+    CHECK (
+        (raw_status = 'saved' AND (raw_json IS NOT NULL) <> (raw_blob IS NOT NULL)
+            AND error_code IS NULL)
+        OR (raw_status = 'raw_failed' AND error_code IS NOT NULL
+            AND raw_json IS NULL AND raw_blob IS NULL)
+    )
+);
+"""
+
+MEDIA_TABLES = frozenset(
+    {"media_assets", "media_sources", "media_variants", "media_requests", "media_jobs", "message_raw"}
+)
+
+
 class ExportState:
     """The state database of one export directory.
 
@@ -431,6 +562,8 @@ class ExportState:
         # while a writer works, so making `state show` wait for an export to
         # finish bought nothing and hid exactly the run it was asked about.
         self._read_only = read_only
+        self._existing_db = False
+        self._write_lock = asyncio.Lock()
         self._lock = ProcessLock(
             db_path,
             f"State DB is locked by another tg-export process: {db_path}.lock. "
@@ -465,6 +598,7 @@ class ExportState:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._acquire_lock()
         try:
+            self._existing_db = self.db_path.is_file() and self.db_path.stat().st_size > 0
             # The database holds the text of every message: created by SQLite
             # it would take the process umask, and tightening it afterwards
             # leaves a window with a readable file. An empty private file made
@@ -501,13 +635,12 @@ class ExportState:
         # WAL allows concurrent readers and one writer without escalation.
         # synchronous=NORMAL avoids fsync on every commit (durable enough with WAL).
         # cache_size negative = KiB; mmap_size in bytes.
-        # No PRAGMA foreign_keys: the schema declares no FOREIGN KEY, so the
-        # pragma only suggested a protection that does not exist. Integrity
-        # between the tables is kept by the application -- see CHAT_TABLES and
-        # purge_chat, which delete a chat from every table by hand.
+        # The v2 media catalog has composite foreign keys. Set this before any
+        # schema or data transaction, on every connection opened here.
         for pragma in (
             "PRAGMA journal_mode = WAL",
             "PRAGMA synchronous = NORMAL",
+            "PRAGMA foreign_keys = ON",
             *READER_PRAGMAS,
         ):
             await self.db.execute(pragma)
@@ -540,14 +673,82 @@ class ExportState:
         await _shielded(self.db.commit())
 
     async def _create_tables(self) -> None:
+        async with self.db.execute("PRAGMA user_version") as cur:
+            row = await cur.fetchone()
+            assert row is not None
+            version = row[0]
+        if version > SCHEMA_VERSION:
+            raise RuntimeError(f"state DB schema {version} is newer than supported {SCHEMA_VERSION}")
+        if version < SCHEMA_VERSION and self._existing_db:
+            await self._backup_before_migration()
         # Columns are reconciled before the script runs: an index declared over
         # a column an older database lacks would fail on CREATE INDEX before any
         # ALTER had a chance to add it.
         await self._add_missing_columns()
         await self.db.executescript(SCHEMA_SQL)
         await self._drop_unused_schema()
-        await self.db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+        if version < 1:
+            await self.db.execute("PRAGMA user_version = 1")
         await self.commit()
+        if version < SCHEMA_VERSION:
+            await self._check_media_parent_key()
+            await self._migrate_media_schema()
+        await self._check_media_tables()
+
+    async def _check_media_tables(self) -> None:
+        """Refuse an incomplete v2 file instead of silently recreating pieces."""
+        async with self.db.execute("SELECT name FROM sqlite_master WHERE type='table'") as cur:
+            found = {row[0] for row in await cur.fetchall()}
+        missing = MEDIA_TABLES - found
+        if missing:
+            raise RuntimeError(f"incomplete media schema v2: missing {sorted(missing)}")
+
+    async def _check_media_parent_key(self) -> None:
+        """The new source/raw FKs require the legacy message composite key."""
+        async with self.db.execute("PRAGMA table_info(messages)") as cur:
+            columns = await cur.fetchall()
+        key = tuple(row[1] for row in sorted(columns, key=lambda row: row[5]) if row[5])
+        if key != ("chat_id", "msg_id"):
+            raise RuntimeError(f"unsupported legacy messages primary key: {key!r}")
+
+    async def _backup_before_migration(self) -> Path:
+        """Take a private SQLite snapshot before changing an existing database."""
+        stem = f"{self.db_path.name}.pre-v2.bak"
+        for number in range(100):
+            path = self.db_path.with_name(stem if number == 0 else f"{stem}.{number}")
+            try:
+                fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            except FileExistsError:
+                continue
+            os.close(fd)
+            break
+        else:
+            raise RuntimeError("too many pre-migration backups")
+        try:
+            target = sqlite3.connect(path, check_same_thread=False)
+            try:
+                await _shielded(self.db.backup(target))
+            finally:
+                target.close()
+        except BaseException:
+            path.unlink(missing_ok=True)
+            raise
+        return path
+
+    async def _migrate_media_schema(self) -> None:
+        """Install the media catalog and version marker as one rollback-safe step."""
+        await self.db.execute("BEGIN IMMEDIATE")
+        try:
+            # This controlled DDL has no semicolons inside SQL literals.
+            # executescript() would commit before the first CREATE TABLE.
+            for statement in MEDIA_SCHEMA_SQL.split(";"):
+                if statement.strip():
+                    await self.db.execute(statement)
+            await self.db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            await self.commit()
+        except BaseException:
+            await _shielded(self.db.rollback())
+            raise
 
     async def _add_missing_columns(self) -> None:
         """Bring a database created by an earlier version up to the current shape.
@@ -804,9 +1005,13 @@ class ExportState:
         # shuts down. Only the commit used to be shielded, so a cancellation
         # landing in the INSERT left the file on disk with no row in `files`:
         # the next run removed it as orphaned and downloaded it again.
-        await _shielded(
-            self._write_file_row(file_id, chat_id, msg_id, expected_size, actual_size, local_path, status)
-        )
+        async def write() -> None:
+            async with self._write_lock:
+                await self._write_file_row(
+                    file_id, chat_id, msg_id, expected_size, actual_size, local_path, status
+                )
+
+        await _shielded(write())
 
     async def _write_file_row(
         self,
@@ -957,6 +1162,159 @@ class ExportState:
         params = await asyncio.to_thread(lambda: [self._msg_to_params(msg) for msg in messages])
         await self.db.executemany(self._UPSERT_SQL, params)
         await self.commit()
+
+    async def store_history_batch(self, records: list[tuple[Message, HistoryCapture]]) -> None:
+        """Commit messages, Raw, media graph and thumbnail jobs together.
+
+        The legacy original downloader still owns its own files table. This
+        path only queues exact static thumbnail variants and never labels a
+        legacy download as a verified original.
+        """
+        if any((msg.chat_id, msg.id) != (capture.chat_id, capture.msg_id) for msg, capture in records):
+            raise ValueError("history capture does not match normalized message")
+        prepared = await asyncio.to_thread(
+            lambda: [(self._msg_to_params(msg), capture) for msg, capture in records]
+        )
+        await _shielded(self._write_history_batch(prepared))
+
+    async def _write_history_batch(self, prepared: list[tuple[tuple, HistoryCapture]]) -> None:
+        async with self._write_lock:
+            await self.db.execute("SAVEPOINT history_batch")
+            try:
+                for params, capture in prepared:
+                    await self.db.execute(self._UPSERT_SQL, params)
+                    await self._store_capture(capture)
+                await self.db.execute("RELEASE SAVEPOINT history_batch")
+            except BaseException:
+                await self.db.execute("ROLLBACK TO SAVEPOINT history_batch")
+                await self.db.execute("RELEASE SAVEPOINT history_batch")
+                raise
+            await self.commit()
+
+    async def _store_capture(self, item: HistoryCapture) -> None:
+        await self.db.execute(
+            "INSERT INTO message_raw(account_id,chat_id,msg_id,captured_at,telethon_version,"
+            "encoding_version,raw_status,raw_json,raw_sha256,error_code) VALUES (?,?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(chat_id,msg_id) DO UPDATE SET captured_at=excluded.captured_at,"
+            "telethon_version=excluded.telethon_version,encoding_version=excluded.encoding_version,"
+            "raw_status=excluded.raw_status,raw_json=excluded.raw_json,"
+            "raw_sha256=excluded.raw_sha256,error_code=excluded.error_code "
+            "WHERE excluded.raw_status='saved' OR message_raw.raw_status!='saved'",
+            (
+                item.account_id,
+                item.chat_id,
+                item.msg_id,
+                item.captured_at,
+                item.telethon_version,
+                ENCODING_VERSION,
+                "saved" if item.raw_json is not None else "raw_failed",
+                item.raw_json,
+                item.raw_sha256,
+                item.error_code,
+            ),
+        )
+        media = item.media
+        if media is None:
+            return
+        await self._store_media_capture(item)
+
+    async def _store_media_capture(self, item: HistoryCapture) -> None:
+        media = item.media
+        assert media is not None
+        kind = "photo" if isinstance(media, types.Photo) else "document"
+        await self.db.execute(
+            "INSERT INTO media_assets(account_id,asset_kind,telegram_id,dc_id,access_hash,"
+            "file_reference,mime_type,original_size,captured_at) VALUES (?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(account_id,asset_kind,telegram_id) DO UPDATE SET "
+            "dc_id=excluded.dc_id,access_hash=excluded.access_hash,"
+            "file_reference=excluded.file_reference,captured_at=excluded.captured_at",
+            (
+                item.account_id,
+                kind,
+                media.id,
+                media.dc_id,
+                media.access_hash,
+                media.file_reference,
+                getattr(media, "mime_type", None),
+                getattr(media, "size", None),
+                item.captured_at,
+            ),
+        )
+        async with self.db.execute(
+            "SELECT asset_id FROM media_assets WHERE account_id=? AND asset_kind=? AND telegram_id=?",
+            (item.account_id, kind, media.id),
+        ) as cur:
+            row = await cur.fetchone()
+        assert row is not None
+        asset_id = row[0]
+        await self.db.execute(
+            "INSERT INTO media_sources(asset_id,account_id,chat_id,msg_id,source_kind,"
+            "source_locator,observed_at) VALUES (?,?,?,?,?,?,?) "
+            "ON CONFLICT(asset_id,source_kind,source_locator,position) DO UPDATE SET "
+            "observed_at=excluded.observed_at",
+            (
+                asset_id,
+                item.account_id,
+                item.chat_id,
+                item.msg_id,
+                "message",
+                item.source_locator,
+                item.captured_at,
+            ),
+        )
+        selection = item.selection
+        variant_id = None
+        result = "no_thumbnail"
+        if selection is not None:
+            variant_key = (
+                f"{selection.kind}:{selection.constructor}:{selection.thumb_type}:"
+                f"{selection.width}x{selection.height}"
+            )
+            await self.db.execute(
+                "INSERT INTO media_variants(asset_id,variant_key,role,thumb_type,tl_constructor,"
+                "width,height,expected_size,status) VALUES (?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(asset_id,variant_key) DO UPDATE SET expected_size=excluded.expected_size",
+                (
+                    asset_id,
+                    variant_key,
+                    selection.kind,
+                    selection.thumb_type,
+                    selection.constructor,
+                    selection.width,
+                    selection.height,
+                    selection.expected_bytes,
+                    "available",
+                ),
+            )
+            async with self.db.execute(
+                "SELECT variant_id FROM media_variants WHERE asset_id=? AND variant_key=?",
+                (asset_id, variant_key),
+            ) as cur:
+                row = await cur.fetchone()
+            assert row is not None
+            variant_id = row[0]
+            result = "selected"
+        dedupe_key = f"thumbnail:{item.account_id}:{item.chat_id}:{item.msg_id}:{THUMBNAIL_POLICY_DIGEST}"
+        await self.db.execute(
+            "INSERT INTO media_requests(asset_id,variant_id,desired_role,requested_by,policy_digest,"
+            "dedupe_key,result,requested_at,updated_at) VALUES (?,?,'thumbnail','policy',?,?,?,?,?) "
+            "ON CONFLICT(dedupe_key) DO UPDATE SET variant_id=excluded.variant_id,"
+            "result=excluded.result,updated_at=excluded.updated_at",
+            (
+                asset_id,
+                variant_id,
+                THUMBNAIL_POLICY_DIGEST,
+                dedupe_key,
+                result,
+                item.captured_at,
+                item.captured_at,
+            ),
+        )
+        if selection is not None and selection.kind == "static":
+            await self.db.execute(
+                "INSERT OR IGNORE INTO media_jobs(variant_id,status,updated_at) VALUES (?,'pending',?)",
+                (variant_id, item.captured_at),
+            )
 
     async def load_messages(self, chat_id: int) -> list[Message]:
         """Load all messages for a chat, sorted by msg_id."""

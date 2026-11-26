@@ -7,6 +7,7 @@
 поведение под --quiet.
 """
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -47,6 +48,7 @@ def run_env(tmp_path, monkeypatch):
     api.start_takeout = AsyncMock()
     api.stop_takeout = AsyncMock()
     api.takeout = None
+    api.client.get_me = AsyncMock(return_value=SimpleNamespace(id=42))
 
     # TgApi используется как контекстменеджер, поэтому подставной объект должен
     # проводить вход и выход через те же connect/disconnect.

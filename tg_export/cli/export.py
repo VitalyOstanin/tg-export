@@ -775,6 +775,16 @@ def _export_destination(account, config_override, output_override) -> tuple[str,
     return account, cfg, output_base, output_base / STATE_DB_NAME
 
 
+async def _export_account_id(api, *, dry_run: bool) -> int | None:
+    """Read the signed-in identity for account-scoped Raw and media records."""
+    if dry_run:
+        return None
+    me = await api.client.get_me()
+    if me is None or not isinstance(me.id, int):
+        raise RuntimeError("Telegram account ID is unavailable for Raw and media catalog")
+    return me.id
+
+
 async def _run_export(
     account,
     config_override,
@@ -823,7 +833,7 @@ async def _run_export(
         resources.push_async_callback(_close_downloader, downloader)
 
         chats = await fetch_catalog(api, include_left=(cfg.left_channels_action != "skip"))
-
+        account_id = await _export_account_id(api, dry_run=dry_run)
         exporter = Exporter(
             api=api,
             state=state,
@@ -832,6 +842,7 @@ async def _run_export(
             downloader=downloader,
             account=account,
             quiet=quiet,
+            account_id=account_id,
         )
         stats = await exporter.run(dry_run=dry_run, verify=verify, chat_list=chats, rerender=rerender)
 

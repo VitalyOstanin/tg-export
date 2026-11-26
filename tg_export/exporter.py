@@ -48,6 +48,7 @@ from tg_export.config import ChatExportConfig, Config, MediaConfig
 from tg_export.console import console
 from tg_export.converter import convert_message, peer_id
 from tg_export.format import CLOCK_FORMAT, display_name, format_moment, format_size, format_speed
+from tg_export.history_capture import HistoryCapture, capture_message
 from tg_export.html.renderer import HtmlRenderer
 from tg_export.media import (
     STORY_VIDEO_EXTENSIONS,
@@ -704,6 +705,7 @@ class Exporter:
         downloader: MediaDownloader,
         account: str,
         quiet: bool = False,
+        account_id: int | None = None,
     ) -> None:
         self.api = api
         self.state = state
@@ -711,6 +713,7 @@ class Exporter:
         self.renderer = renderer
         self.downloader = downloader
         self.account = account
+        self.account_id = account_id
         # When True, progress (Live display) and routine status lines are
         # suppressed; errors and shutdown notices are still printed.
         self.quiet = quiet
@@ -1310,7 +1313,17 @@ class Exporter:
         the iterator ended by itself, which is what "the chat holds nothing
         older" means to phase 2.
         """
-        batch: list[Message] = []
+        batch: list[tuple[Message, HistoryCapture | None]] = []
+        pending_capture: dict[int, HistoryCapture | None] = {}
+
+        async def store_batch() -> None:
+            if self.account_id is None:
+                await self.state.store_messages_batch([msg for msg, _ in batch])
+            else:
+                await self.state.store_history_batch(
+                    [(msg, cast(HistoryCapture, capture)) for msg, capture in batch]
+                )
+
         last_progress_time = time.monotonic()
         exhausted = False
         async with _MediaPipeline(
@@ -1321,16 +1334,26 @@ class Exporter:
                     break
                 if before_date_from(tl_msg.date):
                     break
+                capture = (
+                    await asyncio.to_thread(
+                        capture_message, tl_msg, account_id=self.account_id, chat_id=chat.id
+                    )
+                    if self.account_id is not None
+                    else None
+                )
                 msg = convert_message(tl_msg, chat_id=chat.id)
                 note_message(msg)
                 if not self._keep_message(msg, export_service_messages=keep_service):
                     continue
                 # A message joins the batch only once its own media is on
                 # disk, so the stored record carries the local path.
-                batch.extend(await media.submit(msg, tl_msg))
+                pending_capture[msg.id] = capture
+                batch.extend(
+                    (ready, pending_capture.pop(ready.id)) for ready in await media.submit(msg, tl_msg)
+                )
                 stats.messages_exported += 1
                 if len(batch) >= BATCH_SIZE:
-                    await self.state.store_messages_batch(batch)
+                    await store_batch()
                     logger.debug("  %s: %s", chat.name, stored_line())
                     batch.clear()
                 now = time.monotonic()
@@ -1343,9 +1366,9 @@ class Exporter:
             else:
                 # for/else: iterator exhausted naturally (no break)
                 exhausted = True
-            batch.extend(await media.drain())
+            batch.extend((ready, pending_capture.pop(ready.id)) for ready in await media.drain())
         if batch:
-            await self.state.store_messages_batch(batch)
+            await store_batch()
         return exhausted
 
     async def _fetch_new_messages(

@@ -530,7 +530,9 @@ erDiagram
 
 ### 8.2. Предлагаемая DDL для первой миграции
 
-Это проект целевой схемы, а не готовая миграция upstream. `ExportState._create_tables()` на pinned коммите согласует отсутствующие столбцы и вызывает `executescript(SCHEMA_SQL)`; это **не** транзакционный механизм версионированной миграции. Для новых таблиц и переноса legacy записей нужен отдельный мигратор с явной версией, транзакцией и проверкой повторного запуска (§21). Не запускать DDL поверх пользовательской базы без резервной копии. Идентификаторы Telegram в SQLite — signed INTEGER 64 bit. В JSON для внешних потребителей, особенно JavaScript, выдавать их как десятичные строки.
+Схема v2 уже добавлена в `tg_export/state.py` и утверждена [ADR-0009](adr/0009-versioned-media-schema.md). Показанная ниже DDL — архитектурный эскиз; действующие ограничения и статусы задаёт `MEDIA_SCHEMA_SQL`. Legacy согласование столбцов v1 остаётся прежним; новые таблицы и `user_version=2` создаются одной транзакцией. Существующая БД получает приватный SQLite backup перед переходом на v2; прежний механизм согласования столбцов после этого остаётся отдельным. Legacy `files` не переносятся автоматически: тип и полнота старого файла нельзя доказать из его строки. Идентификаторы Telegram в SQLite — signed INTEGER 64 bit. В JSON для внешних потребителей, особенно JavaScript, выдавать их как десятичные строки.
+
+История уже пишет Raw и каталог в одном коммите с пакетами сообщений; статические миниатюры получают записи `media_jobs` со статусом `pending`. Исполнитель очереди и изменение политики загрузки ещё не включены. Курсоры фаз обновляются отдельно и при сбое могут вызвать повторное чтение пакета; UPSERT сохраняет идемпотентность. В T09 нужен checkpoint на уровне страницы, если потребуется атомарный курсор вместе с пакетом.
 
 ```sql
 CREATE TABLE IF NOT EXISTS media_assets (
@@ -566,7 +568,7 @@ CREATE TABLE IF NOT EXISTS media_sources (
     observed_at TEXT NOT NULL,
     availability TEXT NOT NULL DEFAULT 'unknown',
     CHECK ((chat_id IS NULL AND msg_id IS NULL) OR (chat_id IS NOT NULL AND msg_id IS NOT NULL)),
-    FOREIGN KEY (asset_id, account_id) REFERENCES media_assets(asset_id, account_id) ON DELETE CASCADE,
+    FOREIGN KEY (asset_id, account_id) REFERENCES media_assets(asset_id, account_id) ON DELETE RESTRICT,
     FOREIGN KEY (chat_id, msg_id) REFERENCES messages(chat_id, msg_id) ON DELETE CASCADE,
     UNIQUE (asset_id, source_kind, source_locator, position)
 );
@@ -575,7 +577,7 @@ CREATE INDEX IF NOT EXISTS idx_media_sources_msg
 
 CREATE TABLE IF NOT EXISTS media_variants (
     variant_id INTEGER PRIMARY KEY,
-    asset_id INTEGER NOT NULL REFERENCES media_assets(asset_id) ON DELETE CASCADE,
+    asset_id INTEGER NOT NULL REFERENCES media_assets(asset_id) ON DELETE RESTRICT,
     variant_key TEXT NOT NULL,
     role TEXT NOT NULL CHECK (role IN ('original','static','animated','embedded')),
     thumb_type TEXT,
@@ -591,28 +593,32 @@ CREATE TABLE IF NOT EXISTS media_variants (
     origin TEXT, -- server, embedded, verified_import, legacy
     downloaded_at TEXT,
     last_error_code TEXT,
-    UNIQUE (asset_id, variant_key)
+    UNIQUE (asset_id, variant_key),
+    UNIQUE (variant_id, asset_id)
 );
 CREATE INDEX IF NOT EXISTS idx_media_variants_status
     ON media_variants(status);
 
 CREATE TABLE IF NOT EXISTS media_requests (
     request_id INTEGER PRIMARY KEY,
-    asset_id INTEGER NOT NULL REFERENCES media_assets(asset_id) ON DELETE CASCADE,
-    variant_id INTEGER REFERENCES media_variants(variant_id) ON DELETE SET NULL,
+    asset_id INTEGER NOT NULL REFERENCES media_assets(asset_id) ON DELETE RESTRICT,
+    variant_id INTEGER,
     desired_role TEXT NOT NULL CHECK (desired_role IN ('embedded','thumbnail','preview','original')),
     requested_by TEXT NOT NULL, -- policy / explicit_fetch / verify / backfill
     policy_digest TEXT NOT NULL,
     dedupe_key TEXT NOT NULL UNIQUE,
     result TEXT NOT NULL, -- selected / no_thumbnail / skipped_by_policy / satisfied / blocked
     requested_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    CHECK (result NOT IN ('selected','satisfied') OR variant_id IS NOT NULL),
+    CHECK (result != 'no_thumbnail' OR variant_id IS NULL),
+    FOREIGN KEY (variant_id, asset_id) REFERENCES media_variants(variant_id, asset_id) ON DELETE RESTRICT
 );
 CREATE INDEX IF NOT EXISTS idx_media_requests_asset
     ON media_requests(asset_id, desired_role, result);
 
 CREATE TABLE IF NOT EXISTS media_jobs (
-    variant_id INTEGER PRIMARY KEY REFERENCES media_variants(variant_id) ON DELETE CASCADE,
+    variant_id INTEGER PRIMARY KEY REFERENCES media_variants(variant_id) ON DELETE RESTRICT,
     status TEXT NOT NULL DEFAULT 'pending',
     priority INTEGER NOT NULL DEFAULT 0,
     attempts INTEGER NOT NULL DEFAULT 0,
@@ -642,8 +648,10 @@ CREATE TABLE IF NOT EXISTS message_raw (
     PRIMARY KEY (chat_id, msg_id),
     FOREIGN KEY (chat_id, msg_id) REFERENCES messages(chat_id, msg_id) ON DELETE CASCADE,
     CHECK (
-        (raw_status='saved' AND (raw_json IS NOT NULL OR raw_blob IS NOT NULL))
-        OR (raw_status='raw_failed' AND error_code IS NOT NULL)
+        (raw_status='saved' AND (raw_json IS NOT NULL) <> (raw_blob IS NOT NULL)
+            AND error_code IS NULL)
+        OR (raw_status='raw_failed' AND error_code IS NOT NULL
+            AND raw_json IS NULL AND raw_blob IS NULL)
     )
 );
 ```
@@ -1377,12 +1385,12 @@ git grep -n -E 'file_reference|access_hash|sha256_head|full_history' -- tg_expor
 
 ### 21.1. Миграция
 
-1. Остановить все процессы, проверить lock. Сделать согласованный backup SQLite (через backup API или после корректного закрытия/WAL checkpoint) и резервную копию каталога файлов. Не копировать только основной sqlite-файл активной WAL БД.
-2. Записать исходную версию схемы и количество сообщений/файлов. Проверить `PRAGMA integrity_check` до/после, `foreign_key_check` новой схемы.
-3. Выделить отдельный версионированный мигратор вместо надежды на `_create_tables()/executescript` upstream. Перед `BEGIN IMMEDIATE` установить нужные pragma, включая `foreign_keys=ON`; в явной транзакции отдельными SQL-вызовами создать таблицы/индексы, перенести данные, проверить инварианты и обновить `user_version` последним шагом перед commit. Не менять primary keys legacy без необходимости.
-4. Мигрировать только доказуемо идентифицированные оригиналы; сохранить unknown legacy отдельно. Не массово скачивать ничего при открытии БД. При частично созданной схеме повторный запуск должен быть безопасен или остановиться до записи с инструкцией восстановления.
-5. Проверить `integrity_check`, `foreign_key_check`, количество строк, чтение legacy, новый профиль и рендеринг до backfill. Протестировать сбой после каждого шага миграции и повторное открытие старой БД.
-6. При проблемах остановить, восстановить согласованный backup базы и файлов. Не обещать безопасный downgrade старого бинарника на новую БД без теста; rollback — восстановление backup.
+1. Остановить остальные процессы и проверить lock. При переходе существующей БД на v2 `ExportState` автоматически создаёт согласованный SQLite backup через backup API (`*.pre-v2.bak`). Для выпуска дополнительно сохранить каталог файлов; не копировать только основной sqlite-файл активной WAL БД.
+2. Записать исходную версию схемы и количество сообщений/файлов. На копии архива проверить `PRAGMA integrity_check` до/после и `foreign_key_check` новой схемы.
+3. Мигратор v2 уже встроен в `ExportState`: `foreign_keys=ON` устанавливается до транзакции; новые таблицы и `user_version=2` создаются отдельными SQL-вызовами внутри `BEGIN IMMEDIATE`. Legacy согласование столбцов v1 выполняется перед этой транзакцией. Не менять primary keys legacy без необходимости.
+4. Legacy `files` остаются в прежней таблице без автоматического переноса в `media_variants`; доказуемый импорт можно добавить отдельно. Не скачивать файлы при открытии БД. Повтор после сбоя v2 должен завершить миграцию, а неполная v2 схема — остановить открытие с явной ошибкой.
+5. Проверить `integrity_check`, `foreign_key_check`, количество строк, чтение legacy, новый профиль и рендеринг до backfill. Тестировать откат при сбое DDL и повторное открытие старой БД; перед массовым применением испытать копию реального архива.
+6. При проблемах остановить работу и восстановить согласованный backup базы и файлов. Не обещать безопасный downgrade старого бинарника на новую БД без теста; rollback — восстановление backup.
 
 ### 21.2. Release
 
